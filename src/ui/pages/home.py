@@ -5,6 +5,8 @@ No login required - detects user from game logs automatically.
 """
 
 import flet as ft
+import os
+import sys
 from typing import Optional, Callable
 from collections import deque
 
@@ -14,6 +16,28 @@ from ...core.log_parser import SessionData, LapData
 from ...core.api_client import SubmissionStatus
 from ...utils.config import AppConfig
 from ...version import VERSION
+
+
+def get_icon_path() -> Optional[str]:
+    """Get the path to the app icon (PNG for ft.Image)."""
+    if getattr(sys, 'frozen', False):
+        # Running as compiled executable - check _MEIPASS for bundled files
+        if hasattr(sys, '_MEIPASS'):
+            icon_path = os.path.join(sys._MEIPASS, "assets", "icon.png")
+            if os.path.exists(icon_path):
+                return icon_path
+        # Fallback to executable directory
+        base_path = os.path.dirname(sys.executable)
+    else:
+        # Running as script - go up from src/ui/pages to project root
+        base_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    
+    # Try assets/icon.png (PNG works better with ft.Image)
+    icon_path = os.path.join(base_path, "assets", "icon.png")
+    if os.path.exists(icon_path):
+        return icon_path
+    
+    return None
 
 
 class HomePage(ft.Column):
@@ -152,10 +176,16 @@ class HomePage(ft.Column):
     
     def _build_controls(self) -> list:
         """Build the page controls."""
-        # Header
+        # Header with custom icon
+        icon_path = get_icon_path()
+        if icon_path:
+            header_icon = ft.Image(src=icon_path, width=32, height=32)
+        else:
+            header_icon = ft.Icon(ft.Icons.TIMER, color="#7c3aed", size=32)
+        
         header = ft.Container(
             content=ft.Row([
-                ft.Icon(ft.Icons.TIMER, color="#7c3aed", size=32),
+                header_icon,
                 ft.Column([
                     ft.Text("SimLaps", size=24, weight=ft.FontWeight.W_700, color="#ffffff"),
                     ft.Text(f"v{VERSION}", size=10, color="#666666"),

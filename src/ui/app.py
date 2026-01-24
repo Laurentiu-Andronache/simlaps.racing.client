@@ -7,6 +7,8 @@ detects user from game logs automatically.
 
 import flet as ft
 import asyncio
+import os
+import sys
 from typing import Optional
 from enum import Enum
 
@@ -72,6 +74,11 @@ class SimLapsApp:
         self.page.padding = 0
         self.page.spacing = 0
         
+        # Set window icon
+        icon_path = self._get_icon_path()
+        if icon_path:
+            self.page.window.icon = icon_path
+        
         # Dark theme
         self.page.theme_mode = ft.ThemeMode.DARK
         self.page.theme = ft.Theme(
@@ -80,6 +87,27 @@ class SimLapsApp:
         
         # Window close handler
         self.page.on_close = self._on_window_close
+    
+    def _get_icon_path(self) -> Optional[str]:
+        """Get the path to the app icon (ICO for window icon)."""
+        if getattr(sys, 'frozen', False):
+            # Running as compiled executable - check _MEIPASS for bundled files
+            if hasattr(sys, '_MEIPASS'):
+                icon_path = os.path.join(sys._MEIPASS, "assets", "icon.ico")
+                if os.path.exists(icon_path):
+                    return icon_path
+            # Fallback to executable directory
+            base_path = os.path.dirname(sys.executable)
+        else:
+            # Running as script - go up from src/ui to project root
+            base_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        
+        # Try assets/icon.ico
+        icon_path = os.path.join(base_path, "assets", "icon.ico")
+        if os.path.exists(icon_path):
+            return icon_path
+        
+        return None
     
     def _init_services(self):
         """Initialize core services."""

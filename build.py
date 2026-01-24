@@ -265,6 +265,13 @@ def build_executable(use_obfuscated: bool = True):
     # Add icon if exists
     if os.path.exists(ICON_PATH):
         cmd.extend(["--icon", ICON_PATH])
+        # Include icon.ico as data file for window icon at runtime
+        cmd.extend(["--add-data", f"{ICON_PATH};assets"])
+    
+    # Also include icon.png for ft.Image in the UI
+    icon_png_path = "assets/icon.png"
+    if os.path.exists(icon_png_path):
+        cmd.extend(["--add-data", f"{icon_png_path};assets"])
     
     # Add hidden imports for Flet and psutil
     hidden_imports = [
