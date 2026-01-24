@@ -1,0 +1,327 @@
+"""
+Home Page - Dashboard showing game status, recent laps, and submission status.
+
+No login required - detects user from game logs automatically.
+"""
+
+import flet as ft
+from typing import Optional, Callable
+from collections import deque
+
+from ..components.lap_card import LapCard, LapCardData, LapCardStatus
+from ..components.status_bar import StatusBar, ConnectionStatus
+from ...core.log_parser import SessionData, LapData
+from ...core.api_client import SubmissionStatus
+from ...utils.config import AppConfig
+from ...version import VERSION
+
+
+class HomePage(ft.Column):
+    """
+    Home page displaying game status, detected user, and recent laps.
+    
+    No authentication required - Steam ID is detected from game logs.
+    """
+    
+    MAX_VISIBLE_LAPS = 10
+    
+    def __init__(
+        self,
+        config: AppConfig,
+        on_settings_click: Optional[Callable] = None,
+        on_history_click: Optional[Callable] = None,
+    ):
+        self.config = config
+        self.on_settings_click = on_settings_click
+        self.on_history_click = on_history_click
+        
+        # Game state
+        self._game_running = False
+        self._detected_steam_id: Optional[str] = None
+        self._detected_player_name: Optional[str] = None
+        
+        # Lap cards storage (most recent first)
+        self._lap_cards: deque[LapCard] = deque(maxlen=self.MAX_VISIBLE_LAPS)
+        self._lap_count = 0
+        
+        # UI Components - create them first
+        self._status_text = ft.Text(
+            "Waiting for game to start...",
+            size=13,
+            color="#888888",
+        )
+        self._laps_column = ft.Column(
+            controls=[],
+            scroll=ft.ScrollMode.AUTO,
+            spacing=8,
+            expand=True,
+        )
+        self._status_bar = StatusBar()
+        self._game_status_container = ft.Container()
+        
+        # Build initial game status
+        self._update_game_status_ui()
+        self._update_laps_ui()
+        
+        # Initialize Column with all controls
+        super().__init__(
+            controls=self._build_controls(),
+            expand=True,
+            spacing=0,
+        )
+    
+    def _update_game_status_ui(self):
+        """Update the game status card content."""
+        if self._game_running:
+            # Game is running - show detected user info
+            user_info_controls = []
+            if self._detected_player_name:
+                user_info_controls.append(
+                    ft.Text(self._detected_player_name, size=16, weight=ft.FontWeight.W_600, color="#ffffff")
+                )
+            if self._detected_steam_id:
+                user_info_controls.append(
+                    ft.Text(f"Steam ID: {self._detected_steam_id}", size=12, color="#888888")
+                )
+            if not user_info_controls:
+                user_info_controls = [ft.Text("Detecting player...", size=14, color="#888888")]
+            
+            self._game_status_container.content = ft.Row(
+                controls=[
+                    ft.Container(
+                        content=ft.Icon(ft.Icons.PLAY_CIRCLE, color="#51cf66", size=32),
+                        width=56, height=56, border_radius=28, bgcolor="#1f3d1f",
+                        alignment=ft.Alignment(0, 0),
+                    ),
+                    ft.Column(
+                        controls=[
+                            ft.Row([
+                                ft.Container(width=10, height=10, border_radius=5, bgcolor="#51cf66"),
+                                ft.Text("Game Running", size=12, color="#51cf66", weight=ft.FontWeight.W_600),
+                            ], spacing=6),
+                            *user_info_controls,
+                        ],
+                        spacing=4,
+                        expand=True,
+                    ),
+                ],
+                spacing=16,
+            )
+            self._game_status_container.padding = 16
+            self._game_status_container.bgcolor = "#1e1e2e"
+            self._game_status_container.border_radius = 12
+            self._game_status_container.border = ft.border.all(1, "#51cf66")
+        else:
+            # Game not running
+            self._game_status_container.content = ft.Column(
+                controls=[
+                    ft.Icon(ft.Icons.PAUSE_CIRCLE, color="#666666", size=48),
+                    ft.Text("Waiting for Game", size=16, weight=ft.FontWeight.W_600, color="#ffffff"),
+                    ft.Text("Start Assetto Corsa Evo to begin tracking", size=12, color="#888888", text_align=ft.TextAlign.CENTER),
+                    ft.Container(height=8),
+                    ft.Row([
+                        ft.Container(width=8, height=8, border_radius=4, bgcolor="#ffd43b"),
+                        ft.Text("Monitoring for game...", size=11, color="#ffd43b"),
+                    ], spacing=8, alignment=ft.MainAxisAlignment.CENTER),
+                ],
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                spacing=8,
+            )
+            self._game_status_container.padding = 24
+            self._game_status_container.bgcolor = "#1e1e2e"
+            self._game_status_container.border_radius = 12
+            self._game_status_container.border = ft.border.all(1, "#3d3d5c")
+            self._game_status_container.alignment = ft.Alignment(0, 0)
+
+    def _update_laps_ui(self):
+        """Update the laps column content."""
+        if not self._lap_cards:
+            self._laps_column.controls = [
+                ft.Container(
+                    content=ft.Column([
+                        ft.Icon(ft.Icons.SPEED, color="#444444", size=48),
+                        ft.Text("No laps recorded yet", size=14, color="#666666"),
+                        ft.Text("Complete a lap in-game to see it here", size=12, color="#444444"),
+                    ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=8),
+                    padding=32,
+                    alignment=ft.Alignment(0, 0),
+                ),
+            ]
+        else:
+            self._laps_column.controls = list(self._lap_cards)
+    
+    def _build_controls(self) -> list:
+        """Build the page controls."""
+        # Header
+        header = ft.Container(
+            content=ft.Row([
+                ft.Icon(ft.Icons.TIMER, color="#7c3aed", size=32),
+                ft.Column([
+                    ft.Text("SimLaps", size=24, weight=ft.FontWeight.W_700, color="#ffffff"),
+                    ft.Text(f"v{VERSION}", size=10, color="#666666"),
+                ], spacing=0),
+                ft.Container(expand=True),
+                ft.Container(
+                    content=ft.Row([
+                        ft.Icon(ft.Icons.SECURITY, color="#51cf66", size=14),
+                        ft.Text("Secured", size=11, color="#51cf66"),
+                    ], spacing=4),
+                    padding=ft.padding.symmetric(horizontal=8, vertical=4),
+                    bgcolor="#1f3d1f",
+                    border_radius=12,
+                ),
+            ], spacing=12),
+            padding=ft.padding.only(left=20, right=20, top=20, bottom=16),
+            bgcolor="#0f0f1a",
+        )
+        
+        # Status section
+        status_section = ft.Container(
+            content=ft.Row([
+                ft.Icon(ft.Icons.INFO, color="#888888", size=16),
+                self._status_text,
+            ], spacing=8),
+            padding=ft.padding.symmetric(vertical=12, horizontal=16),
+            bgcolor="#16162a",
+            border_radius=8,
+            margin=ft.margin.only(left=20, right=20, top=8, bottom=16),
+        )
+        
+        # Laps header
+        laps_header = ft.Container(
+            content=ft.Row([
+                ft.Text("Recent Laps", size=16, weight=ft.FontWeight.W_600, color="#ffffff"),
+                ft.Text(f"({self._lap_count} total)", size=12, color="#888888"),
+            ], spacing=8),
+            padding=ft.padding.only(left=20, right=20, bottom=8),
+            bgcolor="#0f0f1a",
+        )
+        
+        # Laps list container
+        laps_container = ft.Container(
+            content=self._laps_column,
+            expand=True,
+            padding=ft.padding.only(left=20, right=20),
+            bgcolor="#0f0f1a",
+        )
+        
+        # Buttons
+        buttons = ft.Container(
+            content=ft.Row([
+                ft.OutlinedButton(
+                    "Settings",
+                    icon=ft.Icons.SETTINGS,
+                    on_click=lambda _: self.on_settings_click() if self.on_settings_click else None,
+                    style=ft.ButtonStyle(color="#888888", side=ft.BorderSide(1, "#3d3d5c")),
+                ),
+                ft.OutlinedButton(
+                    "View History",
+                    icon=ft.Icons.HISTORY,
+                    on_click=lambda _: self.on_history_click() if self.on_history_click else None,
+                    style=ft.ButtonStyle(color="#888888", side=ft.BorderSide(1, "#3d3d5c")),
+                ),
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+            padding=ft.padding.only(left=20, right=20, top=16, bottom=16),
+            bgcolor="#0f0f1a",
+        )
+        
+        # Game status container wrapper
+        game_status_wrapper = ft.Container(
+            content=self._game_status_container,
+            padding=ft.padding.only(left=20, right=20),
+            bgcolor="#0f0f1a",
+        )
+        
+        return [
+            header,
+            game_status_wrapper,
+            status_section,
+            laps_header,
+            laps_container,
+            buttons,
+            self._status_bar,
+        ]
+    
+    def update_config(self, config: AppConfig):
+        """Update with new config and refresh UI."""
+        self.config = config
+    
+    def set_status(self, message: str):
+        """Update the status message."""
+        self._status_text.value = message
+        if self.page:
+            self._status_text.update()
+    
+    def set_connection_status(self, status: ConnectionStatus, message: str):
+        """Update the connection status bar."""
+        self._status_bar.set_status(status, message)
+    
+    def set_monitoring(self, is_monitoring: bool):
+        """Update monitoring status."""
+        self._status_bar.set_monitoring(is_monitoring)
+    
+    def set_game_running(self, is_running: bool):
+        """Update game running status and refresh UI."""
+        if self._game_running != is_running:
+            self._game_running = is_running
+            self._update_game_status_ui()
+            if self.page:
+                self._game_status_container.update()
+    
+    def set_detected_user(self, steam_id: Optional[str], player_name: Optional[str] = None):
+        """Update detected user information."""
+        changed = (self._detected_steam_id != steam_id or self._detected_player_name != player_name)
+        if changed:
+            self._detected_steam_id = steam_id
+            self._detected_player_name = player_name
+            self._update_game_status_ui()
+            if self.page:
+                self._game_status_container.update()
+    
+    def add_lap(
+        self,
+        session: SessionData,
+        lap: LapData,
+        status: LapCardStatus = LapCardStatus.PENDING,
+    ) -> LapCard:
+        """Add a new lap card to the display."""
+        self._lap_count += 1
+        
+        if session.player_id and not self._detected_steam_id:
+            self.set_detected_user(session.player_id, session.player_name)
+        
+        card_data = LapCardData(
+            session=session,
+            lap=lap,
+            lap_number=self._lap_count,
+            status=status,
+        )
+        
+        card = LapCard(data=card_data, on_retry=self._on_retry_lap)
+        self._lap_cards.appendleft(card)
+        
+        self._update_laps_ui()
+        if self.page:
+            self._laps_column.update()
+        
+        return card
+    
+    def update_lap_status(self, card: LapCard, status: LapCardStatus, error_message: Optional[str] = None):
+        """Update a lap card's status."""
+        card.update_status(status, error_message)
+    
+    def _on_retry_lap(self, card_data: LapCardData):
+        """Handle retry button click on failed lap."""
+        pass
+    
+    def clear_laps(self):
+        """Clear all lap cards."""
+        self._lap_cards.clear()
+        self._lap_count = 0
+        self._update_laps_ui()
+        if self.page:
+            self._laps_column.update()
+    
+    def get_status_bar(self) -> StatusBar:
+        """Get the status bar component."""
+        return self._status_bar

@@ -1,0 +1,312 @@
+"""
+API Client for SimLaps server communication.
+
+Handles lap time submissions with signed payloads for anti-cheat.
+No API key required - uses embedded app secret for signing.
+"""
+
+import httpx
+from typing import Optional
+from dataclasses import dataclass
+from enum import Enum
+
+from .log_parser import SessionData, LapData
+from .security import sign_payload, is_game_running
+from ..version import VERSION, USER_AGENT
+
+
+class SubmissionStatus(Enum):
+    """Status of a lap submission."""
+    SUCCESS = "success"
+    ERROR = "error"
+    INVALID_LAP = "invalid_lap"
+    SIGNATURE_ERROR = "signature_error"
+    REPLAY_REJECTED = "replay_rejected"
+    RATE_LIMITED = "rate_limited"
+    GAME_NOT_RUNNING = "game_not_running"
+    NETWORK_ERROR = "network_error"
+    PLAUSIBILITY_FAILED = "plausibility_failed"
+
+
+@dataclass
+class SubmissionResult:
+    """Result of a lap submission attempt."""
+    status: SubmissionStatus
+    message: str
+    lap_id: Optional[str] = None
+    
+
+class APIClient:
+    """
+    Client for communicating with the SimLaps API.
+    
+    Uses signed payloads instead of API keys for authentication.
+    All submissions are cryptographically signed with an embedded app secret.
+    """
+
+    DEFAULT_SERVER_URL = "https://simlaps.racing"
+    SUBMIT_ENDPOINT = "/api/submit"
+    TIMEOUT = 30.0
+
+    def __init__(
+        self,
+        server_url: Optional[str] = None,
+    ):
+        """
+        Initialize API client.
+        
+        Args:
+            server_url: Base URL of the SimLaps server
+        """
+        self.server_url = (server_url or self.DEFAULT_SERVER_URL).rstrip("/")
+        self._client: Optional[httpx.AsyncClient] = None
+
+    async def _get_client(self) -> httpx.AsyncClient:
+        """Get or create HTTP client."""
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(
+                timeout=self.TIMEOUT,
+                headers=self._get_headers(),
+                follow_redirects=True,
+            )
+        return self._client
+
+    def _get_headers(self) -> dict:
+        """Get request headers."""
+        return {
+            "Content-Type": "application/json",
+            "User-Agent": USER_AGENT,
+            "X-Client-Version": VERSION,
+        }
+
+    def set_server_url(self, server_url: str) -> None:
+        """
+        Set the server URL.
+        
+        Args:
+            server_url: Base URL of the SimLaps server
+        """
+        self.server_url = server_url.rstrip("/")
+        # Reset client
+        if self._client:
+            self._client = None
+
+    async def submit_lap(
+        self,
+        session: SessionData,
+        lap: LapData,
+        user_id: Optional[str] = None,
+        submit_invalid: bool = False,
+    ) -> SubmissionResult:
+        """
+        Submit a completed lap to the server.
+        
+        The payload is cryptographically signed for anti-cheat verification.
+        
+        Args:
+            session: Session data containing track, car info
+            lap: The completed lap data
+            user_id: Override user ID (Steam ID)
+            submit_invalid: If True, submit even if lap is invalid
+            
+        Returns:
+            SubmissionResult with status and details
+        """
+        # Anti-cheat: Verify game is running before submission
+        if not is_game_running():
+            return SubmissionResult(
+                status=SubmissionStatus.GAME_NOT_RUNNING,
+                message="Game must be running to submit laps",
+            )
+
+        # Don't submit invalid laps unless explicitly requested
+        if not lap.is_valid and not submit_invalid:
+            return SubmissionResult(
+                status=SubmissionStatus.INVALID_LAP,
+                message="Lap was invalidated (penalty or off-track)",
+            )
+
+        # Validate we have a user ID
+        final_user_id = user_id or session.player_id
+        if not final_user_id:
+            return SubmissionResult(
+                status=SubmissionStatus.ERROR,
+                message="No Steam ID detected - please start a session in game",
+            )
+
+        # Build submission payload
+        payload = {
+            "userId": final_user_id,
+            "trackId": self._normalize_track_id(session.track),
+            "carId": session.car,
+            "time": lap.lap_time_ms,
+            "sessionId": session.session_id,  # Links laps from the same session
+            "sessionType": session.session_type,  # practice, qualifying, race, etc.
+            "gameVersion": session.game_version,
+            "tires": lap.tyre_compound,
+            "valid": lap.is_valid,  # False if lap had penalties/off-track
+        }
+
+        # Add sector times if available
+        if lap.sector1_ms is not None:
+            payload["sector1"] = lap.sector1_ms
+        if lap.sector2_ms is not None:
+            payload["sector2"] = lap.sector2_ms
+        if lap.sector3_ms is not None:
+            payload["sector3"] = lap.sector3_ms
+
+        # Add fuel if available
+        if lap.fuel_used is not None:
+            payload["fuelUsed"] = lap.fuel_used
+
+        # Sign the payload (adds _timestamp, _nonce, _signature)
+        signed_payload = sign_payload(payload)
+
+        try:
+            client = await self._get_client()
+            response = await client.post(
+                f"{self.server_url}{self.SUBMIT_ENDPOINT}",
+                json=signed_payload,
+            )
+
+            if response.status_code == 201:
+                data = response.json()
+                return SubmissionResult(
+                    status=SubmissionStatus.SUCCESS,
+                    message="Lap submitted successfully",
+                    lap_id=data.get("id"),
+                )
+            elif response.status_code == 401:
+                # Signature verification failed
+                return SubmissionResult(
+                    status=SubmissionStatus.SIGNATURE_ERROR,
+                    message="Signature verification failed - please update the app",
+                )
+            elif response.status_code == 409:
+                # Could be duplicate nonce (replay) or duplicate lap
+                error_data = response.json()
+                error_msg = error_data.get("error", "Conflict")
+                if "nonce" in error_msg.lower() or "replay" in error_msg.lower():
+                    return SubmissionResult(
+                        status=SubmissionStatus.REPLAY_REJECTED,
+                        message="Replay attack detected - submission rejected",
+                    )
+                return SubmissionResult(
+                    status=SubmissionStatus.ERROR,
+                    message="Duplicate lap already exists",
+                )
+            elif response.status_code == 429:
+                return SubmissionResult(
+                    status=SubmissionStatus.RATE_LIMITED,
+                    message="Too many submissions - please wait",
+                )
+            elif response.status_code == 422:
+                # Plausibility check failed
+                error_data = response.json()
+                error_msg = error_data.get("error", "Plausibility check failed")
+                return SubmissionResult(
+                    status=SubmissionStatus.PLAUSIBILITY_FAILED,
+                    message=f"Lap rejected: {error_msg}",
+                )
+            elif response.status_code == 400:
+                error_data = response.json()
+                error_msg = error_data.get("error", "Validation error")
+                if isinstance(error_msg, list):
+                    error_msg = "; ".join(str(e) for e in error_msg)
+                return SubmissionResult(
+                    status=SubmissionStatus.ERROR,
+                    message=f"Validation error: {error_msg}",
+                )
+            else:
+                return SubmissionResult(
+                    status=SubmissionStatus.ERROR,
+                    message=f"Server error: {response.status_code}",
+                )
+
+        except httpx.NetworkError as e:
+            return SubmissionResult(
+                status=SubmissionStatus.NETWORK_ERROR,
+                message=f"Network error: {str(e)}",
+            )
+        except httpx.TimeoutException:
+            return SubmissionResult(
+                status=SubmissionStatus.NETWORK_ERROR,
+                message="Request timed out",
+            )
+        except Exception as e:
+            return SubmissionResult(
+                status=SubmissionStatus.ERROR,
+                message=f"Unexpected error: {str(e)}",
+            )
+
+    def _normalize_track_id(self, track_name: str) -> str:
+        """
+        Normalize track name to ID format.
+        
+        Args:
+            track_name: Track name from log
+            
+        Returns:
+            Normalized track ID
+        """
+        # Remove common suffixes and prefixes
+        track_id = track_name.lower()
+        
+        # Remove layout suffixes
+        for suffix in [" gp", " time attack practice", " practice", " race", " qualify"]:
+            if track_id.endswith(suffix):
+                track_id = track_id[:-len(suffix)]
+        
+        # Remove common prefixes
+        for prefix in ["circuit de ", "circuit ", "autodromo ", "autódromo "]:
+            if track_id.startswith(prefix):
+                track_id = track_id[len(prefix):]
+        
+        # Replace spaces with underscores
+        track_id = track_id.replace(" ", "_")
+        
+        # Remove special characters
+        track_id = "".join(c for c in track_id if c.isalnum() or c == "_")
+        
+        return track_id
+
+    async def test_connection(self) -> tuple[bool, str]:
+        """
+        Test connection to the server.
+        
+        Returns:
+            Tuple of (success, message)
+        """
+        try:
+            client = await self._get_client()
+            response = await client.get(f"{self.server_url}/api/tracks")
+            
+            # 200 = success, 3xx = redirect (followed automatically with follow_redirects=True)
+            if response.status_code == 200:
+                return True, "Connected successfully"
+            elif 300 <= response.status_code < 400:
+                # If we still get a redirect, treat it as success (server is reachable)
+                return True, "Connected successfully"
+            else:
+                return False, f"Server returned status {response.status_code}"
+                
+        except httpx.NetworkError as e:
+            return False, f"Network error: {str(e)}"
+        except httpx.TimeoutException:
+            return False, "Connection timed out"
+        except Exception as e:
+            return False, f"Error: {str(e)}"
+
+    async def close(self) -> None:
+        """Close the HTTP client."""
+        if self._client:
+            await self._client.aclose()
+            self._client = None
+
+    async def __aenter__(self):
+        """Async context manager entry."""
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit."""
+        await self.close()
