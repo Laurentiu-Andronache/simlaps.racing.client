@@ -233,7 +233,6 @@ class LogParser:
             "is_valid": True,
             "fuel_used_lap": None,
         }
-        self._fuel_logged_this_lap = False
 
         # Compile regex patterns for performance
         self._patterns = {
@@ -249,7 +248,7 @@ class LogParser:
             "compound": re.compile(r"setCompound Tyre: \d compound name: (\w+)"),
             "fuel_consumed": re.compile(
                 r"Energy source car ([a-f0-9\-]+) for driver [a-f0-9\-]+ "
-                r"hundredmeters done: \d+ fuel consumed: ([\d.]+) L"
+                r"hundredmeters done: (\d+) fuel consumed: ([\d.]+) L"
             ),
             "split": re.compile(r"On Split .* id (\d+) splittime (\d+)"),
             "lap_finish": re.compile(r"New lap carId ([a-f0-9\-]+): ([\d:.]+)"),
@@ -523,19 +522,24 @@ class LogParser:
         # Fuel consumption
         if "Energy source car" in line and "fuel consumed:" in line:
             m = self._patterns["fuel_consumed"].search(line)
-            if m and not self._fuel_logged_this_lap:
+            if m:
                 car_id = m.group(1)
-                fuel_consumed_total = float(m.group(2))
-                is_player_car = car_id in self.context.player_car_uuids or (self.current_session and car_id == self.current_session.car_uuid)
-                if self.current_session and is_player_car:
-                    if len(self.current_session.laps) == 0 and self.current_session.initial_fuel > 0:
-                        fuel_used = fuel_consumed_total - self.current_session.initial_fuel
-                    else:
-                        fuel_used = fuel_consumed_total
-
-                    self._current_lap_data["fuel_used_lap"] = fuel_used
-                    self.current_session.fuel_used_session += fuel_used
-                    self._fuel_logged_this_lap = True
+                hundreds_done = int(m.group(2))
+                fuel_reading = float(m.group(3))
+                
+                # Ignore readings when distance is 0 (usually initialization/reset with bogus values like 30L)
+                if hundreds_done > 0:
+                    is_player_car = car_id in self.context.player_car_uuids or (self.current_session and car_id == self.current_session.car_uuid)
+                    if self.current_session and is_player_car:
+                        # Initialize accumulator if needed
+                        if self._current_lap_data["fuel_used_lap"] is None:
+                            self._current_lap_data["fuel_used_lap"] = 0.0
+                        
+                        # Add to lap total
+                        self._current_lap_data["fuel_used_lap"] += fuel_reading
+                        
+                        # Add to session total
+                        self.current_session.fuel_used_session += fuel_reading
 
         # Lap completion
         if "New lap carId" in line:
@@ -596,7 +600,6 @@ class LogParser:
                         "is_valid": True,
                         "fuel_used_lap": None,
                     }
-                    self._fuel_logged_this_lap = False
 
         return completed_lap
 
@@ -638,7 +641,6 @@ class LogParser:
             "is_valid": True,
             "fuel_used_lap": None,
         }
-        self._fuel_logged_this_lap = False
 
     def _finalize_current_session(self) -> None:
         """Save current session if it has completed laps."""
