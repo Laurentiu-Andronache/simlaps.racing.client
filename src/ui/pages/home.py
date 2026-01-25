@@ -99,6 +99,12 @@ class HomePage(ft.Column):
             expand=True,
             spacing=0,
         )
+
+    def did_mount(self):
+        """Called when added to page."""
+        super().did_mount()
+        # Check for updates once mounted
+        self._check_for_updates()
     
     def _update_game_status_ui(self):
         """Update the game status card content."""
@@ -255,6 +261,23 @@ class HomePage(ft.Column):
             bgcolor="#0f0f1a",
         )
         
+        # Update notification banner (simplified - text only)
+        self._update_banner = ft.Container(
+            content=ft.Row([
+                ft.Icon(ft.Icons.NEW_RELEASES, color="#ffffff", size=20),
+                ft.Column([
+                    ft.Text("Update Available", size=14, weight=ft.FontWeight.W_600, color="#ffffff"),
+                    ft.Text("Get the latest version at:", size=12, color="#ffffff"),
+                    ft.Text("https://www.simlaps.racing/downloads/SimLapsClient.exe", size=12, color="#a5b4fc", selectable=True),
+                ], spacing=2, expand=True),
+            ], alignment=ft.MainAxisAlignment.START),
+            padding=ft.padding.symmetric(horizontal=16, vertical=12),
+            bgcolor="#7c3aed",
+            border_radius=8,
+            margin=ft.margin.only(left=20, right=20, top=0, bottom=16),
+            visible=False,  # Hidden by default
+        )
+        
         # Status section
         status_section = ft.Container(
             content=ft.Row([
@@ -264,8 +287,91 @@ class HomePage(ft.Column):
             padding=ft.padding.symmetric(vertical=12, horizontal=16),
             bgcolor="#16162a",
             border_radius=8,
-            margin=ft.margin.only(left=20, right=20, top=8, bottom=16),
+            margin=ft.margin.only(left=20, right=20, top=0, bottom=16),
         )
+        
+        # Laps header
+        self._lap_count_text = ft.Text(f"({self._lap_count} total)", size=12, color="#888888")
+        
+        laps_header = ft.Container(
+            content=ft.Row([
+                ft.Text("Recent Laps", size=16, weight=ft.FontWeight.W_600, color="#ffffff"),
+                self._lap_count_text,
+            ], spacing=8),
+            padding=ft.padding.only(left=20, right=20, bottom=8),
+            bgcolor="#0f0f1a",
+        )
+        
+        # Laps list container
+        laps_container = ft.Container(
+            content=self._laps_column,
+            expand=True,
+            padding=ft.padding.only(left=20, right=20),
+            bgcolor="#0f0f1a",
+        )
+        
+        # Buttons
+        buttons = ft.Container(
+            content=ft.Row([
+                ft.OutlinedButton(
+                    "Settings",
+                    icon=ft.Icons.SETTINGS,
+                    on_click=lambda _: self.on_settings_click() if self.on_settings_click else None,
+                    style=ft.ButtonStyle(color="#888888", side=ft.BorderSide(1, "#3d3d5c")),
+                ),
+                ft.OutlinedButton(
+                    "View History",
+                    icon=ft.Icons.HISTORY,
+                    on_click=lambda _: self.on_history_click() if self.on_history_click else None,
+                    style=ft.ButtonStyle(color="#888888", side=ft.BorderSide(1, "#3d3d5c")),
+                ),
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+            padding=ft.padding.only(left=20, right=20, top=16, bottom=16),
+            bgcolor="#0f0f1a",
+        )
+        
+        # Game status container wrapper
+        game_status_wrapper = ft.Container(
+            content=self._game_status_container,
+            padding=ft.padding.only(left=20, right=20),
+            bgcolor="#0f0f1a",
+        )
+        
+        return [
+            header,
+            game_status_wrapper,
+            ft.Container(height=16),
+            self._update_banner,
+            status_section,
+            laps_header,
+            laps_container,
+            buttons,
+            self._status_bar,
+        ]
+
+    def _check_for_updates(self):
+        """Check for updates in background."""
+        import asyncio
+        async def check():
+            from ...core.api_client import APIClient
+            try:
+                async with APIClient(server_url=self.config.server_url) as client:
+                    result = await client.check_for_updates()
+                    if result.get("available"):
+                        self._update_banner.visible = True
+                        if self.page:
+                            self._update_banner.update()
+            except Exception as e:
+                print(f"Update check failed: {e}")
+
+        # Run in background if page is available
+        if self.page:
+            self.page.run_task(check)
+
+    def _open_update_url(self):
+        """Open browser to download update."""
+        if self.page:
+            self.page.launch_url("https://simlaps.racing/download")
         
         # Laps header
         self._lap_count_text = ft.Text(f"({self._lap_count} total)", size=12, color="#888888")

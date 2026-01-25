@@ -390,6 +390,52 @@ class APIClient:
             self._debug.log(f"[API] test_secret error: {e}")
             return False, f"Error testing secret: {str(e)}"
 
+    async def check_for_updates(self) -> dict:
+        """
+        Check for client updates.
+        
+        Returns:
+            Dict with update info or empty dict if no update.
+        """
+        try:
+            client = await self._get_client()
+            response = await client.get(f"{self.server_url}/api/version")
+            
+            if response.status_code == 200:
+                data = response.json()
+                latest_version = data.get("latestClientVersion")
+                
+                if latest_version:
+                    # Parse versions
+                    try:
+                        current_parts = [int(x) for x in VERSION.split(".")]
+                        latest_parts = [int(x) for x in latest_version.split(".")]
+                        
+                        # Compare
+                        is_newer = False
+                        for i in range(3):
+                            c = current_parts[i] if i < len(current_parts) else 0
+                            l = latest_parts[i] if i < len(latest_parts) else 0
+                            if l > c:
+                                is_newer = True
+                                break
+                            if l < c:
+                                break
+                        
+                        if is_newer:
+                            return {
+                                "available": True,
+                                "version": latest_version,
+                                "min_version": data.get("minClientVersion"),
+                            }
+                    except Exception:
+                        pass
+                        
+            return {"available": False}
+        except Exception as e:
+            self._debug.log(f"[API] Update check failed: {e}")
+            return {"available": False}
+
     async def close(self) -> None:
         """Close the HTTP client."""
         if self._client:
