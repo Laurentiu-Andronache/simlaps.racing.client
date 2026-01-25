@@ -217,6 +217,12 @@ class HomePage(ft.Column):
             ]
         else:
             self._laps_column.controls = list(self._lap_cards)
+            
+        # Update counter text
+        if hasattr(self, '_lap_count_text'):
+            self._lap_count_text.value = f"({self._lap_count} total)"
+            if self.page:
+                self._lap_count_text.update()
     
     def _build_controls(self) -> list:
         """Build the page controls."""
@@ -262,10 +268,12 @@ class HomePage(ft.Column):
         )
         
         # Laps header
+        self._lap_count_text = ft.Text(f"({self._lap_count} total)", size=12, color="#888888")
+        
         laps_header = ft.Container(
             content=ft.Row([
                 ft.Text("Recent Laps", size=16, weight=ft.FontWeight.W_600, color="#ffffff"),
-                ft.Text(f"({self._lap_count} total)", size=12, color="#888888"),
+                self._lap_count_text,
             ], spacing=8),
             padding=ft.padding.only(left=20, right=20, bottom=8),
             bgcolor="#0f0f1a",

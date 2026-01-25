@@ -89,7 +89,7 @@ class LapCard(ft.Container):
         elif self.data.status == LapCardStatus.SUBMITTED:
             return ft.Icon(ft.Icons.CHECK_CIRCLE, color="#51cf66", size=20)
         elif self.data.status == LapCardStatus.SUBMITTING:
-            return ft.ProgressRing(width=20, height=20, stroke_width=2, color="#ffd43b")
+            return ft.Icon(ft.Icons.SCHEDULE, color="#ffd43b", size=20)
         else:
             return ft.Icon(ft.Icons.SCHEDULE, color="#888888", size=20)
     
