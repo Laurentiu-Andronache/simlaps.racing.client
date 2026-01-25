@@ -304,23 +304,25 @@ class APIClient:
 
     async def test_connection(self) -> tuple[bool, str]:
         """
-        Test connection to the server.
+        Test connection to the server AND verify secret.
         
         Returns:
             Tuple of (success, message)
         """
         try:
             client = await self._get_client()
-            response = await client.get(f"{self.server_url}/api/tracks")
             
-            # 200 = success, 3xx = redirect (followed automatically with follow_redirects=True)
-            if response.status_code == 200:
-                return True, "Connected successfully"
-            elif 300 <= response.status_code < 400:
-                # If we still get a redirect, treat it as success (server is reachable)
-                return True, "Connected successfully"
-            else:
+            # First, test basic connectivity
+            response = await client.get(f"{self.server_url}/api/tracks")
+            if response.status_code != 200 and not (300 <= response.status_code < 400):
                 return False, f"Server returned status {response.status_code}"
+            
+            # Now test the secret
+            secret_ok, secret_msg = await self.test_secret()
+            if not secret_ok:
+                return False, f"Connected but {secret_msg}"
+            
+            return True, "Connected and secret verified"
                 
         except httpx.NetworkError as e:
             return False, f"Network error: {str(e)}"
@@ -328,6 +330,65 @@ class APIClient:
             return False, "Connection timed out"
         except Exception as e:
             return False, f"Error: {str(e)}"
+
+    async def test_secret(self) -> tuple[bool, str]:
+        """
+        Test if the embedded secret matches the server's secret.
+        
+        Returns:
+            Tuple of (success, message)
+        """
+        try:
+            self._debug.log("[API] test_secret called")
+            from .security import create_signature, get_timestamp, generate_nonce, get_app_secret
+            
+            # Log the decoded secret
+            secret = get_app_secret()
+            self._debug.log(f"[API] get_app_secret() = {secret[:20]}... (len={len(secret)})")
+            
+            # Create a test signature with known test values
+            timestamp = get_timestamp()
+            nonce = generate_nonce()
+            self._debug.log(f"[API] timestamp={timestamp}, nonce={nonce[:8]}...")
+            
+            # Sign with test payload (must match server expectations)
+            signature = create_signature(
+                timestamp=timestamp,
+                nonce=nonce,
+                user_id='test',
+                track_id='test',
+                lap_time=0,
+            )
+            self._debug.log(f"[API] signature = {signature[:20]}...")
+            
+            # Send to test endpoint
+            client = await self._get_client()
+            response = await client.post(
+                f"{self.server_url}/api/test-secret",
+                json={
+                    '_timestamp': timestamp,
+                    '_nonce': nonce,
+                    '_signature': signature,
+                }
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('valid'):
+                    return True, "Secret verified"
+                else:
+                    return False, data.get('error', 'Unknown error')
+            elif response.status_code == 401:
+                return False, "secret mismatch - rebuild client with correct secret"
+            elif response.status_code == 500:
+                data = response.json()
+                return False, data.get('error', 'Server error')
+            else:
+                return False, f"Unexpected status {response.status_code}"
+                
+        except Exception as e:
+            self._debug.log(f"[API] test_secret error: {e}")
+            return False, f"Error testing secret: {str(e)}"
 
     async def close(self) -> None:
         """Close the HTTP client."""

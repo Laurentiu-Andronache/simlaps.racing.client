@@ -33,39 +33,67 @@ def _get_debug_log_path() -> Path:
 class DebugLogger:
     """Simple debug logger that writes to a file."""
     
+    # Singleton instance for shared file handle
+    _instance = None
+    _file = None
+    _log_path = None
+    _started = False
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+    
     def __init__(self):
-        self._log_path = _get_debug_log_path()
-        self._file = None
-        self._enabled = True
+        # Only initialize once
+        if DebugLogger._log_path is None:
+            DebugLogger._log_path = _get_debug_log_path()
+        # Auto-start on first use
+        if not DebugLogger._started:
+            self.start()
     
     def start(self):
         """Start logging."""
+        if DebugLogger._started:
+            return
         try:
-            self._file = open(self._log_path, "a", encoding="utf-8")
-            self.log(f"\n{'='*60}")
-            self.log(f"SimLaps Debug Log Started")
-            self.log(f"Log file: {self._log_path}")
-            self.log(f"{'='*60}\n")
+            DebugLogger._file = open(DebugLogger._log_path, "a", encoding="utf-8")
+            DebugLogger._started = True
+            self._write_raw(f"\n{'='*60}")
+            self._write_raw(f"SimLaps Debug Log Started")
+            self._write_raw(f"Log file: {DebugLogger._log_path}")
+            self._write_raw(f"{'='*60}\n")
         except Exception as e:
             print(f"Failed to open debug log: {e}")
-            self._enabled = False
+    
+    def _write_raw(self, message: str):
+        """Write without checking _started to avoid recursion."""
+        if DebugLogger._file:
+            try:
+                timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                DebugLogger._file.write(f"[{timestamp}] {message}\n")
+                DebugLogger._file.flush()
+            except Exception:
+                pass
     
     def log(self, message: str):
         """Log a message with timestamp."""
-        if not self._enabled or not self._file:
+        if not DebugLogger._started or not DebugLogger._file:
             return
         try:
             timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-            self._file.write(f"[{timestamp}] {message}\n")
-            self._file.flush()
+            DebugLogger._file.write(f"[{timestamp}] {message}\n")
+            DebugLogger._file.flush()
         except Exception:
             pass
     
     def close(self):
         """Close the log file."""
-        if self._file:
+        if DebugLogger._file:
             try:
-                self._file.close()
+                DebugLogger._file.close()
+                DebugLogger._file = None
+                DebugLogger._started = False
             except Exception:
                 pass
 

@@ -67,6 +67,8 @@ pyarmor_runtime/
 
 # Config files with secrets
 config.json
+SERVER_SECRET.txt
+**/SERVER_SECRET.txt
 
 # OS files
 .DS_Store

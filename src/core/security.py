@@ -20,39 +20,19 @@ except ImportError:
 
 
 # =============================================================================
-# OBFUSCATED APP SECRET
+# APP SECRET
 # =============================================================================
-# This placeholder will be replaced at build time by build.py
-# The secret is XOR-encoded for basic obfuscation (PyArmor adds more protection)
-# Format: XOR-encoded bytes as hex string
-_ENCODED_SECRET = "PLACEHOLDER_SECRET_WILL_BE_REPLACED_AT_BUILD_TIME"
-
-# XOR key for basic runtime deobfuscation
-_XOR_KEY = 0x5A
-
-
-def _decode_secret(encoded: str) -> bytes:
-    """Decode the XOR-encoded secret."""
-    if encoded.startswith("PLACEHOLDER"):
-        # Development mode - use a dev secret
-        return b"dev-secret-do-not-use-in-production-12345678"
-    
-    try:
-        # Decode hex string and XOR each byte
-        raw_bytes = bytes.fromhex(encoded)
-        return bytes([b ^ _XOR_KEY for b in raw_bytes])
-    except (ValueError, TypeError):
-        # Fallback for invalid encoding
-        return b"invalid-secret"
+# Production secret for signing payloads
+# Matches CLIENT_APP_SECRET in server .env
+APP_SECRET = "REDACTED"
 
 
 def get_app_secret() -> bytes:
     """
     Get the application secret for signing.
-    
-    The secret is embedded at build time and obfuscated.
+    Returns the secret as UTF-8 encoded string bytes (for HMAC compatibility with server).
     """
-    return _decode_secret(_ENCODED_SECRET)
+    return APP_SECRET.encode('utf-8')
 
 
 # =============================================================================
