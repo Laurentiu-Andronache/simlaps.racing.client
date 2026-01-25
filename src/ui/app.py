@@ -19,7 +19,7 @@ from .components.lap_card import LapCardStatus
 from .components.status_bar import ConnectionStatus
 from ..core.log_parser import LogParser, SessionData, LapData
 from ..core.api_client import APIClient, SubmissionStatus
-from ..core.security import is_game_running
+from ..core.security import get_steam_user
 from ..utils.config import ConfigManager, AppConfig, get_config_manager
 
 
@@ -116,12 +116,14 @@ class SimLapsApp:
             server_url=self._config.server_url,
         )
         
-        # Log parser with game status callback
+        # Log parser with callbacks
         self._log_parser = LogParser(
             log_path=self._config.log_path,
             on_lap_complete=self._on_lap_complete,
             on_status_change=self._on_parser_status,
             on_game_status_change=self._on_game_status_change,
+            on_user_detected=self._on_user_detected,
+            on_game_version=self._on_game_version,
         )
     
     def _init_pages(self):
@@ -161,36 +163,48 @@ class SimLapsApp:
     
     async def _on_lap_complete(self, session: SessionData, lap: LapData):
         """Handle completed lap from parser."""
-        # Update detected user in UI
-        if session.player_id:
-            self._home_page.set_detected_user(session.player_id, session.player_name)
-        
-        # Determine if we should submit this lap
-        should_submit = self._config.auto_submit and (lap.is_valid or self._config.submit_invalid_laps)
-        
-        # Determine initial status
-        if not lap.is_valid and not self._config.submit_invalid_laps:
-            status = LapCardStatus.INVALID
-        else:
-            status = LapCardStatus.SUBMITTING if should_submit else LapCardStatus.PENDING
-        
-        # Add to home page
-        card = self._home_page.add_lap(session, lap, status)
-        
-        # Add to history
-        history_entry = HistoryEntry(
-            track=session.track,
-            car=session.car,
-            lap_time_ms=lap.lap_time_ms,
-            timestamp=lap.timestamp,
-            was_submitted=False,
-            was_valid=lap.is_valid,
-        )
-        self._history_entries.append(history_entry)
-        
-        # Auto-submit if enabled
-        if should_submit:
-            await self._submit_lap(card, session, lap, history_entry)
+        print(f"[APP] _on_lap_complete called: {lap.lap_time_str} on {session.track}")
+        try:
+            # Update detected user in UI
+            if session.player_id:
+                print(f"[APP] Updating detected user: {session.player_id}")
+                self._home_page.set_detected_user(session.player_id, session.player_name)
+            
+            # Determine if we should submit this lap
+            should_submit = self._config.auto_submit and (lap.is_valid or self._config.submit_invalid_laps)
+            print(f"[APP] should_submit={should_submit}, is_valid={lap.is_valid}")
+            
+            # Determine initial status
+            if not lap.is_valid and not self._config.submit_invalid_laps:
+                status = LapCardStatus.INVALID
+            else:
+                status = LapCardStatus.SUBMITTING if should_submit else LapCardStatus.PENDING
+            
+            # Add to home page
+            print(f"[APP] Adding lap card to home page...")
+            card = self._home_page.add_lap(session, lap, status)
+            print(f"[APP] Lap card added successfully")
+            
+            # Add to history
+            history_entry = HistoryEntry(
+                track=session.track,
+                car=session.car,
+                lap_time_ms=lap.lap_time_ms,
+                timestamp=lap.timestamp,
+                was_submitted=False,
+                was_valid=lap.is_valid,
+            )
+            self._history_entries.append(history_entry)
+            
+            # Auto-submit if enabled
+            if should_submit:
+                print(f"[APP] Auto-submitting lap...")
+                await self._submit_lap(card, session, lap, history_entry)
+                print(f"[APP] Auto-submit complete")
+        except Exception as e:
+            print(f"[ERROR] _on_lap_complete failed: {e}")
+            import traceback
+            traceback.print_exc()
     
     async def _submit_lap(
         self,
@@ -202,11 +216,19 @@ class SimLapsApp:
         """Submit a lap to the server."""
         card.update_status(LapCardStatus.SUBMITTING)
         
-        result = await self._api_client.submit_lap(
-            session=session,
-            lap=lap,
-            submit_invalid=self._config.submit_invalid_laps,
-        )
+        try:
+            result = await self._api_client.submit_lap(
+                session=session,
+                lap=lap,
+                submit_invalid=self._config.submit_invalid_laps,
+            )
+        except Exception as e:
+            card.update_status(LapCardStatus.FAILED, f"Submit error: {str(e)}")
+            return
+        
+        if result is None:
+            card.update_status(LapCardStatus.FAILED, "No response from server")
+            return
         
         if result.status == SubmissionStatus.SUCCESS:
             card.update_status(LapCardStatus.SUBMITTED)
@@ -237,13 +259,24 @@ class SimLapsApp:
             if is_running:
                 self._home_page.set_connection_status(
                     ConnectionStatus.CONNECTED,
-                    "Game detected - monitoring active",
+                    "Session active - recording laps",
                 )
             else:
+                # Still connected/monitoring, just no active session
                 self._home_page.set_connection_status(
-                    ConnectionStatus.DISCONNECTED,
-                    "Waiting for game...",
+                    ConnectionStatus.CONNECTED,
+                    "Monitoring - waiting for session...",
                 )
+    
+    async def _on_user_detected(self, steam_id: str, player_name: Optional[str]):
+        """Handle user detection from log parser."""
+        if self._home_page:
+            self._home_page.set_detected_user(steam_id, player_name)
+    
+    async def _on_game_version(self, version: str):
+        """Handle game version detection from log parser."""
+        if self._home_page:
+            self._home_page.set_game_version(version)
     
     def _on_window_close(self, e):
         """Handle window close."""
@@ -254,23 +287,26 @@ class SimLapsApp:
         if self._parser_task and not self._parser_task.done():
             return
         
-        # Check initial game status
-        game_running = is_game_running()
-        self._home_page.set_game_running(game_running)
+        # Try to detect Steam user immediately from registry
+        steam_id, steam_name = get_steam_user()
+        if steam_id:
+            self._home_page.set_detected_user(steam_id, steam_name)
         
-        if game_running:
-            self._home_page.set_connection_status(
-                ConnectionStatus.CONNECTED,
-                "Game detected - monitoring active",
-            )
-        else:
-            self._home_page.set_connection_status(
-                ConnectionStatus.DISCONNECTED,
-                "Waiting for game to start...",
-            )
+        # Try to get game version from existing log file
+        game_version = self._get_game_version_from_log()
+        if game_version:
+            self._home_page.set_game_version(game_version)
+        
+        # Set initial status - monitoring but not necessarily game running
+        self._home_page.set_game_running(False)  # Will be set to True when session starts
+        self._home_page.set_connection_status(
+            ConnectionStatus.CONNECTED,
+            "Monitoring log file...",
+        )
         
         self._home_page.set_monitoring(True)
-        self._parser_task = asyncio.create_task(self._run_parser())
+        # Use page.run_task() for proper Flet background task handling
+        self._parser_task = self.page.run_task(self._run_parser)
     
     async def _run_parser(self):
         """Run the log parser in background."""
@@ -320,10 +356,12 @@ class SimLapsApp:
             on_lap_complete=self._on_lap_complete,
             on_status_change=self._on_parser_status,
             on_game_status_change=self._on_game_status_change,
+            on_user_detected=self._on_user_detected,
+            on_game_version=self._on_game_version,
         )
         
         if was_running:
-            asyncio.create_task(self.start_monitoring())
+            self.page.run_task(self.start_monitoring)
         
         # Update home page
         self._home_page.update_config(self._config)
@@ -337,12 +375,32 @@ class SimLapsApp:
         """Clear lap history."""
         self._history_entries.clear()
     
+    def _get_game_version_from_log(self) -> Optional[str]:
+        """Read game version from the first few lines of the log file."""
+        import re
+        try:
+            log_path = self._config.log_path
+            if os.path.exists(log_path):
+                with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    # Only read first 10 lines - version is at the top
+                    for _ in range(10):
+                        line = f.readline()
+                        if not line:
+                            break
+                        if "Build release" in line:
+                            match = re.search(r"Build release ([^,]+),", line)
+                            if match:
+                                return match.group(1)
+        except Exception:
+            pass
+        return None
+    
     def _cleanup(self):
         """Cleanup resources before exit."""
         self.stop_monitoring()
         
         if self._api_client:
-            asyncio.create_task(self._api_client.close())
+            self.page.run_task(self._api_client.close)
 
 
 async def main(page: ft.Page):

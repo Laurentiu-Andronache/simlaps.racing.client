@@ -10,7 +10,7 @@ from typing import Optional
 from dataclasses import dataclass
 from enum import Enum
 
-from .log_parser import SessionData, LapData
+from .log_parser import SessionData, LapData, DebugLogger
 from .security import sign_payload, is_game_running
 from ..version import VERSION, USER_AGENT
 
@@ -60,6 +60,7 @@ class APIClient:
         """
         self.server_url = (server_url or self.DEFAULT_SERVER_URL).rstrip("/")
         self._client: Optional[httpx.AsyncClient] = None
+        self._debug = DebugLogger()
 
     async def _get_client(self) -> httpx.AsyncClient:
         """Get or create HTTP client."""
@@ -112,8 +113,16 @@ class APIClient:
         Returns:
             SubmissionResult with status and details
         """
+        self._debug.log(f"[API] submit_lap called")
+        self._debug.log(f"  lap_time: {lap.lap_time_str} ({lap.lap_time_ms}ms)")
+        self._debug.log(f"  is_valid: {lap.is_valid}")
+        self._debug.log(f"  submit_invalid setting: {submit_invalid}")
+        
         # Anti-cheat: Verify game is running before submission
-        if not is_game_running():
+        game_running = is_game_running()
+        self._debug.log(f"  is_game_running: {game_running}")
+        if not game_running:
+            self._debug.log(f"[API] Rejected: Game not running")
             return SubmissionResult(
                 status=SubmissionStatus.GAME_NOT_RUNNING,
                 message="Game must be running to submit laps",
@@ -121,6 +130,7 @@ class APIClient:
 
         # Don't submit invalid laps unless explicitly requested
         if not lap.is_valid and not submit_invalid:
+            self._debug.log(f"[API] Rejected: Invalid lap and submit_invalid=False")
             return SubmissionResult(
                 status=SubmissionStatus.INVALID_LAP,
                 message="Lap was invalidated (penalty or off-track)",
@@ -128,16 +138,25 @@ class APIClient:
 
         # Validate we have a user ID
         final_user_id = user_id or session.player_id
+        self._debug.log(f"  user_id param: {user_id}")
+        self._debug.log(f"  session.player_id: {session.player_id}")
+        self._debug.log(f"  final_user_id: {final_user_id}")
         if not final_user_id:
+            self._debug.log(f"[API] Rejected: No user ID")
             return SubmissionResult(
                 status=SubmissionStatus.ERROR,
                 message="No Steam ID detected - please start a session in game",
             )
 
         # Build submission payload
+        track_id = self._normalize_track_id(session.track)
+        self._debug.log(f"  track: {session.track} -> {track_id}")
+        self._debug.log(f"  car: {session.car}")
+        self._debug.log(f"  lap_time_ms: {lap.lap_time_ms}")
+        
         payload = {
             "userId": final_user_id,
-            "trackId": self._normalize_track_id(session.track),
+            "trackId": track_id,
             "carId": session.car,
             "time": lap.lap_time_ms,
             "sessionId": session.session_id,  # Links laps from the same session
@@ -161,6 +180,9 @@ class APIClient:
 
         # Sign the payload (adds _timestamp, _nonce, _signature)
         signed_payload = sign_payload(payload)
+        
+        self._debug.log(f"[API] Sending to {self.server_url}{self.SUBMIT_ENDPOINT}")
+        self._debug.log(f"[API] Payload keys: {list(signed_payload.keys())}")
 
         try:
             client = await self._get_client()
@@ -168,9 +190,12 @@ class APIClient:
                 f"{self.server_url}{self.SUBMIT_ENDPOINT}",
                 json=signed_payload,
             )
+            
+            self._debug.log(f"[API] Response status: {response.status_code}")
 
             if response.status_code == 201:
                 data = response.json()
+                self._debug.log(f"[API] SUCCESS! Lap ID: {data.get('id')}")
                 return SubmissionResult(
                     status=SubmissionStatus.SUCCESS,
                     message="Lap submitted successfully",
@@ -178,6 +203,8 @@ class APIClient:
                 )
             elif response.status_code == 401:
                 # Signature verification failed
+                error_data = response.json() if response.content else {}
+                self._debug.log(f"[API] 401 error response: {error_data}")
                 return SubmissionResult(
                     status=SubmissionStatus.SIGNATURE_ERROR,
                     message="Signature verification failed - please update the app",
@@ -224,16 +251,21 @@ class APIClient:
                 )
 
         except httpx.NetworkError as e:
+            self._debug.log(f"[API] Network error: {e}")
             return SubmissionResult(
                 status=SubmissionStatus.NETWORK_ERROR,
                 message=f"Network error: {str(e)}",
             )
         except httpx.TimeoutException:
+            self._debug.log(f"[API] Timeout")
             return SubmissionResult(
                 status=SubmissionStatus.NETWORK_ERROR,
                 message="Request timed out",
             )
         except Exception as e:
+            import traceback
+            self._debug.log(f"[API] Exception: {e}")
+            self._debug.log(f"[API] Traceback: {traceback.format_exc()}")
             return SubmissionResult(
                 status=SubmissionStatus.ERROR,
                 message=f"Unexpected error: {str(e)}",

@@ -243,6 +243,85 @@ def verify_signature_locally(signed_payload: dict) -> bool:
 
 
 # =============================================================================
+# STEAM USER DETECTION
+# =============================================================================
+
+def get_steam_user() -> tuple[Optional[str], Optional[str]]:
+    """
+    Get the currently logged-in Steam user from Windows Registry.
+    
+    Steam stores the active user info in the registry when running.
+    
+    Returns:
+        Tuple of (steam_id, username) or (None, None) if not found
+    """
+    if os.name != 'nt':
+        return None, None
+    
+    try:
+        import winreg
+        
+        # Steam stores active user in HKEY_CURRENT_USER\Software\Valve\Steam
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam\ActiveProcess") as key:
+            # ActiveUser contains the Steam3 ID (32-bit account ID)
+            active_user, _ = winreg.QueryValueEx(key, "ActiveUser")
+            
+            if active_user and active_user != 0:
+                # Convert Steam3 ID to Steam64 ID
+                # Steam64 = Steam3 + 76561197960265728
+                steam64_id = str(active_user + 76561197960265728)
+                
+                # Try to get the username from loginusers.vdf or registry
+                username = _get_steam_username(steam64_id)
+                
+                return steam64_id, username
+    except (ImportError, OSError, FileNotFoundError, PermissionError):
+        pass
+    
+    return None, None
+
+
+def _get_steam_username(steam64_id: str) -> Optional[str]:
+    """
+    Try to get Steam username for a given Steam64 ID.
+    
+    Checks Steam's loginusers.vdf file for cached usernames.
+    """
+    try:
+        import winreg
+        
+        # Get Steam install path
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam") as key:
+            steam_path, _ = winreg.QueryValueEx(key, "SteamPath")
+        
+        # Parse loginusers.vdf for username
+        loginusers_path = os.path.join(steam_path, "config", "loginusers.vdf")
+        
+        if os.path.exists(loginusers_path):
+            with open(loginusers_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+                
+                # Simple VDF parsing - look for the steam64 ID and then PersonaName
+                # Format is like: "76561198321627695" { "AccountName" "..." "PersonaName" "Glebulon" }
+                import re
+                
+                # Find the block for this user
+                pattern = rf'"{steam64_id}"\s*\{{\s*([^}}]+)\}}'
+                match = re.search(pattern, content, re.DOTALL)
+                
+                if match:
+                    user_block = match.group(1)
+                    # Extract PersonaName
+                    persona_match = re.search(r'"PersonaName"\s+"([^"]+)"', user_block)
+                    if persona_match:
+                        return persona_match.group(1)
+    except Exception:
+        pass
+    
+    return None
+
+
+# =============================================================================
 # ANTI-CHEAT UTILITIES
 # =============================================================================
 

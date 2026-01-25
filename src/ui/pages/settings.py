@@ -6,10 +6,8 @@ Simplified: No API key required (uses signed payloads).
 
 import flet as ft
 from typing import Optional, Callable
-from pathlib import Path
 
-from ...utils.config import AppConfig, DEFAULT_LOG_PATH, DEFAULT_SERVER_URL
-from ...core.security import get_security_status
+from ...utils.config import AppConfig, DEFAULT_SERVER_URL
 
 
 class SettingsPage(ft.Container):
@@ -33,23 +31,6 @@ class SettingsPage(ft.Container):
         self.on_test_connection = on_test_connection
         
         # Form fields
-        self._log_path_field = ft.TextField(
-            value=config.log_path,
-            label="ACE Log File Path",
-            hint_text=DEFAULT_LOG_PATH,
-            border_color="#3d3d5c",
-            focused_border_color="#7c3aed",
-            bgcolor="#1e1e2e",
-            color="#ffffff",
-            label_style=ft.TextStyle(color="#888888"),
-            suffix=ft.IconButton(
-                icon=ft.Icons.FOLDER_OPEN,
-                icon_color="#888888",
-                tooltip="Browse...",
-                on_click=self._browse_log_file,
-            ),
-        )
-        
         self._server_url_field = ft.TextField(
             value=config.server_url,
             label="Server URL",
@@ -61,23 +42,8 @@ class SettingsPage(ft.Container):
             label_style=ft.TextStyle(color="#888888"),
         )
         
-        self._auto_submit_switch = ft.Switch(
-            value=config.auto_submit,
-            active_color="#7c3aed",
-        )
-        
         self._submit_invalid_switch = ft.Switch(
             value=config.submit_invalid_laps,
-            active_color="#7c3aed",
-        )
-        
-        self._minimize_to_tray_switch = ft.Switch(
-            value=config.minimize_to_tray,
-            active_color="#7c3aed",
-        )
-        
-        self._start_minimized_switch = ft.Switch(
-            value=config.start_minimized,
             active_color="#7c3aed",
         )
         
@@ -112,14 +78,6 @@ class SettingsPage(ft.Container):
             spacing=8,
         )
         
-        # Path settings section
-        path_section = self._build_section(
-            "File Paths",
-            [
-                self._log_path_field,
-            ],
-        )
-        
         # Server settings section
         server_section = self._build_section(
             "Server",
@@ -148,33 +106,12 @@ class SettingsPage(ft.Container):
             "Behavior",
             [
                 self._build_switch_row(
-                    "Auto-submit valid laps",
-                    "Automatically submit laps when completed",
-                    self._auto_submit_switch,
-                ),
-                ft.Divider(color="#2d2d4a", height=1),
-                self._build_switch_row(
                     "Submit invalid laps",
                     "Also submit laps with penalties or off-track",
                     self._submit_invalid_switch,
                 ),
-                ft.Divider(color="#2d2d4a", height=1),
-                self._build_switch_row(
-                    "Minimize to tray",
-                    "Keep running in system tray when closed",
-                    self._minimize_to_tray_switch,
-                ),
-                ft.Divider(color="#2d2d4a", height=1),
-                self._build_switch_row(
-                    "Start minimized",
-                    "Start in system tray on launch",
-                    self._start_minimized_switch,
-                ),
             ],
         )
-        
-        # Security info section
-        security_section = self._build_security_section()
         
         # Save button
         save_button = ft.ElevatedButton(
@@ -204,10 +141,8 @@ class SettingsPage(ft.Container):
                     ft.Container(
                         content=ft.Column(
                             controls=[
-                                path_section,
                                 server_section,
                                 behavior_section,
-                                security_section,
                                 ft.Container(height=16),
                                 ft.Row(
                                     controls=[save_button, reset_button],
@@ -250,70 +185,6 @@ class SettingsPage(ft.Container):
             border=ft.border.all(1, "#3d3d5c"),
         )
     
-    def _build_security_section(self) -> ft.Container:
-        """Build the security information section."""
-        status = get_security_status()
-        
-        items = [
-            self._build_security_item(
-                "Game Detection",
-                "psutil" if status['psutil_available'] else "Fallback mode",
-                status['psutil_available'],
-            ),
-            self._build_security_item(
-                "Payload Signing",
-                "Enabled" if status['secret_configured'] else "Development mode",
-                status['secret_configured'],
-            ),
-            self._build_security_item(
-                "Anti-Cheat",
-                "Active - only submits when game running",
-                True,
-            ),
-        ]
-        
-        return ft.Container(
-            content=ft.Column(
-                controls=[
-                    ft.Row(
-                        controls=[
-                            ft.Icon(ft.Icons.SECURITY, color="#7c3aed", size=18),
-                            ft.Text(
-                                "Security",
-                                size=14,
-                                weight=ft.FontWeight.W_600,
-                                color="#888888",
-                            ),
-                        ],
-                        spacing=8,
-                    ),
-                    ft.Container(height=8),
-                    *items,
-                ],
-                spacing=8,
-            ),
-            padding=16,
-            bgcolor="#1e1e2e",
-            border_radius=12,
-            border=ft.border.all(1, "#3d3d5c"),
-        )
-    
-    def _build_security_item(self, label: str, value: str, is_good: bool) -> ft.Row:
-        """Build a security status item."""
-        return ft.Row(
-            controls=[
-                ft.Icon(
-                    ft.Icons.CHECK_CIRCLE if is_good else ft.Icons.WARNING,
-                    color="#51cf66" if is_good else "#ffd43b",
-                    size=16,
-                ),
-                ft.Text(label, size=13, color="#ffffff"),
-                ft.Container(expand=True),
-                ft.Text(value, size=12, color="#888888"),
-            ],
-            spacing=8,
-        )
-    
     def _build_switch_row(
         self,
         title: str,
@@ -336,25 +207,6 @@ class SettingsPage(ft.Container):
             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
         )
     
-    async def _browse_log_file(self, e):
-        """Open file picker for log file."""
-        file_picker = ft.FilePicker(
-            on_result=self._on_file_picked,
-        )
-        self.page.overlay.append(file_picker)
-        self.page.update()
-        file_picker.pick_files(
-            dialog_title="Select ACE Log File",
-            file_type=ft.FilePickerFileType.CUSTOM,
-            allowed_extensions=["txt", "log"],
-        )
-    
-    def _on_file_picked(self, e: ft.FilePickerResultEvent):
-        """Handle file picker result."""
-        if e.files and len(e.files) > 0:
-            self._log_path_field.value = e.files[0].path
-            self._log_path_field.update()
-    
     async def _test_connection(self, e):
         """Test server connection."""
         self._connection_status.value = "Testing..."
@@ -376,13 +228,8 @@ class SettingsPage(ft.Container):
     def _save_settings(self, e):
         """Save current settings."""
         # Update config from form fields
-        self.config.log_path = self._log_path_field.value or DEFAULT_LOG_PATH
         self.config.server_url = self._server_url_field.value or DEFAULT_SERVER_URL
-        
-        self.config.auto_submit = self._auto_submit_switch.value
         self.config.submit_invalid_laps = self._submit_invalid_switch.value
-        self.config.minimize_to_tray = self._minimize_to_tray_switch.value
-        self.config.start_minimized = self._start_minimized_switch.value
         
         if self.on_save:
             self.on_save(self.config)
@@ -397,27 +244,15 @@ class SettingsPage(ft.Container):
     
     def _reset_settings(self, e):
         """Reset settings to defaults."""
-        self._log_path_field.value = DEFAULT_LOG_PATH
         self._server_url_field.value = DEFAULT_SERVER_URL
-        self._auto_submit_switch.value = True
         self._submit_invalid_switch.value = False
-        self._minimize_to_tray_switch.value = True
-        self._start_minimized_switch.value = False
         
-        self._log_path_field.update()
         self._server_url_field.update()
-        self._auto_submit_switch.update()
         self._submit_invalid_switch.update()
-        self._minimize_to_tray_switch.update()
-        self._start_minimized_switch.update()
     
     def update_config(self, config: AppConfig):
         """Update form with new config."""
         self.config = config
-        self._log_path_field.value = config.log_path
         self._server_url_field.value = config.server_url
-        self._auto_submit_switch.value = config.auto_submit
         self._submit_invalid_switch.value = config.submit_invalid_laps
-        self._minimize_to_tray_switch.value = config.minimize_to_tray
-        self._start_minimized_switch.value = config.start_minimized
         self.update()

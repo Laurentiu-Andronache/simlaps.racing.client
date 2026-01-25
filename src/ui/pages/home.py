@@ -15,7 +15,7 @@ from ..components.status_bar import StatusBar, ConnectionStatus
 from ...core.log_parser import SessionData, LapData
 from ...core.api_client import SubmissionStatus
 from ...utils.config import AppConfig
-from ...version import VERSION
+from ...version import GAME_NAME
 
 
 def get_icon_path() -> Optional[str]:
@@ -63,12 +63,18 @@ class HomePage(ft.Column):
         self._game_running = False
         self._detected_steam_id: Optional[str] = None
         self._detected_player_name: Optional[str] = None
+        self._game_version: Optional[str] = None
         
         # Lap cards storage (most recent first)
         self._lap_cards: deque[LapCard] = deque(maxlen=self.MAX_VISIBLE_LAPS)
         self._lap_count = 0
         
         # UI Components - create them first
+        self._game_version_text = ft.Text(
+            GAME_NAME,
+            size=10,
+            color="#666666",
+        )
         self._status_text = ft.Text(
             "Waiting for game to start...",
             size=13,
@@ -136,25 +142,63 @@ class HomePage(ft.Column):
             self._game_status_container.border_radius = 12
             self._game_status_container.border = ft.border.all(1, "#51cf66")
         else:
-            # Game not running
-            self._game_status_container.content = ft.Column(
-                controls=[
-                    ft.Icon(ft.Icons.PAUSE_CIRCLE, color="#666666", size=48),
-                    ft.Text("Waiting for Game", size=16, weight=ft.FontWeight.W_600, color="#ffffff"),
-                    ft.Text("Start Assetto Corsa Evo to begin tracking", size=12, color="#888888", text_align=ft.TextAlign.CENTER),
-                    ft.Container(height=8),
-                    ft.Row([
-                        ft.Container(width=8, height=8, border_radius=4, bgcolor="#ffd43b"),
-                        ft.Text("Monitoring for game...", size=11, color="#ffd43b"),
-                    ], spacing=8, alignment=ft.MainAxisAlignment.CENTER),
-                ],
-                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                spacing=8,
-            )
-            self._game_status_container.padding = 24
+            # Monitoring - show detected user if available
+            if self._detected_steam_id:
+                # We have user info - show monitoring state with user
+                user_info_controls = []
+                if self._detected_player_name:
+                    user_info_controls.append(
+                        ft.Text(self._detected_player_name, size=16, weight=ft.FontWeight.W_600, color="#ffffff")
+                    )
+                user_info_controls.append(
+                    ft.Text(f"Steam ID: {self._detected_steam_id}", size=12, color="#888888")
+                )
+                
+                self._game_status_container.content = ft.Row(
+                    controls=[
+                        ft.Container(
+                            content=ft.Icon(ft.Icons.MONITOR, color="#ffd43b", size=32),
+                            width=56, height=56, border_radius=28, bgcolor="#3d3d1f",
+                            alignment=ft.Alignment(0, 0),
+                        ),
+                        ft.Column(
+                            controls=[
+                                ft.Row([
+                                    ft.Container(width=10, height=10, border_radius=5, bgcolor="#ffd43b"),
+                                    ft.Text("Monitoring", size=12, color="#ffd43b", weight=ft.FontWeight.W_600),
+                                ], spacing=6),
+                                *user_info_controls,
+                            ],
+                            spacing=4,
+                            expand=True,
+                        ),
+                    ],
+                    spacing=16,
+                )
+                self._game_status_container.padding = 16
+                self._game_status_container.bgcolor = "#1e1e2e"
+                self._game_status_container.border_radius = 12
+                self._game_status_container.border = ft.border.all(1, "#ffd43b")
+            else:
+                # No user info yet - show waiting state
+                self._game_status_container.content = ft.Column(
+                    controls=[
+                        ft.Icon(ft.Icons.MONITOR, color="#666666", size=48),
+                        ft.Text("Monitoring Log File", size=16, weight=ft.FontWeight.W_600, color="#ffffff"),
+                        ft.Text("Waiting for session to start...", size=12, color="#888888", text_align=ft.TextAlign.CENTER),
+                        ft.Container(height=8),
+                        ft.Row([
+                            ft.Container(width=8, height=8, border_radius=4, bgcolor="#ffd43b"),
+                            ft.Text("Ready", size=11, color="#ffd43b"),
+                        ], spacing=8, alignment=ft.MainAxisAlignment.CENTER),
+                    ],
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                    spacing=8,
+                )
+                self._game_status_container.padding = 24
+                self._game_status_container.border = ft.border.all(1, "#3d3d5c")
             self._game_status_container.bgcolor = "#1e1e2e"
             self._game_status_container.border_radius = 12
-            self._game_status_container.border = ft.border.all(1, "#3d3d5c")
             self._game_status_container.alignment = ft.Alignment(0, 0)
 
     def _update_laps_ui(self):
@@ -188,7 +232,7 @@ class HomePage(ft.Column):
                 header_icon,
                 ft.Column([
                     ft.Text("SimLaps", size=24, weight=ft.FontWeight.W_700, color="#ffffff"),
-                    ft.Text(f"v{VERSION}", size=10, color="#666666"),
+                    self._game_version_text,
                 ], spacing=0),
                 ft.Container(expand=True),
                 ft.Container(
@@ -307,6 +351,14 @@ class HomePage(ft.Column):
             self._update_game_status_ui()
             if self.page:
                 self._game_status_container.update()
+    
+    def set_game_version(self, version: str):
+        """Update the detected game version."""
+        if self._game_version != version:
+            self._game_version = version
+            self._game_version_text.value = f"{GAME_NAME} {version}"
+            if self.page:
+                self._game_version_text.update()
     
     def add_lap(
         self,

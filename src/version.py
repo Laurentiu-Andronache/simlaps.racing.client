@@ -4,6 +4,9 @@ SimLaps Client Version Information
 Single source of truth for version numbers.
 """
 
+# Game name
+GAME_NAME = "Assetto Corsa EVO"
+
 # Version components
 VERSION_MAJOR = 1
 VERSION_MINOR = 0

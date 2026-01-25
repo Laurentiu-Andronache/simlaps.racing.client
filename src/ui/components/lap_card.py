@@ -209,9 +209,14 @@ class LapCard(ft.Container):
     
     def update_status(self, status: LapCardStatus, error_message: Optional[str] = None):
         """Update the card status and refresh display."""
+        if self.data is None:
+            # Safety check - data somehow became None
+            print(f"[ERROR] LapCard.data is None, cannot update status to {status}")
+            return
         self.data.status = status
         self.data.error_message = error_message
         self.content = self._build_content()
         self.bgcolor = self._get_bgcolor()
         self.border = ft.border.all(1, self._get_border_color())
-        self.update()
+        if self.page:
+            self.update()
