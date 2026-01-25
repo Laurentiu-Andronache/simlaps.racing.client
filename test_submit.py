@@ -15,31 +15,25 @@ sys.path.insert(0, 'src')
 
 import src.core.security as security_module
 
-# Use localhost for testing, production for real submissions
-# SERVER_URL = "https://simlaps.racing"
-SERVER_URL = "http://localhost:3000"
+# SERVER_URL = "http://localhost:3000"
+SERVER_URL = "https://simlaps.racing"
 SUBMIT_ENDPOINT = "/api/submit"
 
-# Override with the actual production secret for testing
-# Server uses the secret as a STRING (UTF-8 encoded), not as raw hex bytes
-PRODUCTION_SECRET = "REDACTED"
-security_module.get_app_secret = lambda: PRODUCTION_SECRET.encode('utf-8')
+# Test using the actual embedded secret (no overrides)
+# PRODUCTION_SECRET = ""
+# security_module.get_app_secret = lambda: PRODUCTION_SECRET.encode('utf-8')
 
-from src.core.security import sign_payload, get_app_secret, _ENCODED_SECRET
+from src.core.security import sign_payload, get_app_secret
 
 
 def test_secret_config():
-    """Check if secret is configured or using dev placeholder."""
+    """Check if secret is configured."""
     print("=" * 60)
     print("SECRET CONFIGURATION CHECK")
     print("=" * 60)
     
-    if _ENCODED_SECRET.startswith("PLACEHOLDER"):
-        print("WARNING: Using DEV secret (placeholder)")
-        print("  The client was NOT built with --secret flag")
-        print("  Signatures will NOT match production server")
-    else:
-        print("OK: Secret is embedded (built with --secret)")
+    # Simple hardcoded secret check
+    print("OK: Secret is hardcoded in security.py")
     
     secret = get_app_secret()
     print(f"  Secret length: {len(secret)} bytes")

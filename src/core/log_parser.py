@@ -54,7 +54,11 @@ class DebugLogger:
     
     def start(self):
         """Start logging."""
-        if DebugLogger._started:
+        # Debug logging disabled by default for production
+        # Set to True only for internal debugging
+        ENABLE_DEBUG = False
+        
+        if DebugLogger._started or not ENABLE_DEBUG:
             return
         try:
             DebugLogger._file = open(DebugLogger._log_path, "a", encoding="utf-8")
