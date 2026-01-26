@@ -154,11 +154,20 @@ class APIClient:
         self._debug.log(f"  car: {session.car}")
         self._debug.log(f"  lap_time_ms: {lap.lap_time_ms}")
         
+        # Ensure time is int and positive
+        final_time = int(lap.lap_time_ms)
+        if final_time <= 0:
+             self._debug.log(f"[API] Rejected: Invalid lap time {final_time}")
+             return SubmissionResult(
+                 status=SubmissionStatus.INVALID_LAP,
+                 message="Invalid lap time (<= 0)",
+             )
+
         payload = {
             "userId": final_user_id,
             "trackId": track_id,
             "carId": session.car,
-            "time": lap.lap_time_ms,
+            "time": final_time,
             "sessionId": session.session_id,  # Links laps from the same session
             "sessionType": session.session_type,  # practice, qualifying, race, etc.
             "gameVersion": session.game_version,
@@ -166,17 +175,23 @@ class APIClient:
             "valid": lap.is_valid,  # False if lap had penalties/off-track
         }
 
-        # Add sector times if available
-        if lap.sector1_ms is not None:
-            payload["sector1"] = lap.sector1_ms
-        if lap.sector2_ms is not None:
-            payload["sector2"] = lap.sector2_ms
-        if lap.sector3_ms is not None:
-            payload["sector3"] = lap.sector3_ms
+        # Add sector times if available and positive (server rejects 0)
+        if lap.sector1_ms is not None and int(lap.sector1_ms) > 0:
+            payload["sector1"] = int(lap.sector1_ms)
+        if lap.sector2_ms is not None and int(lap.sector2_ms) > 0:
+            payload["sector2"] = int(lap.sector2_ms)
+        if lap.sector3_ms is not None and int(lap.sector3_ms) > 0:
+            payload["sector3"] = int(lap.sector3_ms)
 
-        # Add fuel if available
+        # Add fuel if available and valid
         if lap.fuel_used is not None:
-            payload["fuelUsed"] = lap.fuel_used
+            try:
+                fuel_value = float(lap.fuel_used)
+                if fuel_value >= 0:  # Ensure non-negative fuel values
+                    payload["fuelUsed"] = fuel_value
+            except (ValueError, TypeError):
+                # Skip invalid fuel values
+                pass
 
         # Sign the payload (adds _timestamp, _nonce, _signature)
         signed_payload = sign_payload(payload)
@@ -228,21 +243,55 @@ class APIClient:
                     message="Too many submissions - please wait",
                 )
             elif response.status_code == 422:
-                # Plausibility check failed
+                # Plausibility check failed - add comprehensive logging
                 error_data = response.json()
                 error_msg = error_data.get("error", "Plausibility check failed")
+                
+                # Detailed logging for server-side validation errors
+                self._debug.log(f"[API] 422 ERROR - Server rejected submission")
+                self._debug.log(f"[API] Error data: {error_data}")
+                self._debug.log(f"[API] Payload sent: {signed_payload}")
+                
                 return SubmissionResult(
                     status=SubmissionStatus.PLAUSIBILITY_FAILED,
                     message=f"Lap rejected: {error_msg}",
                 )
             elif response.status_code == 400:
+                # Validation error - add comprehensive logging
                 error_data = response.json()
                 error_msg = error_data.get("error", "Validation error")
+                
+                # Detailed logging for server-side validation errors
+                self._debug.log(f"[API] 400 ERROR - Server validation failed")
+                self._debug.log(f"[API] Error data: {error_data}")
+                self._debug.log(f"[API] Payload sent: {signed_payload}")
+                
                 if isinstance(error_msg, list):
                     error_msg = "; ".join(str(e) for e in error_msg)
                 return SubmissionResult(
                     status=SubmissionStatus.ERROR,
                     message=f"Validation error: {error_msg}",
+                )
+            elif 400 <= response.status_code < 500:
+                # Generic 4xx error handling with comprehensive logging
+                error_data = {}
+                try:
+                    error_data = response.json()
+                except Exception:
+                    error_data = {"error": response.text}
+                
+                self._debug.log(f"[API] 4XX ERROR - Status {response.status_code}")
+                self._debug.log(f"[API] Error data: {error_data}")
+                self._debug.log(f"[API] Payload sent: {signed_payload}")
+                self._debug.log(f"[API] Response headers: {dict(response.headers)}")
+                
+                error_msg = error_data.get("error", "Client error") if isinstance(error_data, dict) else str(error_data)
+                if isinstance(error_msg, list):
+                    error_msg = "; ".join(str(e) for e in error_msg)
+                
+                return SubmissionResult(
+                    status=SubmissionStatus.ERROR,
+                    message=f"Client error {response.status_code}: {error_msg}",
                 )
             else:
                 return SubmissionResult(
