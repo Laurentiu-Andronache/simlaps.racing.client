@@ -185,6 +185,7 @@ class LogContext:
         self.tyre_compound: str = "Unknown"
         self.car_meta: dict[str, dict] = {}  # car_uuid -> {player_name, player_id}
         self.player_car_uuids: set[str] = set()  # All car UUIDs belonging to our player
+        self.last_fuel_reading: Optional[float] = None  # Track last fuel reading for per-lap calculation
 
 
 # Type alias for callbacks
@@ -250,7 +251,7 @@ class LogParser:
                 r"Energy source car ([a-f0-9\-]+) for driver [a-f0-9\-]+ "
                 r"hundredmeters done: (\d+) fuel consumed: ([\d.]+) L"
             ),
-            "split": re.compile(r"On Split .* id (\d+) splittime (\d+)"),
+            "split": re.compile(r"Split completed for car ([a-f0-9\-]+):\s*\((\d+)\s*ms,\s*splitindex\s*(\d+)\)\s*lap:\d+"),
             "lap_finish": re.compile(r"New lap carId ([a-f0-9\-]+): ([\d:.]+)"),
             "penalty": re.compile(r"\{PENALTY_ADDED_KEY\}"),
             "weather": re.compile(r"GameModeSelectionWeatherBehaviour_([A-Z_]+)"),
@@ -489,15 +490,21 @@ class LogParser:
         # --- Lap Data ---
 
         # Split times
-        if "On Split" in line and "splittime" in line:
+        if "Split completed for car" in line and "splitindex" in line:
             m = self._patterns["split"].search(line)
             if m:
-                split_idx = int(m.group(1))
+                car_id = m.group(1)
                 time_ms = int(m.group(2))
-                self._current_lap_data["splits"].append({
-                    "index": split_idx,
-                    "time_ms": time_ms,
-                })
+                split_idx = int(m.group(3))
+                
+                # Check if it's our player's car
+                is_player_car = car_id in self.context.player_car_uuids or (self.current_session and car_id == self.current_session.car_uuid)
+                
+                if is_player_car:
+                    self._current_lap_data["splits"].append({
+                        "index": split_idx,
+                        "time_ms": time_ms,
+                    })
 
         # Tyre compound
         if "setCompound Tyre:" in line:
@@ -531,15 +538,20 @@ class LogParser:
                 if hundreds_done > 0:
                     is_player_car = car_id in self.context.player_car_uuids or (self.current_session and car_id == self.current_session.car_uuid)
                     if self.current_session and is_player_car:
-                        # Initialize accumulator if needed
-                        if self._current_lap_data["fuel_used_lap"] is None:
-                            self._current_lap_data["fuel_used_lap"] = 0.0
+                        # Calculate per-lap fuel by tracking differences between readings
+                        if self.context.last_fuel_reading is not None:
+                            fuel_delta = fuel_reading - self.context.last_fuel_reading
+                            
+                            # Initialize accumulator if needed
+                            if self._current_lap_data["fuel_used_lap"] is None:
+                                self._current_lap_data["fuel_used_lap"] = 0.0
+                            
+                            # Count all values (positive and negative) for accurate fuel consumption
+                            self._current_lap_data["fuel_used_lap"] += fuel_delta
+                            self.current_session.fuel_used_session += fuel_delta
                         
-                        # Add to lap total
-                        self._current_lap_data["fuel_used_lap"] += fuel_reading
-                        
-                        # Add to session total
-                        self.current_session.fuel_used_session += fuel_reading
+                        # Update last reading for next calculation
+                        self.context.last_fuel_reading = fuel_reading
 
         # Lap completion
         if "New lap carId" in line:
@@ -577,8 +589,8 @@ class LogParser:
                     # Extract sector times
                     splits = self._current_lap_data["splits"]
                     sector1_ms = splits[0]["time_ms"] if len(splits) > 0 else None
-                    sector2_ms = (splits[1]["time_ms"] - splits[0]["time_ms"]) if len(splits) > 1 else None
-                    sector3_ms = (lap_time_ms - splits[1]["time_ms"]) if len(splits) > 1 else None
+                    sector2_ms = splits[1]["time_ms"] if len(splits) > 1 else None
+                    sector3_ms = splits[2]["time_ms"] if len(splits) > 2 else None
 
                     completed_lap = LapData(
                         lap_time_ms=lap_time_ms,
@@ -616,6 +628,9 @@ class LogParser:
             weather=self.context.weather,
             tyre_compound=self.context.tyre_compound or "Unknown",
         )
+        
+        # Reset fuel tracking for new session
+        self.context.last_fuel_reading = None
 
         # Parse additional info from Game Started line
         parts = [p.strip() for p in line.split("|")]
