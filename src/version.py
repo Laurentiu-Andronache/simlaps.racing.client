@@ -5,12 +5,12 @@ Single source of truth for version numbers.
 """
 
 # Game name
-GAME_NAME = "Assetto Corsa EVO"
+GAME_NAME = "SimLaps Client"
 
 # Version components
 VERSION_MAJOR = 1
 VERSION_MINOR = 0
-VERSION_PATCH = 0
+VERSION_PATCH = 1
 
 # Full version string
 VERSION = f"{VERSION_MAJOR}.{VERSION_MINOR}.{VERSION_PATCH}"

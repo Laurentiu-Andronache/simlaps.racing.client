@@ -5,6 +5,7 @@ Status Bar Component for displaying application status.
 import flet as ft
 from typing import Optional
 from enum import Enum
+from ...version import get_version, GAME_NAME
 
 
 class ConnectionStatus(Enum):
@@ -63,30 +64,48 @@ class StatusBar(ft.Container):
         """Build the status bar content."""
         return ft.Row(
             controls=[
-                # Connection status
+                # Left side: Connection and monitoring status
                 ft.Row(
                     controls=[
-                        self._get_status_icon(),
-                        ft.Text(
-                            self._status_message,
-                            size=12,
-                            color=self._get_status_color(),
+                        # Connection status
+                        ft.Row(
+                            controls=[
+                                self._get_status_icon(),
+                                ft.Text(
+                                    self._status_message,
+                                    size=12,
+                                    color=self._get_status_color(),
+                                ),
+                            ],
+                            spacing=8,
+                        ),
+                        # Monitoring indicator
+                        ft.Row(
+                            controls=[
+                                ft.Icon(
+                                    ft.Icons.VISIBILITY if self._is_monitoring else ft.Icons.VISIBILITY_OFF,
+                                    size=16,
+                                    color="#51cf66" if self._is_monitoring else "#888888",
+                                ),
+                                ft.Text(
+                                    "Monitoring" if self._is_monitoring else "Paused",
+                                    size=12,
+                                    color="#51cf66" if self._is_monitoring else "#888888",
+                                ),
+                            ],
+                            spacing=4,
                         ),
                     ],
-                    spacing=8,
+                    spacing=16,
                 ),
-                # Monitoring indicator
+                # Right side: Version info
                 ft.Row(
                     controls=[
-                        ft.Icon(
-                            ft.Icons.VISIBILITY if self._is_monitoring else ft.Icons.VISIBILITY_OFF,
-                            size=16,
-                            color="#51cf66" if self._is_monitoring else "#888888",
-                        ),
                         ft.Text(
-                            "Monitoring" if self._is_monitoring else "Paused",
-                            size=12,
-                            color="#51cf66" if self._is_monitoring else "#888888",
+                            f"{GAME_NAME} v{get_version()}",
+                            size=10,
+                            color="#666666",
+                            style=ft.TextStyle(italic=True),
                         ),
                     ],
                     spacing=4,
