@@ -1,887 +1,1852 @@
 """
+
 Log Parser for ACE game logs.
 
+
+
 Adapted from telemetry.py - monitors ACE log files in real-time and extracts
+
 lap time data for submission to the SimLaps server.
 
+
+
 Includes anti-cheat measures: only processes logs when game is running.
+
 """
 
+
+
 import re
+
 import os
+
 import sys
+
 import time
+
 import uuid
+
 import asyncio
+
 from datetime import datetime
+
 from dataclasses import dataclass, field
+
 from typing import Optional, Callable, Awaitable
+
 from pathlib import Path
 
 
+
+
+
 def _get_debug_log_path() -> Path:
+
     """Get path for debug log file next to the executable/script."""
+
     if getattr(sys, 'frozen', False):
+
         # Running as compiled executable
+
         base_path = Path(sys.executable).parent
+
     else:
+
         # Running as script - use project root
+
         base_path = Path(__file__).parent.parent.parent
+
     return base_path / "simlaps_debug.log"
 
 
+
+
+
 class DebugLogger:
+
     """Simple debug logger that writes to a file."""
+
     
+
     # Singleton instance for shared file handle
+
     _instance = None
+
     _file = None
+
     _log_path = None
+
     _started = False
+
     
+
     def __new__(cls):
+
         if cls._instance is None:
+
             cls._instance = super().__new__(cls)
+
         return cls._instance
+
     
+
     def __init__(self):
+
         # Only initialize once
+
         if DebugLogger._log_path is None:
+
             DebugLogger._log_path = _get_debug_log_path()
+
         # Auto-start on first use
+
         if not DebugLogger._started:
+
             self.start()
+
     
+
     def start(self):
+
         """Start logging."""
+
         # Debug logging disabled by default for production
+
         # Set to True only for internal debugging
+
         ENABLE_DEBUG = False
+
         
+
         if DebugLogger._started or not ENABLE_DEBUG:
+
             return
+
         try:
+
             DebugLogger._file = open(DebugLogger._log_path, "a", encoding="utf-8")
+
             DebugLogger._started = True
+
             self._write_raw(f"\n{'='*60}")
+
             self._write_raw(f"SimLaps Debug Log Started")
+
             self._write_raw(f"Log file: {DebugLogger._log_path}")
+
             self._write_raw(f"{'='*60}\n")
+
         except Exception as e:
+
             print(f"Failed to open debug log: {e}")
+
     
+
     def _write_raw(self, message: str):
+
         """Write without checking _started to avoid recursion."""
+
         if DebugLogger._file:
+
             try:
+
                 timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+
                 DebugLogger._file.write(f"[{timestamp}] {message}\n")
+
                 DebugLogger._file.flush()
+
             except Exception:
+
                 pass
+
     
+
     def log(self, message: str):
+
         """Log a message with timestamp."""
+
         if not DebugLogger._started or not DebugLogger._file:
+
             return
+
         try:
+
             timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+
             DebugLogger._file.write(f"[{timestamp}] {message}\n")
+
             DebugLogger._file.flush()
+
         except Exception:
+
             pass
+
     
+
     def close(self):
+
         """Close the log file."""
+
         if DebugLogger._file:
+
             try:
+
                 DebugLogger._file.close()
+
                 DebugLogger._file = None
+
                 DebugLogger._started = False
+
             except Exception:
+
                 pass
+
+
+
 
 
 # Global debug logger
+
 _debug = DebugLogger()
 
 
+
+
+
 @dataclass
+
 class LapData:
+
     """Represents a single completed lap."""
+
     lap_time_ms: int
+
     lap_time_str: str
+
     sector1_ms: Optional[int] = None
+
     sector2_ms: Optional[int] = None
+
     sector3_ms: Optional[int] = None
+
     is_valid: bool = True
+
     fuel_used: Optional[float] = None
+
     tyre_compound: str = "Unknown"
+
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
 
+    distance_km: Optional[float] = None  # Distance covered in this lap
+
+
+
+
 
 @dataclass
+
 class SessionData:
+
     """Represents a game session with all its metadata."""
+
     session_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+
     game_version: str = "Unknown"
+
     session_type: str = "Unknown"
+
     car: str = "Unknown"
+
     track: str = "Unknown"
+
     weather: str = "Unknown"
+
     player_name: Optional[str] = None
+
     player_id: Optional[str] = None  # Steam ID
+
     car_uuid: Optional[str] = None
+
     tyre_compound: str = "Unknown"
+
     initial_fuel: float = 0.0
+
     fuel_used_session: float = 0.0
+
     start_time: str = field(default_factory=lambda: datetime.now().isoformat())
+
     laps: list[LapData] = field(default_factory=list)
 
+
+
     def to_dict(self) -> dict:
+
         """Convert session to dictionary for serialization."""
+
         return {
+
             "session_id": self.session_id,
+
             "game_version": self.game_version,
+
             "session_type": self.session_type,
+
             "car": self.car,
+
             "track": self.track,
+
             "weather": self.weather,
+
             "player_name": self.player_name,
+
             "player_id": self.player_id,
+
             "car_uuid": self.car_uuid,
+
             "tyre_compound": self.tyre_compound,
+
             "initial_fuel": self.initial_fuel,
+
             "fuel_used_session": self.fuel_used_session,
+
             "start_time": self.start_time,
+
             "laps": [
+
                 {
+
                     "lap_time_ms": lap.lap_time_ms,
+
                     "lap_time_str": lap.lap_time_str,
+
                     "sector1_ms": lap.sector1_ms,
+
                     "sector2_ms": lap.sector2_ms,
+
                     "sector3_ms": lap.sector3_ms,
+
                     "is_valid": lap.is_valid,
+
                     "fuel_used": lap.fuel_used,
+
                     "tyre_compound": lap.tyre_compound,
+
                     "timestamp": lap.timestamp,
+
+                    "distance_km": lap.distance_km,
+
                 }
+
                 for lap in self.laps
+
             ],
+
         }
+
+
+
 
 
 class LogContext:
+
     """Maintains context across log parsing for metadata extraction."""
 
+
+
     def __init__(self):
+
         self.game_version: str = "Unknown"
+
         self.current_track: str = "Unknown"
+
         self.current_car: str = "Unknown"
+
         self.player_name: Optional[str] = None
+
         self.player_id: Optional[str] = None  # Steam ID
+
         self.car_uuid: Optional[str] = None
+
         self.weather: str = "Unknown"
+
         self.tyre_compound: str = "Unknown"
+
         self.car_meta: dict[str, dict] = {}  # car_uuid -> {player_name, player_id}
+
         self.player_car_uuids: set[str] = set()  # All car UUIDs belonging to our player
+
         self.last_fuel_reading: Optional[float] = None  # Track last fuel reading for per-lap calculation
 
 
+
+
+
 # Type alias for callbacks
+
 LapCallback = Callable[[SessionData, LapData], Awaitable[None]]
+
 StatusCallback = Callable[[str], Awaitable[None]]
+
 GameStatusCallback = Callable[[bool], Awaitable[None]]
+
 UserDetectedCallback = Callable[[str, Optional[str]], Awaitable[None]]  # steam_id, player_name
+
 GameVersionCallback = Callable[[str], Awaitable[None]]  # game_version
 
 
+
+
+
 class LogParser:
+
     """
+
     Parses ACE game logs to extract lap times and session data.
+
     
+
     Can operate in one-shot parse mode or continuous follow mode.
+
     """
+
+
 
     # Default log path for ACE
+
     DEFAULT_LOG_PATH = Path.home() / "Documents" / "ACE" / "log.txt"
 
+
+
     def __init__(
+
         self,
+
         log_path: Optional[str] = None,
+
         on_lap_complete: Optional[LapCallback] = None,
+
         on_status_change: Optional[StatusCallback] = None,
+
         on_game_status_change: Optional[GameStatusCallback] = None,
+
         on_user_detected: Optional[UserDetectedCallback] = None,
+
         on_game_version: Optional[GameVersionCallback] = None,
+
     ):
+
         self.log_path = Path(log_path) if log_path else self.DEFAULT_LOG_PATH
+
         self.on_lap_complete = on_lap_complete
+
         self.on_status_change = on_status_change
+
         self.on_game_status_change = on_game_status_change
+
         self.on_user_detected = on_user_detected
+
         self.on_game_version = on_game_version
+
         
+
         self.sessions: list[SessionData] = []
+
         self.current_session: Optional[SessionData] = None
+
         self.context = LogContext()
+
         
+
         self._last_activity_ts: Optional[float] = None
+
         self._running = False
+
         self._emit_callbacks = False  # Don't emit until initial parsing is done
+
         self._current_lap_data: dict = {
+
             "splits": [],
+
             "is_valid": True,
+
             "fuel_used_lap": None,
+
+            "pending_fuel_events": [],  # Store fuel events with timestamps for matching
+
         }
+
+
 
         # Compile regex patterns for performance
+
         self._patterns = {
+
             "version": re.compile(r"Build release ([^,]+),"),
+
             "session_type": re.compile(r"Changed to .* GameModeType_([A-Z_]+)"),
+
             "session_start_alt": re.compile(r"Game Started!\s*GameModeType_([A-Z_]+)"),
+
             "driver_line": re.compile(r"\tDriver (.+) on car ([\w_]+)"),
+
             "connecting_gamecar": re.compile(r"connecting gamecar ([a-f0-9\-]+) \((.+)\)"),
+
             "connect": re.compile(r"(\S+) connected on car ([\w_]+), with new carId ([a-f0-9\-]+)"),
+
             "track_name": re.compile(r"TRACK NAME (.+)"),
+
             "track_load": re.compile(r"Scene::load\('content\\\\tracks\\\\([^\\\\]+)"),
+
             "fuel": re.compile(r"FUEL car ([a-f0-9\-]+) setup with ([\d.]+) L"),
+
             "compound": re.compile(r"setCompound Tyre: \d compound name: (\w+)"),
+
             "fuel_consumed": re.compile(
-                r"Energy source car ([a-f0-9\-]+) for driver [a-f0-9\-]+ "
-                r"hundredmeters done: (\d+) fuel consumed: ([\d.]+) L"
+
+                r"\[([\d\-: .]+)\] \[gameplay\] \[info\] Energy source car ([a-f0-9\-]+) for driver [a-f0-9\-]+ "
+
+                r"hundredmeters done: (\d+) fuel consumed: ([\-\d.]+) L"
+
             ),
-            "split": re.compile(r"Split completed for car ([a-f0-9\-]+):\s*\((\d+)\s*ms,\s*splitindex\s*(\d+)\)\s*lap:\d+"),
-            "lap_finish": re.compile(r"New lap carId ([a-f0-9\-]+): ([\d:.]+)"),
+
+            "split": re.compile(r"On Split .* id (\d+) splittime (\d+)"),
+
+            "lap_finish": re.compile(r"\[([\d\-: .]+)\] \[gameplay\] \[info\] New lap carId ([a-f0-9\-]+): ([\d:.]+)"),
+
             "penalty": re.compile(r"\{PENALTY_ADDED_KEY\}"),
+
             "weather": re.compile(r"GameModeSelectionWeatherBehaviour_([A-Z_]+)"),
+
             "date": re.compile(r"^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})"),
+
         }
 
+
+
     def _parse_lap_time_to_ms(self, time_str: str) -> int:
+
         """Convert lap time string (e.g., '2:18.456') to milliseconds."""
+
         parts = time_str.replace(":", ".").split(".")
+
         
+
         if len(parts) == 3:
+
             # Format: M:SS.mmm
+
             minutes = int(parts[0])
+
             seconds = int(parts[1])
+
             millis = int(parts[2].ljust(3, "0")[:3])
+
             return (minutes * 60 + seconds) * 1000 + millis
+
         elif len(parts) == 2:
+
             # Format: SS.mmm
+
             seconds = int(parts[0])
+
             millis = int(parts[1].ljust(3, "0")[:3])
+
             return seconds * 1000 + millis
+
         else:
+
             return 0
 
+
+
     async def _emit_status(self, status: str) -> None:
+
         """Emit status update to callback."""
+
         _debug.log(f"[STATUS] {status}")
+
         if self.on_status_change:
+
             try:
+
                 await self.on_status_change(status)
+
             except Exception as e:
+
                 _debug.log(f"[ERROR] _emit_status callback failed: {e}")
 
+
+
     async def _emit_lap(self, session: SessionData, lap: LapData) -> None:
+
         """Emit completed lap to callback."""
+
         _debug.log(f"[EMIT_LAP] Calling callback for lap {lap.lap_time_str}")
+
         _debug.log(f"  Session: track={session.track}, car={session.car}")
+
         _debug.log(f"  Player: {session.player_name} ({session.player_id})")
+
         if self.on_lap_complete:
+
             try:
+
                 await self.on_lap_complete(session, lap)
+
                 _debug.log(f"[EMIT_LAP] Callback completed successfully")
+
             except Exception as e:
+
                 _debug.log(f"[ERROR] _emit_lap callback failed: {e}")
+
                 import traceback
+
                 _debug.log(f"[ERROR] Traceback: {traceback.format_exc()}")
 
+
+
     async def _emit_game_status(self, is_running: bool) -> None:
+
         """Emit game status change to callback."""
+
         _debug.log(f"[GAME_STATUS] is_running={is_running}")
+
         if self.on_game_status_change:
+
             try:
+
                 await self.on_game_status_change(is_running)
+
             except Exception as e:
+
                 _debug.log(f"[ERROR] _emit_game_status callback failed: {e}")
 
+
+
     async def _emit_user_detected(self, steam_id: str, player_name: Optional[str]) -> None:
+
         """Emit user detection to callback."""
+
         _debug.log(f"[USER_DETECTED] steam_id={steam_id}, player_name={player_name}")
+
         if self.on_user_detected:
+
             try:
+
                 await self.on_user_detected(steam_id, player_name)
+
             except Exception as e:
+
                 _debug.log(f"[ERROR] _emit_user_detected callback failed: {e}")
 
+
+
     def _process_line(self, line: str) -> Optional[LapData]:
+
         """
+
         Process a single log line and extract relevant data.
+
         
+
         Returns a LapData object if a lap was completed, None otherwise.
+
         """
+
         line = line.strip()
+
         self._last_activity_ts = time.time()
+
         completed_lap: Optional[LapData] = None
+
+
 
         # --- Metadata & Context ---
 
+
+
         # Game version
+
         if "Build release" in line:
+
             m = self._patterns["version"].search(line)
+
             if m:
+
                 self.context.game_version = m.group(1)
+
                 # Emit game version callback (only if we're past initial parsing)
+
                 if self.on_game_version and self._emit_callbacks:
+
                     asyncio.create_task(self.on_game_version(self.context.game_version))
 
+
+
         # Track name (primary)
+
         if "TRACK NAME" in line:
+
             m = self._patterns["track_name"].search(line)
+
             if m:
+
                 track_name = m.group(1).strip()
+
                 self.context.current_track = track_name
+
                 if self.current_session:
+
                     self.current_session.track = track_name
 
+
+
         # Track name (fallback from scene load)
+
         elif "Scene::load" in line and "content\\tracks" in line:
+
             m = self._patterns["track_load"].search(line)
+
             if m:
+
                 self.context.current_track = m.group(1)
+
                 if self.current_session and self.current_session.track == "Unknown":
+
                     self.current_session.track = self.context.current_track
 
+
+
         # Player connection with Steam ID - this also indicates session start
+
         if "connected on car" in line:
+
             m = self._patterns["connect"].search(line)
+
             if m:
+
                 new_pid = m.group(1)
+
                 new_car = m.group(2)
+
                 new_uuid = m.group(3)
+
                 
+
                 _debug.log(f"[CONNECT] Player connected: pid={new_pid}, car={new_car}, uuid={new_uuid}")
 
+
+
                 is_steam_id = len(new_pid) > 10
+
                 current_has_steam = self.context.player_id and len(str(self.context.player_id)) > 10
+
                 
+
                 _debug.log(f"  is_steam_id: {is_steam_id}, current_has_steam: {current_has_steam}")
 
+
+
                 if is_steam_id or not current_has_steam:
+
                     self.context.player_id = new_pid
+
                     self.context.current_car = new_car
+
                     self.context.car_uuid = new_uuid
+
                     # Track this car UUID as belonging to our player
+
                     self.context.player_car_uuids.add(new_uuid)
+
                     _debug.log(f"  Updated context: player_id={new_pid}, car_uuid={new_uuid}")
+
                     _debug.log(f"  player_car_uuids now: {self.context.player_car_uuids}")
 
+
+
                     if new_uuid in self.context.car_meta:
+
                         meta = self.context.car_meta[new_uuid]
+
                         if meta.get("player_name"):
+
                             self.context.player_name = meta["player_name"]
+
                         if meta.get("player_id") and not current_has_steam:
+
                             self.context.player_id = meta["player_id"]
 
+
+
                     # Create session if one doesn't exist (player connection = session start)
+
                     if not self.current_session:
+
                         _debug.log(f"  No session exists, creating one")
+
                         self._start_new_session("UNKNOWN", line)
+
                     
+
                     if self.current_session:
+
                         self.current_session.car_uuid = self.context.car_uuid
+
                         self.current_session.car = self.context.current_car
+
                         self.current_session.player_name = self.context.player_name
+
                         self.current_session.player_id = self.context.player_id
+
                         _debug.log(f"  Session updated with car_uuid={self.current_session.car_uuid}")
 
+
+
         # Driver info - only use if we don't already have a Steam ID player
+
         # (these lines are also emitted for AI drivers)
+
         if "\tDriver " in line and " on car " in line:
+
             m = self._patterns["driver_line"].search(line)
+
             if m:
+
                 driver_name = m.group(1).strip()
+
                 driver_car = m.group(2).strip()
+
                 # Only update player info if we don't have a Steam ID yet
+
                 # (Steam ID is 17 digits starting with 7656)
+
                 has_steam_id = (
+
                     self.context.player_id and 
+
                     len(str(self.context.player_id)) == 17 and
+
                     str(self.context.player_id).startswith("7656")
+
                 )
+
                 if not has_steam_id:
+
                     self.context.player_name = driver_name
+
                     self.context.current_car = driver_car
+
                     if self.current_session:
+
                         self.current_session.player_name = driver_name
+
                         self.current_session.car = driver_car
 
+
+
         # Game car connection metadata
+
         if "connecting gamecar" in line and "(" in line and ")" in line:
+
             m = self._patterns["connecting_gamecar"].search(line)
+
             if m:
+
                 car_uuid = m.group(1)
+
                 raw = m.group(2)
+
                 cleaned = raw.replace("â€¢", "").replace("•", "").strip()
+
                 player_name = None
+
                 player_id = None
+
                 
+
                 if "|" in cleaned:
+
                     left, right = cleaned.split("|", 1)
+
                     player_name = left.strip()
+
                     player_id = right.strip()
+
                 else:
+
                     player_name = cleaned
 
+
+
                 self.context.car_meta[car_uuid] = {
+
                     "player_name": player_name,
+
                     "player_id": player_id,
+
                 }
 
+
+
                 if self.context.car_uuid == car_uuid:
+
                     if player_name:
+
                         self.context.player_name = player_name
+
                     current_has_steam = self.context.player_id and len(str(self.context.player_id)) > 10
+
                     if player_id and not current_has_steam:
+
                         self.context.player_id = player_id
+
                     if self.current_session:
+
                         self.current_session.player_name = self.context.player_name
+
                         self.current_session.player_id = self.context.player_id
 
+
+
         # Weather
+
         if "GameModeSelectionWeatherBehaviour_" in line:
+
             m = self._patterns["weather"].search(line)
+
             if m:
+
                 self.context.weather = m.group(1)
+
+
 
         # --- Session Lifecycle ---
 
+
+
         # New session (Game Started!) - just start fresh, no need to finalize old
+
         if "Game Started!" in line and "GameModeType_" in line:
+
             m = self._patterns["session_start_alt"].search(line)
+
             if m:
+
                 _debug.log(f"[SESSION] Game Started! detected, type={m.group(1)}")
+
                 # Just start a new session - old one doesn't matter
+
                 self._start_new_session(m.group(1), line)
+
                 _debug.log(f"[SESSION] New session created, car_uuid={self.current_session.car_uuid if self.current_session else 'None'}")
+
                 return None
+
+
 
         # New session (mode change) - also just start fresh
+
         if "GameModeType_" in line:
+
             m = self._patterns["session_type"].search(line)
+
             if m:
+
                 _debug.log(f"[SESSION] Mode change detected, type={m.group(1)}")
+
                 self._start_new_session(m.group(1), line)
+
                 return None
 
+
+
         # Session end - only when OUR car's session ends
+
         if "END_SESSION car" in line and self.context.car_uuid:
+
             if self.context.car_uuid in line:
+
                 _debug.log(f"[SESSION] END_SESSION for our car, finalizing")
+
                 self._finalize_current_session()
+
                 # Don't return - allow further processing if needed
 
+
+
         if not self.current_session:
+
             return None
+
+
 
         # --- Lap Data ---
 
+
+
         # Split times
-        if "Split completed for car" in line and "splitindex" in line:
+
+        if "On Split" in line and "splittime" in line:
+
             m = self._patterns["split"].search(line)
+
             if m:
-                car_id = m.group(1)
+
+                split_idx = int(m.group(1))
+
                 time_ms = int(m.group(2))
-                split_idx = int(m.group(3))
-                
-                # Check if it's our player's car
-                is_player_car = car_id in self.context.player_car_uuids or (self.current_session and car_id == self.current_session.car_uuid)
-                
-                if is_player_car:
-                    self._current_lap_data["splits"].append({
-                        "index": split_idx,
-                        "time_ms": time_ms,
-                    })
+
+                self._current_lap_data["splits"].append({
+
+                    "index": split_idx,
+
+                    "time_ms": time_ms,
+
+                })
+
+
 
         # Tyre compound
+
         if "setCompound Tyre:" in line:
+
             m = self._patterns["compound"].search(line)
+
             if m:
+
                 self.context.tyre_compound = m.group(1)
 
+
+
         # Penalty (invalidates lap)
+
         if "PENALTY_ADDED_KEY" in line:
+
             self._current_lap_data["is_valid"] = False
 
+
+
         # Fuel setup
+
         if "FUEL car" in line and "setup with" in line:
+
             m = self._patterns["fuel"].search(line)
+
             if m:
+
                 car_id = m.group(1)
+
                 fuel_amount = float(m.group(2))
+
                 is_player_car = car_id in self.context.player_car_uuids or (self.current_session and car_id == self.current_session.car_uuid)
+
                 if self.current_session and is_player_car:
+
                     self.current_session.initial_fuel = fuel_amount
 
+
+
         # Fuel consumption
+
         if "Energy source car" in line and "fuel consumed:" in line:
+
             m = self._patterns["fuel_consumed"].search(line)
+
             if m:
-                car_id = m.group(1)
-                hundreds_done = int(m.group(2))
-                fuel_reading = float(m.group(3))
+
+                timestamp = m.group(1)
+
+                car_id = m.group(2)
+
+                hundreds_done = int(m.group(3))
+
+                fuel_reading = float(m.group(4))
+
                 
-                # Ignore readings when distance is 0 (usually initialization/reset with bogus values like 30L)
-                if hundreds_done > 0:
-                    is_player_car = car_id in self.context.player_car_uuids or (self.current_session and car_id == self.current_session.car_uuid)
-                    if self.current_session and is_player_car:
-                        # Calculate per-lap fuel by tracking differences between readings
-                        if self.context.last_fuel_reading is not None:
-                            fuel_delta = fuel_reading - self.context.last_fuel_reading
-                            
-                            # Initialize accumulator if needed
-                            if self._current_lap_data["fuel_used_lap"] is None:
-                                self._current_lap_data["fuel_used_lap"] = 0.0
-                            
-                            # Count all values (positive and negative) for accurate fuel consumption
-                            self._current_lap_data["fuel_used_lap"] += fuel_delta
-                            self.current_session.fuel_used_session += fuel_delta
-                        
-                        # Update last reading for next calculation
-                        self.context.last_fuel_reading = fuel_reading
+
+                # Check if this is our player's car
+
+                is_player_car = car_id in self.context.player_car_uuids or (self.current_session and car_id == self.current_session.car_uuid)
+
+                if self.current_session and is_player_car:
+
+                    # Store fuel event with timestamp for later matching with lap completion
+
+                    fuel_event = {
+
+                        "timestamp": timestamp,
+
+                        "fuel_consumed": fuel_reading,
+
+                        "hundredmeters": hundreds_done,
+
+                        "distance_km": hundreds_done / 10.0  # Convert hundreds of meters to km
+
+                    }
+
+                    
+
+                    self._current_lap_data["pending_fuel_events"].append(fuel_event)
+
+                    _debug.log(f"[FUEL] Stored fuel event: timestamp={timestamp}, fuel={fuel_reading}L, distance={fuel_event['distance_km']}km")
+
+
 
         # Lap completion
+
         if "New lap carId" in line:
+
             m = self._patterns["lap_finish"].search(line)
+
             _debug.log(f"[LAP_CHECK] New lap line detected")
+
             _debug.log(f"  regex match: {m is not None}")
+
             _debug.log(f"  current_session: {self.current_session is not None}")
+
             
+
             if m:
-                car_id = m.group(1)
-                lap_time_str = m.group(2)
+
+                lap_timestamp = m.group(1)
+
+                car_id = m.group(2)
+
+                lap_time_str = m.group(3)
+
                 
+
+                _debug.log(f"  lap_timestamp: {lap_timestamp}")
+
                 _debug.log(f"  car_id from log: {car_id}")
+
                 _debug.log(f"  lap_time: {lap_time_str}")
+
                 _debug.log(f"  context.player_car_uuids: {self.context.player_car_uuids}")
+
+                _debug.log(f"  pending_fuel_events: {len(self._current_lap_data['pending_fuel_events'])}")
+
                 
+
                 # Check if this is our player's car
+
                 is_player_car = car_id in self.context.player_car_uuids
+
                 if self.current_session:
+
                     is_player_car = is_player_car or car_id == self.current_session.car_uuid
+
                     _debug.log(f"  session.car_uuid: {self.current_session.car_uuid}")
+
                 _debug.log(f"  is_player_car: {is_player_car}")
+
                 
+
                 if is_player_car:
+
+                    # Match fuel event by timestamp (key insight from specification)
+
+                    matched_fuel_event = None
+
+                    for fuel_event in self._current_lap_data["pending_fuel_events"]:
+
+                        if fuel_event["timestamp"] == lap_timestamp:
+
+                            matched_fuel_event = fuel_event
+
+                            break
+
+                    
+
+                    # Extract fuel data from matched event
+
+                    fuel_used_lap = None
+
+                    if matched_fuel_event:
+
+                        fuel_consumed = matched_fuel_event["fuel_consumed"]
+
+                        # Only use positive fuel values (ignore refueling/negative values)
+
+                        if fuel_consumed > 0:
+
+                            fuel_used_lap = fuel_consumed
+
+                            # Add to session total
+
+                            self.current_session.fuel_used_session += fuel_consumed
+
+                        
+
+                        _debug.log(f"[FUEL_MATCH] Matched fuel event: {fuel_consumed}L at timestamp {lap_timestamp}")
+
+                    else:
+
+                        _debug.log(f"[FUEL_MATCH] No fuel event found for timestamp {lap_timestamp}")
+
                     # Create session on-the-fly if we don't have one but have player context
+
                     if not self.current_session and self.context.player_id:
+
                         _debug.log(f"  No session but have player context, creating session")
+
                         self._start_new_session("UNKNOWN", line)
+
                     
+
                     if not self.current_session:
+
                         _debug.log(f"  Still no session, skipping lap")
+
                         return None
+
                     lap_time_ms = self._parse_lap_time_to_ms(lap_time_str)
+
                     
+
                     # Extract sector times
+
                     splits = self._current_lap_data["splits"]
+
                     sector1_ms = splits[0]["time_ms"] if len(splits) > 0 else None
-                    sector2_ms = splits[1]["time_ms"] if len(splits) > 1 else None
-                    sector3_ms = splits[2]["time_ms"] if len(splits) > 2 else None
+
+                    sector2_ms = (splits[1]["time_ms"] - splits[0]["time_ms"]) if len(splits) > 1 else None
+
+                    sector3_ms = (lap_time_ms - splits[1]["time_ms"]) if len(splits) > 1 else None
+
+
+
+                    # Extract distance from matched fuel event
+
+                    distance_km = None
+
+                    if matched_fuel_event:
+
+                        distance_km = matched_fuel_event["distance_km"]
+
+                    
 
                     completed_lap = LapData(
+
                         lap_time_ms=lap_time_ms,
+
                         lap_time_str=lap_time_str,
+
                         sector1_ms=sector1_ms,
+
                         sector2_ms=sector2_ms,
+
                         sector3_ms=sector3_ms,
+
                         is_valid=self._current_lap_data["is_valid"],
-                        fuel_used=self._current_lap_data["fuel_used_lap"],
+
+                        fuel_used=fuel_used_lap,
+
                         tyre_compound=self.context.tyre_compound or "Unknown",
+
+                        timestamp=lap_timestamp,  # Use actual lap timestamp
+
+                        distance_km=distance_km,
+
                     )
 
+
+
                     self.current_session.laps.append(completed_lap)
+
                     self.current_session.tyre_compound = self.context.tyre_compound or "Unknown"
 
-                    # Reset for next lap
+
+
+                    # Reset for next lap - clear matched fuel events and old pending events
+
+                    # Remove matched fuel event and any older events to prevent memory buildup
+
+                    self._current_lap_data["pending_fuel_events"] = [
+
+                        event for event in self._current_lap_data["pending_fuel_events"]
+
+                        if event["timestamp"] != lap_timestamp
+
+                    ]
+
+                    
+
                     self._current_lap_data = {
+
                         "splits": [],
+
                         "is_valid": True,
+
                         "fuel_used_lap": None,
+
+                        "pending_fuel_events": self._current_lap_data["pending_fuel_events"],
+
                     }
+
+
 
         return completed_lap
 
+
+
     def _start_new_session(self, session_type: str, line: str) -> None:
+
         """Initialize a new session with current context."""
+
         self.current_session = SessionData(
+
             session_type=session_type,
+
             game_version=self.context.game_version,
+
             track=self.context.current_track,
+
             car=self.context.current_car,
+
             player_name=self.context.player_name,
+
             player_id=self.context.player_id,
+
             car_uuid=self.context.car_uuid,
+
             weather=self.context.weather,
+
             tyre_compound=self.context.tyre_compound or "Unknown",
+
         )
+
         
+
         # Reset fuel tracking for new session
+
         self.context.last_fuel_reading = None
 
-        # Parse additional info from Game Started line
-        parts = [p.strip() for p in line.split("|")]
-        if len(parts) > 1 and parts[1]:
-            self.context.current_track = parts[1]
-            self.current_session.track = parts[1]
-        if len(parts) > 2 and parts[2]:
-            self.context.current_car = parts[2]
-            self.current_session.car = parts[2]
-        if len(parts) > 3 and parts[3]:
-            w = parts[3].replace("GameModeSelectionWeatherType_", "")
-            self.context.weather = w
-            self.current_session.weather = w
+        
 
-        # Extract timestamp
-        tm = self._patterns["date"].match(line)
-        if tm:
-            self.current_session.start_time = tm.group(1)
+        # Reset lap data including pending fuel events
 
-        # Reset lap data
         self._current_lap_data = {
+
             "splits": [],
+
             "is_valid": True,
+
             "fuel_used_lap": None,
+
+            "pending_fuel_events": [],
+
         }
 
+
+
+        # Parse additional info from Game Started line
+
+        parts = [p.strip() for p in line.split("|")]
+
+        if len(parts) > 1 and parts[1]:
+
+            self.context.current_track = parts[1]
+
+            self.current_session.track = parts[1]
+
+        if len(parts) > 2 and parts[2]:
+
+            self.context.current_car = parts[2]
+
+            self.current_session.car = parts[2]
+
+        if len(parts) > 3 and parts[3]:
+
+            w = parts[3].replace("GameModeSelectionWeatherType_", "")
+
+            self.context.weather = w
+
+            self.current_session.weather = w
+
+
+
+        # Extract timestamp
+
+        tm = self._patterns["date"].match(line)
+
+        if tm:
+
+            self.current_session.start_time = tm.group(1)
+
+
+
+        # Reset lap data
+
+        self._current_lap_data = {
+
+            "splits": [],
+
+            "is_valid": True,
+
+            "fuel_used_lap": None,
+
+            "pending_fuel_events": [],
+
+        }
+
+
+
     def _finalize_current_session(self) -> None:
+
         """Save current session if it has completed laps."""
+
         if self.current_session and self.current_session.laps:
+
             self.sessions.append(self.current_session)
+
         self.current_session = None
 
+
+
     async def parse_file(self) -> list[SessionData]:
+
         """Parse entire log file (one-shot mode)."""
+
         if not self.log_path.exists():
+
             await self._emit_status(f"Log file not found: {self.log_path}")
+
             return []
 
+
+
         await self._emit_status(f"Parsing {self.log_path}...")
+
         
+
         with open(self.log_path, "r", encoding="utf-8", errors="ignore") as f:
+
             for line in f:
+
                 completed_lap = self._process_line(line)
+
                 if completed_lap and self.current_session:
+
                     await self._emit_lap(self.current_session, completed_lap)
 
+
+
         self._finalize_current_session()
+
         await self._emit_status(f"Found {len(self.sessions)} sessions")
+
         return self.sessions
 
+
+
     async def follow(
+
         self,
+
         poll_interval: float = 0.25,
+
     ) -> None:
+
         """
+
         Follow log file in real-time (tail -f style).
+
         
+
         Based on working telemetry.py implementation - simple and reliable.
+
         Parses existing log first to catch any laps already recorded.
+
         
+
         Args:
+
             poll_interval: Seconds between poll attempts
+
         """
+
         # Start debug logging
+
         _debug.start()
+
         _debug.log(f"follow() called with poll_interval={poll_interval}")
+
         _debug.log(f"Log path: {self.log_path}")
+
         
+
         self._running = True
 
+
+
         # Wait for log file to exist
+
         while self._running and not self.log_path.exists():
+
             _debug.log(f"Waiting for log file to exist...")
+
             await self._emit_status(f"Waiting for log file: {self.log_path}")
+
             await asyncio.sleep(poll_interval)
 
+
+
         if not self._running:
+
             _debug.log("_running is False, exiting")
+
             return
 
+
+
         _debug.log(f"Log file exists, opening...")
+
         await self._emit_status(f"Parsing existing log...")
 
+
+
         with open(self.log_path, "r", encoding="utf-8", errors="ignore") as f:
+
             _debug.log("File opened successfully")
+
             
+
             # First, parse the entire existing log to establish context
+
             # DON'T emit laps to UI - just count them for context
+
             line_count = 0
+
             existing_laps = 0
+
             _debug.log("Starting initial log parsing (historical context only)...")
+
             try:
+
                 for line in f:
+
                     line_count += 1
+
                     try:
+
                         completed_lap = self._process_line(line)
+
                         if completed_lap and self.current_session:
+
                             existing_laps += 1
+
                             _debug.log(f"[EXISTING] Lap {existing_laps}: {completed_lap.lap_time_str}")
+
                             # Don't emit existing laps - they're historical
+
                     except Exception as e:
+
                         _debug.log(f"[ERROR] Exception processing line {line_count}: {e}")
+
                         _debug.log(f"  Line content: {line.strip()[:100]}")
+
             except Exception as e:
+
                 _debug.log(f"[ERROR] Exception in initial parsing loop: {e}")
+
                 import traceback
+
                 _debug.log(f"[ERROR] Traceback: {traceback.format_exc()}")
+
             
+
             _debug.log(f"Initial parsing complete: {line_count} lines, {existing_laps} historical laps")
+
             _debug.log(f"Current session: {self.current_session is not None}")
+
             if self.current_session:
+
                 _debug.log(f"  Track: {self.current_session.track}")
+
                 _debug.log(f"  Car: {self.current_session.car}")
+
                 _debug.log(f"  Player: {self.current_session.player_name} ({self.current_session.player_id})")
+
                 _debug.log(f"  Car UUID: {self.current_session.car_uuid}")
+
                 # Clear historical laps from session - we only want NEW laps going forward
+
                 self.current_session.laps.clear()
+
                 _debug.log(f"  Cleared historical laps, ready for new ones")
+
             _debug.log(f"Context car_uuid: {self.context.car_uuid}")
+
             _debug.log(f"Context player_car_uuids: {self.context.player_car_uuids}")
+
             
+
             # Initial parsing done - now enable callbacks for real-time events
+
             self._emit_callbacks = True
+
             _debug.log("Callbacks enabled for real-time processing")
+
             
+
             # Report what we found
+
             _debug.log("Sending initial UI updates...")
+
             if self.current_session:
+
                 _debug.log(f"  Have session, notifying UI")
+
                 await self._emit_status(
+
                     f"Found {existing_laps} historical laps - monitoring for new ones..."
+
                 )
+
                 # Notify UI about detected user
+
                 if self.current_session.player_id:
+
                     _debug.log(f"  Notifying user detected: {self.current_session.player_id}")
+
                     await self._emit_user_detected(
+
                         self.current_session.player_id,
+
                         self.current_session.player_name
+
                     )
+
                 # Notify about game version if detected
+
                 if self.context.game_version and self.context.game_version != "Unknown":
+
                     _debug.log(f"  Notifying game version: {self.context.game_version}")
+
                     if self.on_game_version:
+
                         try:
+
                             await self.on_game_version(self.context.game_version)
+
                         except Exception as e:
-                            _debug.log(f"[ERROR] on_game_version callback failed: {e}")
-            else:
-                _debug.log(f"  No session found, waiting...")
-                await self._emit_status("Ready - waiting for session...")
-                # Still notify about game version if we found it
-                if self.context.game_version and self.context.game_version != "Unknown":
-                    _debug.log(f"  Notifying game version (no session): {self.context.game_version}")
-                    if self.on_game_version:
-                        try:
-                            await self.on_game_version(self.context.game_version)
-                        except Exception as e:
+
                             _debug.log(f"[ERROR] on_game_version callback failed: {e}")
 
-            # Now at end of file - follow new lines
-            file_pos = f.tell()
-            _debug.log(f"Starting follow loop at file position {file_pos}")
-            
-            lines_read = 0
-            _debug.log("Entering follow loop - monitoring for new lines...")
-            while self._running:
-                line = f.readline()
-                
-                if line:
-                    lines_read += 1
-                    
-                    # Log important lines and emit game status
-                    if "Game Started!" in line:
-                        _debug.log(f"[LIVE] [GAME_STARTED] {line.strip()[:100]}")
-                        # Notify UI that game session started
-                        await self._emit_game_status(True)
-                    if "connected on car" in line:
-                        _debug.log(f"[LIVE] [CONNECTED] {line.strip()[:150]}")
-                    if "New lap carId" in line:
-                        _debug.log(f"[LIVE] [NEW_LAP_LINE] {line.strip()}")
-                    if "END_SESSION car" in line:
-                        _debug.log(f"[LIVE] [END_SESSION] {line.strip()[:80]}")
-                        # Check if it's our car - emit game status false
-                        if self.context.car_uuid and self.context.car_uuid in line:
-                            _debug.log(f"[LIVE] Our session ended, notifying UI")
-                            await self._emit_game_status(False)
-                    
-                    try:
-                        completed_lap = self._process_line(line)
-                    except Exception as e:
-                        _debug.log(f"[ERROR] Exception in _process_line: {e}")
-                        import traceback
-                        _debug.log(f"[ERROR] Traceback: {traceback.format_exc()}")
-                        continue
-                    
-                    if completed_lap:
-                        _debug.log(f"[LIVE] [LAP_COMPLETE] {completed_lap.lap_time_str}")
-                        _debug.log(f"  is_valid: {completed_lap.is_valid}")
-                        _debug.log(f"  session exists: {self.current_session is not None}")
-                        if self.current_session:
-                            _debug.log(f"  session.track: {self.current_session.track}")
-                            _debug.log(f"  session.car: {self.current_session.car}")
-                            _debug.log(f"  session.player_id: {self.current_session.player_id}")
-                    
-                    if completed_lap and self.current_session:
-                        _debug.log(f"[LIVE] [EMIT] About to emit lap to UI callback...")
+            else:
+
+                _debug.log(f"  No session found, waiting...")
+
+                await self._emit_status("Ready - waiting for session...")
+
+                # Still notify about game version if we found it
+
+                if self.context.game_version and self.context.game_version != "Unknown":
+
+                    _debug.log(f"  Notifying game version (no session): {self.context.game_version}")
+
+                    if self.on_game_version:
+
                         try:
-                            await self._emit_lap(self.current_session, completed_lap)
-                            _debug.log(f"[LIVE] [EMIT] Successfully emitted lap!")
+
+                            await self.on_game_version(self.context.game_version)
+
                         except Exception as e:
+
+                            _debug.log(f"[ERROR] on_game_version callback failed: {e}")
+
+
+
+            # Now at end of file - follow new lines
+
+            file_pos = f.tell()
+
+            _debug.log(f"Starting follow loop at file position {file_pos}")
+
+            
+
+            lines_read = 0
+
+            _debug.log("Entering follow loop - monitoring for new lines...")
+
+            while self._running:
+
+                line = f.readline()
+
+                
+
+                if line:
+
+                    lines_read += 1
+
+                    
+
+                    # Log important lines and emit game status
+
+                    if "Game Started!" in line:
+
+                        _debug.log(f"[LIVE] [GAME_STARTED] {line.strip()[:100]}")
+
+                        # Notify UI that game session started
+
+                        await self._emit_game_status(True)
+
+                    if "connected on car" in line:
+
+                        _debug.log(f"[LIVE] [CONNECTED] {line.strip()[:150]}")
+
+                    if "New lap carId" in line:
+
+                        _debug.log(f"[LIVE] [NEW_LAP_LINE] {line.strip()}")
+
+                    if "END_SESSION car" in line:
+
+                        _debug.log(f"[LIVE] [END_SESSION] {line.strip()[:80]}")
+
+                        # Check if it's our car - emit game status false
+
+                        if self.context.car_uuid and self.context.car_uuid in line:
+
+                            _debug.log(f"[LIVE] Our session ended, notifying UI")
+
+                            await self._emit_game_status(False)
+
+                    
+
+                    try:
+
+                        completed_lap = self._process_line(line)
+
+                    except Exception as e:
+
+                        _debug.log(f"[ERROR] Exception in _process_line: {e}")
+
+                        import traceback
+
+                        _debug.log(f"[ERROR] Traceback: {traceback.format_exc()}")
+
+                        continue
+
+                    
+
+                    if completed_lap:
+
+                        _debug.log(f"[LIVE] [LAP_COMPLETE] {completed_lap.lap_time_str}")
+
+                        _debug.log(f"  is_valid: {completed_lap.is_valid}")
+
+                        _debug.log(f"  session exists: {self.current_session is not None}")
+
+                        if self.current_session:
+
+                            _debug.log(f"  session.track: {self.current_session.track}")
+
+                            _debug.log(f"  session.car: {self.current_session.car}")
+
+                            _debug.log(f"  session.player_id: {self.current_session.player_id}")
+
+                    
+
+                    if completed_lap and self.current_session:
+
+                        _debug.log(f"[LIVE] [EMIT] About to emit lap to UI callback...")
+
+                        try:
+
+                            await self._emit_lap(self.current_session, completed_lap)
+
+                            _debug.log(f"[LIVE] [EMIT] Successfully emitted lap!")
+
+                        except Exception as e:
+
                             _debug.log(f"[ERROR] Failed to emit lap: {e}")
+
                             import traceback
+
                             _debug.log(f"[ERROR] Traceback: {traceback.format_exc()}")
+
                     continue
+
+
 
                 # Session finalization happens via END_SESSION log line, not timeout
 
+
+
                 # Check for log file truncation (game restart)
+
                 try:
+
                     current_size = os.path.getsize(self.log_path)
+
                 except OSError:
+
                     current_size = None
 
+
+
                 if current_size is not None and current_size < f.tell():
+
                     _debug.log(f"[TRUNCATE] Log file truncated! current_size={current_size}, file_pos={f.tell()}")
+
                     _debug.log(f"[TRUNCATE] Resetting parser state and seeking to start")
+
                     # Reset context for new game session
+
                     self.context = LogContext()
+
                     self.current_session = None
+
                     self._emit_callbacks = True  # Keep callbacks enabled
+
                     await self._emit_status("Log file reset detected, restarting...")
+
                     f.seek(0)
 
+
+
                 await asyncio.sleep(poll_interval)
+
         
+
         _debug.log("follow() exiting")
+
         _debug.close()
 
+
+
     def stop(self) -> None:
+
         """Stop the follow loop."""
+
         self._running = False
 
+
+
     @property
+
     def is_running(self) -> bool:
+
         """Check if parser is currently running."""
+
         return self._running
 
+
+
     def get_current_session(self) -> Optional[SessionData]:
+
         """Get the current active session."""
+
         return self.current_session
 
+
+
     def get_player_id(self) -> Optional[str]:
+
         """Get the detected player Steam ID."""
+
         return self.context.player_id
+
