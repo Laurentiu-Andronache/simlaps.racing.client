@@ -510,7 +510,7 @@ class LogParser:
 
             ),
 
-            "split": re.compile(r"On Split .* id (\d+) splittime (\d+)"),
+            "split_completed": re.compile(r"Split completed for car ([a-f0-9\-]+): \((\d+) ms, splitindex (\d+)\)"),
 
             "lap_finish": re.compile(r"\[([\d\-: .]+)\] \[gameplay\] \[info\] New lap carId ([a-f0-9\-]+): ([\d:.]+)"),
 
@@ -986,25 +986,35 @@ class LogParser:
 
 
 
-        # Split times
+        # Split completed events
 
-        if "On Split" in line and "splittime" in line:
+        if "Split completed for car" in line:
 
-            m = self._patterns["split"].search(line)
+            m = self._patterns["split_completed"].search(line)
 
             if m:
 
-                split_idx = int(m.group(1))
+                car_id = m.group(1)
 
                 time_ms = int(m.group(2))
 
-                self._current_lap_data["splits"].append({
+                split_idx = int(m.group(3))
 
-                    "index": split_idx,
+                # Only process splits for player's car
 
-                    "time_ms": time_ms,
+                is_player_car = car_id in self.context.player_car_uuids or (
+                    self.current_session and car_id == self.current_session.car_uuid
+                )
 
-                })
+                if is_player_car:
+
+                    self._current_lap_data["splits"].append({
+
+                        "index": split_idx,
+
+                        "time_ms": time_ms,
+
+                    })
 
 
 
