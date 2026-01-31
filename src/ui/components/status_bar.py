@@ -18,13 +18,12 @@ class ConnectionStatus(Enum):
 
 class StatusBar(ft.Container):
     """
-    A status bar component showing connection and monitoring status.
+    A status bar component showing connection status.
     """
     
     def __init__(self):
         self._connection_status = ConnectionStatus.DISCONNECTED
         self._status_message = "Not connected"
-        self._is_monitoring = False
         
         super().__init__(
             content=self._build_content(),
@@ -64,7 +63,7 @@ class StatusBar(ft.Container):
         """Build the status bar content."""
         return ft.Row(
             controls=[
-                # Left side: Connection and monitoring status
+                # Left side: Connection status only
                 ft.Row(
                     controls=[
                         # Connection status
@@ -78,22 +77,6 @@ class StatusBar(ft.Container):
                                 ),
                             ],
                             spacing=8,
-                        ),
-                        # Monitoring indicator
-                        ft.Row(
-                            controls=[
-                                ft.Icon(
-                                    ft.Icons.VISIBILITY if self._is_monitoring else ft.Icons.VISIBILITY_OFF,
-                                    size=16,
-                                    color="#51cf66" if self._is_monitoring else "#888888",
-                                ),
-                                ft.Text(
-                                    "Monitoring" if self._is_monitoring else "Paused",
-                                    size=12,
-                                    color="#51cf66" if self._is_monitoring else "#888888",
-                                ),
-                            ],
-                            spacing=4,
                         ),
                     ],
                     spacing=16,
@@ -118,7 +101,6 @@ class StatusBar(ft.Container):
         self,
         connection_status: Optional[ConnectionStatus] = None,
         message: Optional[str] = None,
-        is_monitoring: Optional[bool] = None,
     ):
         """
         Update the status bar.
@@ -126,14 +108,11 @@ class StatusBar(ft.Container):
         Args:
             connection_status: New connection status
             message: Status message to display
-            is_monitoring: Whether log monitoring is active
         """
         if connection_status is not None:
             self._connection_status = connection_status
         if message is not None:
             self._status_message = message
-        if is_monitoring is not None:
-            self._is_monitoring = is_monitoring
         
         self.content = self._build_content()
         self.update()
@@ -153,7 +132,3 @@ class StatusBar(ft.Container):
     def set_error(self, message: str = "Error"):
         """Set status to error."""
         self.set_status(ConnectionStatus.ERROR, message)
-    
-    def set_monitoring(self, is_monitoring: bool):
-        """Set monitoring status."""
-        self.set_status(is_monitoring=is_monitoring)

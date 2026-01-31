@@ -510,7 +510,9 @@ class LogParser:
 
             ),
 
-            "split_completed": re.compile(r"Split completed for car ([a-f0-9\-]+): \((\d+) ms, splitindex (\d+)\)"),
+            "split_on": re.compile(r"\[([\d\-: .]+)\] \[gameplay\] \[info\] On Split start (\d+) end (\d+) id (\d+) splittime (\d+)"),
+
+            "split_end": re.compile(r"\[([\d\-: .]+)\] \[gameplay\] \[info\] On Split end with all splits, id (\d+)"),
 
             "lap_finish": re.compile(r"\[([\d\-: .]+)\] \[gameplay\] \[info\] New lap carId ([a-f0-9\-]+): ([\d:.]+)"),
 
@@ -981,54 +983,39 @@ class LogParser:
             return None
 
 
-
-        # --- Lap Data ---
-
-
-
-        # Split completed events
-
-        if "Split completed for car" in line:
-
-            m = self._patterns["split_completed"].search(line)
-
-            if m:
-
-                car_id = m.group(1)
-
-                time_ms = int(m.group(2))
-
-                split_idx = int(m.group(3))
-
-                # Only process splits for player's car
-
-                is_player_car = car_id in self.context.player_car_uuids or (
-                    self.current_session and car_id == self.current_session.car_uuid
-                )
-
-                if is_player_car:
-
-                    self._current_lap_data["splits"].append({
-
-                        "index": split_idx,
-
-                        "time_ms": time_ms,
-
-                    })
-
-
-
-        # Tyre compound
-
         if "setCompound Tyre:" in line:
-
             m = self._patterns["compound"].search(line)
-
             if m:
-
                 self.context.tyre_compound = m.group(1)
 
+        # On Split events (new format) - these belong to the lap that just started
+        if "On Split start" in line:
+            m = self._patterns["split_on"].search(line)
+            if m:
+                timestamp = m.group(1)
+                start_split = int(m.group(2))
+                end_split = int(m.group(3))
+                split_id = int(m.group(4))
+                split_time = int(m.group(5))
+                
+                # For player car, store the split time for the current lap being built
+                if self.current_session and self.context.car_uuid:
+                    # Assume this is for the player's car if we have session context
+                    self._current_lap_data["splits"].append({
+                        "index": split_id,
+                        "time_ms": split_time,
+                        "timestamp": timestamp,
+                    })
+                    _debug.log(f"[SPLIT_ON] Split {split_id}: {split_time}ms at {timestamp}")
 
+        # Split end events - indicates all splits collected for current lap
+        if "On Split end with all splits" in line:
+            m = self._patterns["split_end"].search(line)
+            if m:
+                timestamp = m.group(1)
+                split_id = int(m.group(2))
+                _debug.log(f"[SPLIT_END] All splits completed, final split {split_id} at {timestamp}")
+                # This indicates we have all splits for the current lap, but we'll wait for "New lap" message
 
         # Penalty (invalidates lap)
 
@@ -1216,15 +1203,15 @@ class LogParser:
 
                     
 
-                    # Extract sector times
-
+                    # Extract sector times - split times are individual sector times
                     splits = self._current_lap_data["splits"]
-
-                    sector1_ms = splits[0]["time_ms"] if len(splits) > 0 else None
-
-                    sector2_ms = (splits[1]["time_ms"] - splits[0]["time_ms"]) if len(splits) > 1 else None
-
-                    sector3_ms = (lap_time_ms - splits[1]["time_ms"]) if len(splits) > 1 else None
+                    
+                    # Sort splits by index to ensure correct order
+                    splits_sorted = sorted(splits, key=lambda x: x["index"])
+                    
+                    sector1_ms = splits_sorted[0]["time_ms"] if len(splits_sorted) > 0 else None
+                    sector2_ms = splits_sorted[1]["time_ms"] if len(splits_sorted) > 1 else None
+                    sector3_ms = splits_sorted[2]["time_ms"] if len(splits_sorted) > 2 else None
 
 
 

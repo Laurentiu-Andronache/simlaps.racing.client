@@ -304,7 +304,6 @@ class SimLapsApp:
             "Monitoring log file...",
         )
         
-        self._home_page.set_monitoring(True)
         # Use page.run_task() for proper Flet background task handling
         self._parser_task = self.page.run_task(self._run_parser)
     
@@ -319,8 +318,6 @@ class SimLapsApp:
                 ConnectionStatus.ERROR,
                 f"Error: {str(e)}",
             )
-        finally:
-            self._home_page.set_monitoring(False)
     
     def stop_monitoring(self):
         """Stop monitoring the log file."""
@@ -331,7 +328,6 @@ class SimLapsApp:
             self._parser_task.cancel()
             self._parser_task = None
         
-        self._home_page.set_monitoring(False)
         self._home_page.set_connection_status(
             ConnectionStatus.DISCONNECTED,
             "Monitoring stopped",

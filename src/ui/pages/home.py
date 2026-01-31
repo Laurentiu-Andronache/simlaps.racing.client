@@ -169,10 +169,6 @@ class HomePage(ft.Column):
                         ),
                         ft.Column(
                             controls=[
-                                ft.Row([
-                                    ft.Container(width=10, height=10, border_radius=5, bgcolor="#ffd43b"),
-                                    ft.Text("Monitoring", size=12, color="#ffd43b", weight=ft.FontWeight.W_600),
-                                ], spacing=6),
                                 *user_info_controls,
                             ],
                             spacing=4,
@@ -247,15 +243,6 @@ class HomePage(ft.Column):
                     self._game_version_text,
                 ], spacing=0),
                 ft.Container(expand=True),
-                ft.Container(
-                    content=ft.Row([
-                        ft.Icon(ft.Icons.SECURITY, color="#51cf66", size=14),
-                        ft.Text("Secured", size=11, color="#51cf66"),
-                    ], spacing=4),
-                    padding=ft.padding.symmetric(horizontal=8, vertical=4),
-                    bgcolor="#1f3d1f",
-                    border_radius=12,
-                ),
             ], spacing=12),
             padding=ft.padding.only(left=20, right=20, top=20, bottom=16),
             bgcolor="#0f0f1a",
@@ -443,10 +430,6 @@ class HomePage(ft.Column):
     def set_connection_status(self, status: ConnectionStatus, message: str):
         """Update the connection status bar."""
         self._status_bar.set_status(status, message)
-    
-    def set_monitoring(self, is_monitoring: bool):
-        """Update monitoring status."""
-        self._status_bar.set_monitoring(is_monitoring)
     
     def set_game_running(self, is_running: bool):
         """Update game running status and refresh UI."""
