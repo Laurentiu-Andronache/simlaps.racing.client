@@ -1060,7 +1060,7 @@ class LogParser:
 
         # Fuel consumption
 
-        if "Energy source car" in line and "fuel consumed:" in line:
+        if "[gameplay] [info] Energy source car" in line and "fuel consumed:" in line and "hundredmeters done:" in line:
 
             m = self._patterns["fuel_consumed"].search(line)
 
