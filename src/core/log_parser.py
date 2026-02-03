@@ -114,7 +114,7 @@ class DebugLogger:
 
         # Set to True only for internal debugging
 
-        ENABLE_DEBUG = True
+        ENABLE_DEBUG = False
 
         
 
