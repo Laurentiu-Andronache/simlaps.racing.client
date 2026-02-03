@@ -307,7 +307,7 @@ class HomePage(ft.Column):
                     style=ft.ButtonStyle(color="#888888", side=ft.BorderSide(1, "#3d3d5c")),
                 ),
                 ft.OutlinedButton(
-                    "View History",
+                    "Submission History",
                     icon=ft.Icons.HISTORY,
                     on_click=lambda _: self.on_history_click() if self.on_history_click else None,
                     style=ft.ButtonStyle(color="#888888", side=ft.BorderSide(1, "#3d3d5c")),
@@ -390,7 +390,7 @@ class HomePage(ft.Column):
                     style=ft.ButtonStyle(color="#888888", side=ft.BorderSide(1, "#3d3d5c")),
                 ),
                 ft.OutlinedButton(
-                    "View History",
+                    "Submission History",
                     icon=ft.Icons.HISTORY,
                     on_click=lambda _: self.on_history_click() if self.on_history_click else None,
                     style=ft.ButtonStyle(color="#888888", side=ft.BorderSide(1, "#3d3d5c")),

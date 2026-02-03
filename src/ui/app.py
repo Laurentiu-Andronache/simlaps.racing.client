@@ -143,7 +143,6 @@ class SimLapsApp:
         
         self._history_page = HistoryPage(
             on_back=lambda: self._show_page(AppPage.HOME),
-            on_clear=self._clear_history,
         )
     
     def _show_page(self, page: AppPage):
@@ -180,12 +179,7 @@ class SimLapsApp:
             else:
                 status = LapCardStatus.SUBMITTING if should_submit else LapCardStatus.PENDING
             
-            # Add to home page
-            print(f"[APP] Adding lap card to home page...")
-            card = self._home_page.add_lap(session, lap, status)
-            print(f"[APP] Lap card added successfully")
-            
-            # Add to history
+            # Add to history FIRST (before home page to ensure synchronization)
             history_entry = HistoryEntry(
                 track=session.track,
                 car=session.car,
@@ -195,6 +189,27 @@ class SimLapsApp:
                 was_valid=lap.is_valid,
             )
             self._history_entries.append(history_entry)
+            
+            # Add to home page (this increments the counter)
+            print(f"[APP] Adding lap card to home page...")
+            try:
+                card = self._home_page.add_lap(session, lap, status)
+                print(f"[APP] Lap card added successfully")
+            except Exception as e:
+                # If home page add fails, remove the history entry to maintain sync
+                print(f"[ERROR] Failed to add lap card to home page: {e}")
+                self._history_entries.pop()  # Remove the entry we just added
+                raise
+            
+            # Debug: Check synchronization
+            print(f"[DEBUG] Home lap count: {self._home_page._lap_count}")
+            print(f"[DEBUG] History entries: {len(self._history_entries)}")
+            print(f"[DEBUG] History entry added - was_submitted: {history_entry.was_submitted}, was_valid: {history_entry.was_valid}")
+            
+            # Verify synchronization
+            if self._home_page._lap_count != len(self._history_entries):
+                print(f"[ERROR] Synchronization mismatch! Home: {self._home_page._lap_count}, History: {len(self._history_entries)}")
+                # This should never happen now, but if it does, we have a serious issue
             
             # Auto-submit if enabled
             if should_submit:
@@ -366,10 +381,6 @@ class SimLapsApp:
         """Test connection to server."""
         test_client = APIClient(server_url=server_url)
         return await test_client.test_connection()
-    
-    def _clear_history(self):
-        """Clear lap history."""
-        self._history_entries.clear()
     
     def _get_game_version_from_log(self) -> Optional[str]:
         """Read game version from the first few lines of the log file."""

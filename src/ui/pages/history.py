@@ -29,10 +29,8 @@ class HistoryPage(ft.Container):
     def __init__(
         self,
         on_back: Optional[Callable] = None,
-        on_clear: Optional[Callable] = None,
     ):
         self.on_back = on_back
-        self.on_clear = on_clear
         self._entries: List[HistoryEntry] = []
         
         self._list_view = ft.ListView(
@@ -57,17 +55,11 @@ class HistoryPage(ft.Container):
                     on_click=lambda _: self.on_back() if self.on_back else None,
                 ),
                 ft.Text(
-                    "Lap History",
+                    "Lap Submission",
                     size=24,
                     weight=ft.FontWeight.W_700,
                     color="#ffffff",
                     expand=True,
-                ),
-                ft.IconButton(
-                    icon=ft.Icons.DELETE,
-                    icon_color="#ff6b6b",
-                    tooltip="Clear History",
-                    on_click=self._confirm_clear,
                 ),
             ],
             spacing=8,
@@ -104,14 +96,19 @@ class HistoryPage(ft.Container):
         submitted = sum(1 for e in self._entries if e.was_submitted)
         valid = sum(1 for e in self._entries if e.was_valid)
         
+        # Debug logging
+        print(f"[DEBUG] History stats - Total: {total}, Submitted: {submitted}, Valid: {valid}")
+        for i, entry in enumerate(self._entries):
+            print(f"[DEBUG] Entry {i}: submitted={entry.was_submitted}, valid={entry.was_valid}")
+        
         return ft.Container(
             content=ft.Row(
                 controls=[
-                    self._build_stat("Total Laps", str(total), ft.Icons.FLAG),
+                    self._build_stat("Total Laps (found in logs)", str(total), ft.Icons.FLAG),
                     ft.Container(width=1, height=40, bgcolor="#3d3d5c"),
-                    self._build_stat("Submitted", str(submitted), ft.Icons.CLOUD_UPLOAD),
+                    self._build_stat("Submitted (to server)", str(submitted), ft.Icons.CLOUD_UPLOAD),
                     ft.Container(width=1, height=40, bgcolor="#3d3d5c"),
-                    self._build_stat("Valid", str(valid), ft.Icons.CHECK_CIRCLE),
+                    self._build_stat("Valid (No Penalties)", str(valid), ft.Icons.CHECK_CIRCLE),
                 ],
                 alignment=ft.MainAxisAlignment.SPACE_AROUND,
             ),
@@ -240,40 +237,6 @@ class HistoryPage(ft.Container):
                 self._build_entry_row(entry)
                 for entry in reversed(self._entries)  # Most recent first
             ]
-    
-    def _confirm_clear(self, e):
-        """Show confirmation dialog for clearing history."""
-        def close_dialog(e):
-            dialog.open = False
-            self.page.update()
-        
-        def do_clear(e):
-            self._entries.clear()
-            self._update_list_view()
-            self.content = self._build_content()
-            if self.on_clear:
-                self.on_clear()
-            dialog.open = False
-            self.page.update()
-        
-        dialog = ft.AlertDialog(
-            modal=True,
-            title=ft.Text("Clear History?"),
-            content=ft.Text("This will remove all lap history. This cannot be undone."),
-            actions=[
-                ft.TextButton("Cancel", on_click=close_dialog),
-                ft.TextButton(
-                    "Clear",
-                    on_click=do_clear,
-                    style=ft.ButtonStyle(color="#ff6b6b"),
-                ),
-            ],
-            actions_alignment=ft.MainAxisAlignment.END,
-        )
-        
-        self.page.dialog = dialog
-        dialog.open = True
-        self.page.update()
     
     def add_entry(self, entry: HistoryEntry):
         """Add a new history entry."""

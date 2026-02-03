@@ -114,7 +114,7 @@ class DebugLogger:
 
         # Set to True only for internal debugging
 
-        ENABLE_DEBUG = False
+        ENABLE_DEBUG = True
 
         
 
@@ -470,9 +470,9 @@ class LogParser:
 
             "is_valid": True,
 
-            "fuel_used_lap": None,
+            "fuel_used_lap": 0.0,  # Accumulate fuel during the lap
 
-            "pending_fuel_events": [],  # Store fuel events with timestamps for matching
+            "lap_start_time": None,  # Track when current lap started
 
         }
 
@@ -1069,25 +1069,13 @@ class LogParser:
 
                 if self.current_session and is_player_car:
 
-                    # Store fuel event with timestamp for later matching with lap completion
-
-                    fuel_event = {
-
-                        "timestamp": timestamp,
-
-                        "fuel_consumed": fuel_reading,
-
-                        "hundredmeters": hundreds_done,
-
-                        "distance_km": hundreds_done / 10.0  # Convert hundreds of meters to km
-
-                    }
-
-                    
-
-                    self._current_lap_data["pending_fuel_events"].append(fuel_event)
-
-                    _debug.log(f"[FUEL] Stored fuel event: timestamp={timestamp}, fuel={fuel_reading}L, distance={fuel_event['distance_km']}km")
+                    # Simply accumulate fuel during the current lap
+                    if fuel_reading > 0:  # Only count positive fuel consumption
+                        # Initialize fuel accumulator if it's None
+                        if self._current_lap_data["fuel_used_lap"] is None:
+                            self._current_lap_data["fuel_used_lap"] = 0.0
+                        self._current_lap_data["fuel_used_lap"] += fuel_reading
+                        _debug.log(f"[FUEL] Added fuel: {fuel_reading}L, lap total: {self._current_lap_data['fuel_used_lap']}L")
 
 
 
@@ -1143,45 +1131,15 @@ class LogParser:
 
                 if is_player_car:
 
-                    # Match fuel event by timestamp (key insight from specification)
-
-                    matched_fuel_event = None
-
-                    for fuel_event in self._current_lap_data["pending_fuel_events"]:
-
-                        if fuel_event["timestamp"] == lap_timestamp:
-
-                            matched_fuel_event = fuel_event
-
-                            break
-
+                    # Use the accumulated fuel for this lap
+                    fuel_used_lap = self._current_lap_data["fuel_used_lap"] or 0.0
                     
-
-                    # Extract fuel data from matched event
-
-                    fuel_used_lap = None
-
-                    if matched_fuel_event:
-
-                        fuel_consumed = matched_fuel_event["fuel_consumed"]
-
-                        # Only use positive fuel values (ignore refueling/negative values)
-
-                        if fuel_consumed > 0:
-
-                            fuel_used_lap = fuel_consumed
-
-                            # Add to session total
-
-                            self.current_session.fuel_used_session += fuel_consumed
-
-                        
-
-                        _debug.log(f"[FUEL_MATCH] Matched fuel event: {fuel_consumed}L at timestamp {lap_timestamp}")
-
+                    if fuel_used_lap > 0:
+                        # Add to session total
+                        self.current_session.fuel_used_session += fuel_used_lap
+                        _debug.log(f"[FUEL] Lap fuel used: {fuel_used_lap}L, session total: {self.current_session.fuel_used_session}L")
                     else:
-
-                        _debug.log(f"[FUEL_MATCH] No fuel event found for timestamp {lap_timestamp}")
+                        _debug.log(f"[FUEL] No fuel consumed this lap")
 
                     # Create session on-the-fly if we don't have one but have player context
 
@@ -1257,29 +1215,16 @@ class LogParser:
 
 
 
-                    # Reset for next lap - clear matched fuel events and old pending events
-
-                    # Remove matched fuel event and any older events to prevent memory buildup
-
-                    self._current_lap_data["pending_fuel_events"] = [
-
-                        event for event in self._current_lap_data["pending_fuel_events"]
-
-                        if event["timestamp"] != lap_timestamp
-
-                    ]
-
-                    
-
+                    # Reset for next lap - clear fuel accumulator
                     self._current_lap_data = {
 
                         "splits": [],
 
                         "is_valid": True,
 
-                        "fuel_used_lap": None,
+                        "fuel_used_lap": 0.0,  # Reset fuel for next lap
 
-                        "pending_fuel_events": self._current_lap_data["pending_fuel_events"],
+                        "lap_start_time": None,
 
                     }
 
@@ -1323,17 +1268,16 @@ class LogParser:
 
         
 
-        # Reset lap data including pending fuel events
-
+        # Reset lap data for new session
         self._current_lap_data = {
 
             "splits": [],
 
             "is_valid": True,
 
-            "fuel_used_lap": None,
+            "fuel_used_lap": 0.0,  # Start with zero fuel for new session
 
-            "pending_fuel_events": [],
+            "lap_start_time": None,
 
         }
 
@@ -1590,69 +1534,40 @@ class LogParser:
             
 
             # Report what we found
-
             _debug.log("Sending initial UI updates...")
-
+            
             if self.current_session:
-
                 _debug.log(f"  Have session, notifying UI")
-
-                await self._emit_status(
-
-                    f"Found {existing_laps} historical laps - monitoring for new ones..."
-
-                )
-
-                # Notify UI about detected user
-
+                
+                await self._emit_status("Monitoring for new laps...")
+                
+                # Notify about detected user
                 if self.current_session.player_id:
-
                     _debug.log(f"  Notifying user detected: {self.current_session.player_id}")
-
                     await self._emit_user_detected(
-
                         self.current_session.player_id,
-
                         self.current_session.player_name
-
                     )
-
+                
                 # Notify about game version if detected
-
                 if self.context.game_version and self.context.game_version != "Unknown":
-
                     _debug.log(f"  Notifying game version: {self.context.game_version}")
-
                     if self.on_game_version:
-
                         try:
-
                             await self.on_game_version(self.context.game_version)
-
                         except Exception as e:
-
                             _debug.log(f"[ERROR] on_game_version callback failed: {e}")
-
             else:
-
                 _debug.log(f"  No session found, waiting...")
-
                 await self._emit_status("Ready - waiting for session...")
-
+                
                 # Still notify about game version if we found it
-
                 if self.context.game_version and self.context.game_version != "Unknown":
-
                     _debug.log(f"  Notifying game version (no session): {self.context.game_version}")
-
                     if self.on_game_version:
-
                         try:
-
                             await self.on_game_version(self.context.game_version)
-
                         except Exception as e:
-
                             _debug.log(f"[ERROR] on_game_version callback failed: {e}")
 
 
@@ -1747,22 +1662,28 @@ class LogParser:
 
                     
 
-                    if completed_lap and self.current_session:
-
+                    if completed_lap:
+                        # Always emit laps, use current session or create a default one
+                        session = self.current_session
+                        if not session:
+                            # Create a default session for laps without an active session
+                            session = SessionData(
+                                track="Unknown Track",
+                                car="Unknown Car", 
+                                player_id=None,
+                                player_name="Unknown Player",
+                                car_uuid=None
+                            )
+                            _debug.log(f"[LIVE] Created default session for lap: {completed_lap.lap_time_str}")
+                        
                         _debug.log(f"[LIVE] [EMIT] About to emit lap to UI callback...")
-
+                        
                         try:
-
-                            await self._emit_lap(self.current_session, completed_lap)
-
+                            await self._emit_lap(session, completed_lap)
                             _debug.log(f"[LIVE] [EMIT] Successfully emitted lap!")
-
                         except Exception as e:
-
                             _debug.log(f"[ERROR] Failed to emit lap: {e}")
-
                             import traceback
-
                             _debug.log(f"[ERROR] Traceback: {traceback.format_exc()}")
 
                     continue
