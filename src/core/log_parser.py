@@ -114,7 +114,7 @@ class DebugLogger:
 
         # Set to True only for internal debugging
 
-        ENABLE_DEBUG = False
+        ENABLE_DEBUG = True
 
         
 
@@ -496,7 +496,7 @@ class LogParser:
 
             "track_name": re.compile(r"TRACK NAME (.+)"),
 
-            "track_load": re.compile(r"Scene::load\('content\\\\tracks\\\\([^\\\\]+)"),
+            "track_load": re.compile(r"Loading (?:scene|Scene) .+ content\\tracks\\([^\\]+)"),
 
             "fuel": re.compile(r"FUEL car ([a-f0-9\-]+) setup with ([\d.]+) L"),
 
@@ -510,7 +510,9 @@ class LogParser:
 
             ),
 
-            "split_on": re.compile(r"\[([\d\-: .]+)\] \[gameplay\] \[info\] On Split start (\d+) end (\d+) id (\d+) splittime (\d+)"),
+            "split_on": re.compile(
+                r"\[([\d\-: .]+)\] \[gameplay\] \[info\] Split completed for car ([a-f0-9\-]+): \((\d+) ms, splitindex (\d+)\) lap:\d+"
+            ),
 
             "split_end": re.compile(r"\[([\d\-: .]+)\] \[gameplay\] \[info\] On Split end with all splits, id (\d+)"),
 
@@ -706,7 +708,7 @@ class LogParser:
 
         # Track name (fallback from scene load)
 
-        elif "Scene::load" in line and "content\\tracks" in line:
+        elif "Loading scene" in line or "Loading Scene" in line and "content\\tracks" in line:
 
             m = self._patterns["track_load"].search(line)
 
@@ -910,6 +912,12 @@ class LogParser:
 
                         self.current_session.player_id = self.context.player_id
 
+                    else:
+
+                        # Create session when connecting to car if no session exists
+
+                        self._start_new_session("PRACTICE", line)
+
 
 
         # Weather
@@ -988,25 +996,23 @@ class LogParser:
             if m:
                 self.context.tyre_compound = m.group(1)
 
-        # On Split events (new format) - these belong to the lap that just started
-        if "On Split start" in line:
+        # On Split events - only collect splits for player's car
+        if "Split completed for car" in line:
             m = self._patterns["split_on"].search(line)
             if m:
                 timestamp = m.group(1)
-                start_split = int(m.group(2))
-                end_split = int(m.group(3))
+                car_id = m.group(2)
+                split_time = int(m.group(3))
                 split_id = int(m.group(4))
-                split_time = int(m.group(5))
                 
-                # For player car, store the split time for the current lap being built
-                if self.current_session and self.context.car_uuid:
-                    # Assume this is for the player's car if we have session context
+                # Only store splits for current session's car (not old session UUIDs)
+                if self.current_session and car_id == self.current_session.car_uuid:
                     self._current_lap_data["splits"].append({
                         "index": split_id,
                         "time_ms": split_time,
                         "timestamp": timestamp,
                     })
-                    _debug.log(f"[SPLIT_ON] Split {split_id}: {split_time}ms at {timestamp}")
+                    _debug.log(f"[SPLIT_ON] Split {split_id}: {split_time}ms for car {car_id} at {timestamp}")
 
         # Split end events - indicates all splits collected for current lap
         if "On Split end with all splits" in line:
@@ -1111,7 +1117,7 @@ class LogParser:
 
                 _debug.log(f"  context.player_car_uuids: {self.context.player_car_uuids}")
 
-                _debug.log(f"  pending_fuel_events: {len(self._current_lap_data['pending_fuel_events'])}")
+                _debug.log(f"  fuel_used_lap: {self._current_lap_data.get('fuel_used_lap', 0.0)}L")
 
                 
 
@@ -1161,25 +1167,26 @@ class LogParser:
 
                     
 
-                    # Extract sector times - split times are individual sector times
+                    # Extract sector times from split data
+                    # NOTE: splitindex 0 is cumulative time (not useful), splitindex 1 & 2 are sector 2 & 3 times
                     splits = self._current_lap_data["splits"]
                     
                     # Sort splits by index to ensure correct order
                     splits_sorted = sorted(splits, key=lambda x: x["index"])
                     
-                    sector1_ms = splits_sorted[0]["time_ms"] if len(splits_sorted) > 0 else None
+                    # splitindex 1 = sector 2 time, splitindex 2 = sector 3 time
                     sector2_ms = splits_sorted[1]["time_ms"] if len(splits_sorted) > 1 else None
                     sector3_ms = splits_sorted[2]["time_ms"] if len(splits_sorted) > 2 else None
+                    # sector 1 = total lap time minus sector 2 and sector 3
+                    if sector2_ms is not None and sector3_ms is not None:
+                        sector1_ms = lap_time_ms - sector2_ms - sector3_ms
+                    else:
+                        sector1_ms = None
 
 
 
-                    # Extract distance from matched fuel event
-
+                    # Distance extraction removed - using simplified fuel logic
                     distance_km = None
-
-                    if matched_fuel_event:
-
-                        distance_km = matched_fuel_event["distance_km"]
 
                     
 
@@ -1266,7 +1273,10 @@ class LogParser:
 
         self.context.last_fuel_reading = None
 
-        
+        # Clear old car UUIDs to prevent cross-session split contamination
+        self.context.player_car_uuids.clear()
+        if self.context.car_uuid:
+            self.context.player_car_uuids.add(self.context.car_uuid)
 
         # Reset lap data for new session
         self._current_lap_data = {
@@ -1328,8 +1338,6 @@ class LogParser:
             "is_valid": True,
 
             "fuel_used_lap": None,
-
-            "pending_fuel_events": [],
 
         }
 
