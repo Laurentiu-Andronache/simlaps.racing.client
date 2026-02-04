@@ -708,7 +708,7 @@ class LogParser:
 
         # Track name (fallback from scene load)
 
-        elif "Loading scene" in line or "Loading Scene" in line and "content\\tracks" in line:
+        elif ("Loading scene" in line or "Loading Scene" in line) and "content\\tracks" in line:
 
             m = self._patterns["track_load"].search(line)
 
@@ -1043,9 +1043,9 @@ class LogParser:
 
                 fuel_amount = float(m.group(2))
 
-                is_player_car = car_id in self.context.player_car_uuids or (self.current_session and car_id == self.current_session.car_uuid)
+                is_player_car = self.current_session and car_id == self.current_session.car_uuid
 
-                if self.current_session and is_player_car:
+                if is_player_car:
 
                     self.current_session.initial_fuel = fuel_amount
 
@@ -1071,9 +1071,9 @@ class LogParser:
 
                 # Check if this is our player's car
 
-                is_player_car = car_id in self.context.player_car_uuids or (self.current_session and car_id == self.current_session.car_uuid)
+                is_player_car = self.current_session and car_id == self.current_session.car_uuid
 
-                if self.current_session and is_player_car:
+                if is_player_car:
 
                     # Simply accumulate fuel during the current lap
                     if fuel_reading > 0:  # Only count positive fuel consumption
@@ -1123,13 +1123,9 @@ class LogParser:
 
                 # Check if this is our player's car
 
-                is_player_car = car_id in self.context.player_car_uuids
+                is_player_car = car_id == self.current_session.car_uuid
 
-                if self.current_session:
-
-                    is_player_car = is_player_car or car_id == self.current_session.car_uuid
-
-                    _debug.log(f"  session.car_uuid: {self.current_session.car_uuid}")
+                _debug.log(f"  session.car_uuid: {self.current_session.car_uuid}")
 
                 _debug.log(f"  is_player_car: {is_player_car}")
 
@@ -1329,17 +1325,7 @@ class LogParser:
 
 
 
-        # Reset lap data
 
-        self._current_lap_data = {
-
-            "splits": [],
-
-            "is_valid": True,
-
-            "fuel_used_lap": None,
-
-        }
 
 
 
