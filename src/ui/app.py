@@ -14,6 +14,7 @@ from enum import Enum
 
 from .pages.home import HomePage
 from .pages.settings import SettingsPage
+from .components.pb_cache_viewer import show_pb_cache_dialog
 from .pages.history import HistoryPage, HistoryEntry
 from .components.lap_card import LapCardStatus
 from .components.status_bar import ConnectionStatus
@@ -138,6 +139,7 @@ class SimLapsApp:
             config=self._config,
             on_settings_click=lambda: self._show_page(AppPage.SETTINGS),
             on_history_click=lambda: self._show_page(AppPage.HISTORY),
+            on_pb_cache_click=self._show_pb_cache_viewer,
         )
         
         self._settings_page = SettingsPage(
@@ -281,7 +283,17 @@ class SimLapsApp:
         """Post lap to Discord if configured and meets criteria."""
         try:
             # Check if Discord is properly configured
-            if not self._config.discord_enabled or not self._discord_notifier:
+            if not self._config.discord_enabled:
+                return
+            
+            # Validate webhook URL
+            if not self._config.discord_webhook_url or not self._config.discord_webhook_url.strip():
+                print("[APP] Discord webhook URL is empty - skipping post")
+                return
+            
+            # Check if Discord notifier is initialized
+            if not self._discord_notifier:
+                print("[APP] Discord notifier not initialized - skipping post")
                 return
             
             # Check lap validity criteria (use same setting as web submission)
@@ -323,6 +335,7 @@ class SimLapsApp:
                 print(f"[APP] Discord post successful: {lap.lap_time_str} on {session.track}")
             else:
                 print(f"[APP] Discord post failed: {lap.lap_time_str} on {session.track}")
+                # Note: Error details are already logged in DiscordNotifier.post_lap()
                 
         except Exception as e:
             print(f"[APP] Error posting to Discord: {e}")
@@ -471,18 +484,28 @@ class SimLapsApp:
         self._home_page.update_config(self._config)
     
     async def _test_discord_webhook(self, webhook_url: str) -> tuple[bool, str]:
-        """Test Discord webhook connectivity."""
-        try:
-            notifier = DiscordNotifier(webhook_url)
-            success = await notifier.send_test_message()
-            
+        """Test Discord webhook connection."""
+        if self._discord_notifier:
+            success = await self._discord_notifier.send_test_message()
             if success:
-                return True, "Connection successful"
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text("Test message sent successfully!", color="#ffffff"),
+                    bgcolor="#51cf66",
+                )
             else:
-                return False, "Failed to send test message"
-                
-        except Exception as e:
-            return False, f"Error: {str(e)}"
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text("Failed to send test message", color="#ffffff"),
+                    bgcolor="#ff6b6b",
+                )
+            self.page.snack_bar.open = True
+            self.page.update()
+    
+    def _show_pb_cache_viewer(self, e=None):
+        """Show the PB cache viewer dialog."""
+        print(f"[APP] PB cache viewer called! PB cache: {self._pb_cache}")
+        print(f"[APP] PB cache type: {type(self._pb_cache)}")
+        print(f"[APP] PB cache loaded: {self._pb_cache.is_loaded() if self._pb_cache else 'None'}")
+        show_pb_cache_dialog(self.page, self._pb_cache)
     
     async def _test_connection(self, server_url: str) -> tuple[bool, str]:
         """Test connection to server."""

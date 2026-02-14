@@ -54,10 +54,12 @@ class HomePage(ft.Column):
         config: AppConfig,
         on_settings_click: Optional[Callable] = None,
         on_history_click: Optional[Callable] = None,
+        on_pb_cache_click: Optional[Callable] = None,
     ):
         self.config = config
         self.on_settings_click = on_settings_click
         self.on_history_click = on_history_click
+        self.on_pb_cache_click = on_pb_cache_click
         
         # Game state
         self._game_running = False
@@ -303,13 +305,19 @@ class HomePage(ft.Column):
                 ft.OutlinedButton(
                     "Settings",
                     icon=ft.Icons.SETTINGS,
-                    on_click=lambda _: self.on_settings_click() if self.on_settings_click else None,
+                    on_click=self._handle_settings_click,
                     style=ft.ButtonStyle(color="#888888", side=ft.BorderSide(1, "#3d3d5c")),
                 ),
                 ft.OutlinedButton(
                     "Submission History",
                     icon=ft.Icons.HISTORY,
-                    on_click=lambda _: self.on_history_click() if self.on_history_click else None,
+                    on_click=self._handle_history_click,
+                    style=ft.ButtonStyle(color="#888888", side=ft.BorderSide(1, "#3d3d5c")),
+                ),
+                ft.OutlinedButton(
+                    "View PB Cache",
+                    icon=ft.Icons.LIST_ALT,
+                    on_click=self._handle_pb_cache_click,
                     style=ft.ButtonStyle(color="#888888", side=ft.BorderSide(1, "#3d3d5c")),
                 ),
             ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
@@ -359,63 +367,39 @@ class HomePage(ft.Column):
         """Open browser to download update."""
         if self.page:
             self.page.launch_url("https://simlaps.racing/download")
-        
-        # Laps header
-        self._lap_count_text = ft.Text(f"({self._lap_count} total)", size=12, color="#888888")
-        
-        laps_header = ft.Container(
-            content=ft.Row([
-                ft.Text("Recent Laps", size=16, weight=ft.FontWeight.W_600, color="#ffffff"),
-                self._lap_count_text,
-            ], spacing=8),
-            padding=ft.padding.only(left=20, right=20, bottom=8),
-            bgcolor="#0f0f1a",
-        )
-        
-        # Laps list container
-        laps_container = ft.Container(
-            content=self._laps_column,
-            expand=True,
-            padding=ft.padding.only(left=20, right=20),
-            bgcolor="#0f0f1a",
-        )
-        
-        # Buttons
-        buttons = ft.Container(
-            content=ft.Row([
-                ft.OutlinedButton(
-                    "Settings",
-                    icon=ft.Icons.SETTINGS,
-                    on_click=lambda _: self.on_settings_click() if self.on_settings_click else None,
-                    style=ft.ButtonStyle(color="#888888", side=ft.BorderSide(1, "#3d3d5c")),
-                ),
-                ft.OutlinedButton(
-                    "Submission History",
-                    icon=ft.Icons.HISTORY,
-                    on_click=lambda _: self.on_history_click() if self.on_history_click else None,
-                    style=ft.ButtonStyle(color="#888888", side=ft.BorderSide(1, "#3d3d5c")),
-                ),
-            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-            padding=ft.padding.only(left=20, right=20, top=16, bottom=16),
-            bgcolor="#0f0f1a",
-        )
-        
-        # Game status container wrapper
-        game_status_wrapper = ft.Container(
-            content=self._game_status_container,
-            padding=ft.padding.only(left=20, right=20),
-            bgcolor="#0f0f1a",
-        )
-        
-        return [
-            header,
-            game_status_wrapper,
-            status_section,
-            laps_header,
-            laps_container,
-            buttons,
-            self._status_bar,
-        ]
+    
+    def _handle_settings_click(self, e):
+        """Handle Settings button click."""
+        print(f"Settings button clicked! Callback exists: {self.on_settings_click is not None}")
+        if self.on_settings_click:
+            self.on_settings_click()
+        else:
+            print("No callback registered for Settings")
+    
+    def _handle_history_click(self, e):
+        """Handle Submission History button click."""
+        print(f"History button clicked! Callback exists: {self.on_history_click is not None}")
+        if self.on_history_click:
+            self.on_history_click()
+        else:
+            print("No callback registered for History")
+    
+    def _handle_pb_cache_click(self, e):
+        """Handle View PB Cache button click."""
+        print(f"PB Cache button clicked! Callback exists: {self.on_pb_cache_click is not None}")
+        if self.on_pb_cache_click:
+            print("Calling callback...")
+            self.on_pb_cache_click()
+        else:
+            print("No callback registered for PB Cache")
+            # Show a message to user if no callback is set
+            if self.page:
+                self.page.show_snack_bar(
+                    ft.SnackBar(
+                        content=ft.Text("PB Cache view is not configured yet"),
+                        action="OK"
+                    )
+                )
     
     def update_config(self, config: AppConfig):
         """Update with new config and refresh UI."""

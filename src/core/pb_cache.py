@@ -207,9 +207,14 @@ class PBCache:
         """Check if cache has been loaded."""
         return self._loaded
     
-    def get_steam_id(self) -> Optional[str]:
-        """Get the Steam ID for which cache is loaded."""
-        return self._steam_id
+    def get_all_pbs(self) -> Dict[str, PersonalBest]:
+        """
+        Get all personal bests from cache.
+        
+        Returns:
+            Dictionary with (track, car) keys and PersonalBest values
+        """
+        return {key: value for key, value in self._cache.items()}
 
 
 # Global PB cache instance
