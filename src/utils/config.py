@@ -13,7 +13,7 @@ from typing import Optional
 
 # Default configuration values
 DEFAULT_LOG_PATH = str(Path.home() / "Documents" / "ACE" / "log.txt")
-DEFAULT_SERVER_URL = "https://simlaps.racing"
+DEFAULT_SERVER_URL = "http://localhost:3000"
 APP_NAME = "SimLapsClient"
 
 
@@ -65,6 +65,11 @@ class AppConfig:
     
     # History
     max_history_items: int = 100
+    
+    # Discord Integration
+    discord_webhook_url: Optional[str] = None
+    discord_enabled: bool = False
+    discord_pb_only: bool = True
     
     def to_dict(self) -> dict:
         """Convert config to dictionary."""
@@ -232,6 +237,40 @@ class ConfigManager:
     def set_server_url(self, url: str) -> None:
         """Set the server URL."""
         self.update(server_url=url.rstrip("/"))
+    
+    def set_discord_config(
+        self,
+        webhook_url: Optional[str] = None,
+        enabled: Optional[bool] = None,
+        pb_only: Optional[bool] = None,
+        post_invalid: Optional[bool] = None,
+    ) -> None:
+        """
+        Set Discord configuration.
+        
+        Args:
+            webhook_url: Discord webhook URL
+            enabled: Whether Discord posting is enabled
+            pb_only: Whether to only post personal bests
+            post_invalid: Whether to post invalid laps
+        """
+        updates = {}
+        if webhook_url is not None:
+            updates["discord_webhook_url"] = webhook_url
+        if enabled is not None:
+            updates["discord_enabled"] = enabled
+        if pb_only is not None:
+            updates["discord_pb_only"] = pb_only
+        if post_invalid is not None:
+            updates["discord_post_invalid"] = post_invalid
+        
+        if updates:
+            self.update(**updates)
+    
+    def is_discord_configured(self) -> bool:
+        """Check if Discord is properly configured."""
+        config = self.get()
+        return bool(config.discord_webhook_url and config.discord_enabled)
 
 
 # Global config manager instance

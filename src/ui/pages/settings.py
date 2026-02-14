@@ -24,11 +24,13 @@ class SettingsPage(ft.Container):
         on_back: Optional[Callable] = None,
         on_save: Optional[Callable[[AppConfig], None]] = None,
         on_test_connection: Optional[Callable] = None,
+        on_test_discord: Optional[Callable] = None,
     ):
         self.config = config
         self.on_back = on_back
         self.on_save = on_save
         self.on_test_connection = on_test_connection
+        self.on_test_discord = on_test_discord
         
         # Form fields
         self._server_url_field = ft.TextField(
@@ -45,6 +47,34 @@ class SettingsPage(ft.Container):
         self._submit_invalid_switch = ft.Switch(
             value=config.submit_invalid_laps,
             active_color="#7c3aed",
+        )
+        
+        # Discord fields
+        self._discord_webhook_field = ft.TextField(
+            value=config.discord_webhook_url or "",
+            label="Discord Webhook URL",
+            hint_text="https://discord.com/api/webhooks/...",
+            border_color="#3d3d5c",
+            focused_border_color="#7c3aed",
+            bgcolor="#1e1e2e",
+            color="#ffffff",
+            label_style=ft.TextStyle(color="#888888"),
+        )
+        
+        self._discord_enabled_switch = ft.Switch(
+            value=config.discord_enabled,
+            active_color="#7c3aed",
+        )
+        
+        self._discord_pb_only_switch = ft.Switch(
+            value=config.discord_pb_only,
+            active_color="#7c3aed",
+        )
+        
+        self._discord_test_status = ft.Text(
+            "",
+            size=12,
+            color="#888888",
         )
         
         self._connection_status = ft.Text(
@@ -113,6 +143,39 @@ class SettingsPage(ft.Container):
             ],
         )
         
+        # Discord settings section
+        discord_section = self._build_section(
+            "Discord Integration",
+            [
+                self._discord_webhook_field,
+                ft.Row(
+                    controls=[
+                        ft.OutlinedButton(
+                            "Test Webhook",
+                            icon=ft.Icons.SEND,
+                            on_click=self._test_discord_webhook,
+                            style=ft.ButtonStyle(
+                                color="#888888",
+                                side=ft.BorderSide(1, "#3d3d5c"),
+                            ),
+                        ),
+                        self._discord_test_status,
+                    ],
+                    spacing=16,
+                ),
+                self._build_switch_row(
+                    "Enable Discord posting",
+                    "Post lap times to Discord webhook",
+                    self._discord_enabled_switch,
+                ),
+                self._build_switch_row(
+                    "Personal bests only",
+                    "Only post new personal best laps",
+                    self._discord_pb_only_switch,
+                ),
+            ],
+        )
+        
         # Save button
         save_button = ft.ElevatedButton(
             "Save Settings",
@@ -143,6 +206,7 @@ class SettingsPage(ft.Container):
                             controls=[
                                 server_section,
                                 behavior_section,
+                                discord_section,
                                 ft.Container(height=16),
                                 ft.Row(
                                     controls=[save_button, reset_button],
@@ -225,11 +289,50 @@ class SettingsPage(ft.Container):
                 self._connection_status.color = "#ff6b6b"
             self._connection_status.update()
     
+    async def _test_discord_webhook(self, e):
+        """Test Discord webhook connection."""
+        webhook_url = self._discord_webhook_field.value.strip()
+        
+        if not webhook_url:
+            self._discord_test_status.value = "No webhook URL"
+            self._discord_test_status.color = "#ff6b6b"
+            self._discord_test_status.update()
+            return
+        
+        self._discord_test_status.value = "Testing..."
+        self._discord_test_status.color = "#ffd43b"
+        self._discord_test_status.update()
+        
+        if self.on_test_discord:
+            # Use the app's Discord test method
+            success, message = await self.on_test_discord(webhook_url)
+            if success:
+                self._discord_test_status.value = "Connected"
+                self._discord_test_status.color = "#51cf66"
+            else:
+                self._discord_test_status.value = f"Failed: {message}"
+                self._discord_test_status.color = "#ff6b6b"
+        else:
+            # Fallback to basic URL validation
+            if webhook_url.startswith("https://discord.com/api/webhooks/"):
+                self._discord_test_status.value = "URL valid"
+                self._discord_test_status.color = "#51cf66"
+            else:
+                self._discord_test_status.value = "Invalid URL format"
+                self._discord_test_status.color = "#ff6b6b"
+        
+        self._discord_test_status.update()
+    
     def _save_settings(self, e):
         """Save current settings."""
         # Update config from form fields
         self.config.server_url = self._server_url_field.value or DEFAULT_SERVER_URL
         self.config.submit_invalid_laps = self._submit_invalid_switch.value
+        
+        # Discord settings
+        self.config.discord_webhook_url = self._discord_webhook_field.value.strip() or None
+        self.config.discord_enabled = self._discord_enabled_switch.value
+        self.config.discord_pb_only = self._discord_pb_only_switch.value
         
         if self.on_save:
             self.on_save(self.config)
@@ -247,12 +350,28 @@ class SettingsPage(ft.Container):
         self._server_url_field.value = DEFAULT_SERVER_URL
         self._submit_invalid_switch.value = False
         
+        # Reset Discord fields
+        self._discord_webhook_field.value = ""
+        self._discord_enabled_switch.value = False
+        self._discord_pb_only_switch.value = True
+        self._discord_test_status.value = ""
+        
         self._server_url_field.update()
         self._submit_invalid_switch.update()
+        self._discord_webhook_field.update()
+        self._discord_enabled_switch.update()
+        self._discord_pb_only_switch.update()
+        self._discord_test_status.update()
     
     def update_config(self, config: AppConfig):
         """Update form with new config."""
         self.config = config
         self._server_url_field.value = config.server_url
         self._submit_invalid_switch.value = config.submit_invalid_laps
+        
+        # Update Discord fields
+        self._discord_webhook_field.value = config.discord_webhook_url or ""
+        self._discord_enabled_switch.value = config.discord_enabled
+        self._discord_pb_only_switch.value = config.discord_pb_only
+        
         self.update()

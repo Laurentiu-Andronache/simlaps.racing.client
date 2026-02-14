@@ -20,6 +20,8 @@ from .components.status_bar import ConnectionStatus
 from ..core.log_parser import LogParser, SessionData, LapData
 from ..core.api_client import APIClient, SubmissionStatus
 from ..core.security import get_steam_user
+from ..core.discord_notifier import DiscordNotifier, LapData as DiscordLapData
+from ..core.pb_cache import get_pb_cache
 from ..utils.config import ConfigManager, AppConfig, get_config_manager
 
 
@@ -47,6 +49,10 @@ class SimLapsApp:
         self._config = self._config_manager.load()
         self._api_client: Optional[APIClient] = None
         self._log_parser: Optional[LogParser] = None
+        
+        # Discord and PB services
+        self._discord_notifier: Optional[DiscordNotifier] = None
+        self._pb_cache = get_pb_cache(self._config.server_url)
         
         # Parser task
         self._parser_task: Optional[asyncio.Task] = None
@@ -139,6 +145,7 @@ class SimLapsApp:
             on_back=lambda: self._show_page(AppPage.HOME),
             on_save=self._save_settings,
             on_test_connection=self._test_connection,
+            on_test_discord=self._test_discord_webhook,
         )
         
         self._history_page = HistoryPage(
@@ -248,6 +255,9 @@ class SimLapsApp:
         if result.status == SubmissionStatus.SUCCESS:
             card.update_status(LapCardStatus.SUBMITTED)
             history_entry.was_submitted = True
+            
+            # Post to Discord if configured
+            await self._post_to_discord(session, lap, steam_id=session.player_id, steam_name=session.player_name)
         elif result.status == SubmissionStatus.INVALID_LAP:
             card.update_status(LapCardStatus.INVALID, result.message)
         elif result.status == SubmissionStatus.GAME_NOT_RUNNING:
@@ -260,6 +270,63 @@ class SimLapsApp:
             card.update_status(LapCardStatus.FAILED, result.message)
         else:
             card.update_status(LapCardStatus.FAILED, result.message)
+    
+    async def _post_to_discord(
+        self,
+        session: SessionData,
+        lap: LapData,
+        steam_id: str,
+        steam_name: Optional[str] = None,
+    ):
+        """Post lap to Discord if configured and meets criteria."""
+        try:
+            # Check if Discord is properly configured
+            if not self._config.discord_enabled or not self._discord_notifier:
+                return
+            
+            # Check lap validity criteria (use same setting as web submission)
+            if not lap.is_valid and not self._config.submit_invalid_laps:
+                return
+            
+            # Check personal best criteria
+            is_pb = False
+            if self._config.discord_pb_only:
+                is_pb = self._pb_cache.check_and_update_pb(session.track, session.car, lap.lap_time_ms)
+                if not is_pb:
+                    return  # Not a personal best, skip posting
+            else:
+                # Not PB-only mode, post all valid laps (or invalid if enabled)
+                is_pb = self._pb_cache.check_and_update_pb(session.track, session.car, lap.lap_time_ms)
+            
+            # Create Discord lap data
+            sector_times = None
+            if lap.sector1_ms is not None and lap.sector2_ms is not None and lap.sector3_ms is not None:
+                sector_times = [lap.sector1_ms, lap.sector2_ms, lap.sector3_ms]
+            
+            discord_lap = DiscordLapData(
+                track_name=session.track,
+                car_name=session.car,
+                lap_time_ms=lap.lap_time_ms,
+                valid=lap.is_valid,
+                steam_id=steam_id,
+                steam_name=steam_name,
+                is_personal_best=is_pb,
+                created_at=lap.timestamp,
+                sector_times_ms=sector_times,
+                fuel_used_liters=lap.fuel_used,
+                tire_compound=lap.tyre_compound if lap.tyre_compound != "Unknown" else None,
+            )
+            
+            # Post to Discord (non-blocking, failure-safe)
+            success = await self._discord_notifier.post_lap(discord_lap)
+            if success:
+                print(f"[APP] Discord post successful: {lap.lap_time_str} on {session.track}")
+            else:
+                print(f"[APP] Discord post failed: {lap.lap_time_str} on {session.track}")
+                
+        except Exception as e:
+            print(f"[APP] Error posting to Discord: {e}")
+            # Discord failures should never block lap submission
     
     async def _on_parser_status(self, status: str):
         """Handle status update from parser."""
@@ -287,6 +354,24 @@ class SimLapsApp:
         """Handle user detection from log parser."""
         if self._home_page:
             self._home_page.set_detected_user(steam_id, player_name)
+        
+        # Initialize Discord notifier if configured
+        if self._config.discord_webhook_url and self._config.discord_enabled:
+            self._discord_notifier = DiscordNotifier(self._config.discord_webhook_url)
+        
+        # Preload personal bests for PB detection
+        if not self._pb_cache.is_loaded() or self._pb_cache.get_steam_id() != steam_id:
+            server_url = self._config.server_url
+            print(f"[APP] Preloading personal bests from server: {server_url}")
+            print(f"[APP] Steam ID: {steam_id}")
+            success = await self._pb_cache.preload_from_api(steam_id)
+            if success:
+                stats = self._pb_cache.get_cache_stats()
+                print(f"[APP] PB cache loaded successfully: {stats['combo_count']} combos")
+                print(f"[APP] Cache stats: {stats}")
+            else:
+                print(f"[APP] Failed to preload PB cache from server")
+                print(f"[APP] Discord PB detection may be unreliable")
     
     async def _on_game_version(self, version: str):
         """Handle game version detection from log parser."""
@@ -301,11 +386,6 @@ class SimLapsApp:
         """Start monitoring the log file."""
         if self._parser_task and not self._parser_task.done():
             return
-        
-        # Try to detect Steam user immediately from registry
-        steam_id, steam_name = get_steam_user()
-        if steam_id:
-            self._home_page.set_detected_user(steam_id, steam_name)
         
         # Try to get game version from existing log file
         game_version = self._get_game_version_from_log()
@@ -353,6 +433,19 @@ class SimLapsApp:
         self._config = config
         self._config_manager.save()
         
+        # Update Discord notifier
+        if config.discord_webhook_url and config.discord_enabled:
+            self._discord_notifier = DiscordNotifier(config.discord_webhook_url)
+        else:
+            self._discord_notifier = None
+        
+        # Update PB cache if server URL changed
+        if self._pb_cache.server_url != config.server_url:
+            self._pb_cache = get_pb_cache(config.server_url)
+        
+        # Update API client
+        self._api_client = APIClient(server_url=config.server_url)
+        
         # Update services with new settings
         self._api_client.set_server_url(config.server_url)
         
@@ -376,6 +469,20 @@ class SimLapsApp:
         
         # Update home page
         self._home_page.update_config(self._config)
+    
+    async def _test_discord_webhook(self, webhook_url: str) -> tuple[bool, str]:
+        """Test Discord webhook connectivity."""
+        try:
+            notifier = DiscordNotifier(webhook_url)
+            success = await notifier.send_test_message()
+            
+            if success:
+                return True, "Connection successful"
+            else:
+                return False, "Failed to send test message"
+                
+        except Exception as e:
+            return False, f"Error: {str(e)}"
     
     async def _test_connection(self, server_url: str) -> tuple[bool, str]:
         """Test connection to server."""
@@ -414,7 +521,36 @@ async def main(page: ft.Page):
     """Application entry point for Flet."""
     app = SimLapsApp(page)
     
-    # Start monitoring automatically
+    # Log initial configuration status
+    print(f"[APP] Server URL: {app._config.server_url}")
+    print(f"[APP] Discord enabled: {app._config.discord_enabled}")
+    print(f"[APP] Discord webhook configured: {bool(app._config.discord_webhook_url)}")
+    print(f"[APP] PB-only mode: {app._config.discord_pb_only}")
+    print(f"[APP] PB cache loaded: {app._pb_cache.is_loaded()}")
+    
+    # Try to detect Steam user immediately from registry
+    steam_id, steam_name = get_steam_user()
+    if steam_id:
+        print(f"[APP] Steam user detected on startup: {steam_id} ({steam_name})")
+        app._home_page.set_detected_user(steam_id, steam_name)
+        
+        # Trigger Discord initialization immediately
+        if app._config.discord_webhook_url and app._config.discord_enabled:
+            app._discord_notifier = DiscordNotifier(app._config.discord_webhook_url)
+            print(f"[APP] Discord notifier initialized for user {steam_id}")
+        
+        # Preload personal bests immediately
+        print(f"[APP] Triggering PB preload for Steam user: {steam_id}")
+        success = await app._pb_cache.preload_from_api(steam_id)
+        if success:
+            stats = app._pb_cache.get_cache_stats()
+            print(f"[APP] PB cache loaded on startup: {stats['combo_count']} combos")
+        else:
+            print(f"[APP] Failed to preload PB cache on startup")
+    else:
+        print("[APP] No Steam user detected - PB preload will wait for log detection")
+    
+    # Start monitoring after PB preload
     await app.start_monitoring()
 
 
