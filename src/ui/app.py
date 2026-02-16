@@ -288,7 +288,6 @@ class SimLapsApp:
             
             # Validate webhook URL
             if not self._config.discord_webhook_url or not self._config.discord_webhook_url.strip():
-                print("[APP] Discord webhook URL is empty - skipping post")
                 return
             
             # Check if Discord notifier is initialized
@@ -296,19 +295,19 @@ class SimLapsApp:
                 print("[APP] Discord notifier not initialized - skipping post")
                 return
             
-            # Check lap validity criteria (use same setting as web submission)
-            if not lap.is_valid and not self._config.submit_invalid_laps:
-                return
-            
             # Check personal best criteria
             is_pb = False
+            print(f"[APP] Discord PB-only mode: {self._config.discord_pb_only}")
             if self._config.discord_pb_only:
                 is_pb = self._pb_cache.check_and_update_pb(session.track, session.car, lap.lap_time_ms)
+                print(f"[APP] PB check result: {is_pb}")
                 if not is_pb:
+                    print(f"[APP] Skipping Discord post: not a personal best")
                     return  # Not a personal best, skip posting
             else:
                 # Not PB-only mode, post all valid laps (or invalid if enabled)
                 is_pb = self._pb_cache.check_and_update_pb(session.track, session.car, lap.lap_time_ms)
+                print(f"[APP] PB check result (non-PB-only mode): {is_pb}")
             
             # Create Discord lap data
             sector_times = None
@@ -492,13 +491,15 @@ class SimLapsApp:
                     content=ft.Text("Test message sent successfully!", color="#ffffff"),
                     bgcolor="#51cf66",
                 )
+                return True, "Test message sent successfully"
             else:
                 self.page.snack_bar = ft.SnackBar(
                     content=ft.Text("Failed to send test message", color="#ffffff"),
                     bgcolor="#ff6b6b",
                 )
-            self.page.snack_bar.open = True
-            self.page.update()
+                return False, "Failed to send test message"
+        else:
+            return False, "Discord notifier not initialized"
     
     def _show_pb_cache_viewer(self, e=None):
         """Show the PB cache viewer dialog."""

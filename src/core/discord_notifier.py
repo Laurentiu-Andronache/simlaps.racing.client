@@ -9,7 +9,6 @@ import httpx
 import asyncio
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
-from datetime import datetime
 
 
 @dataclass
@@ -130,7 +129,6 @@ class DiscordNotifier:
             "footer": {
                 "text": "SimLaps Client"
             },
-            "timestamp": lap_data.created_at.isoformat() if lap_data.created_at else None
         }
         
         return embed
@@ -146,11 +144,15 @@ class DiscordNotifier:
             True if successful, False otherwise
         """
         try:
+            print(f"[DISCORD] post_lap called: {lap_data.lap_time_ms}ms on {lap_data.track_name}")
+            print(f"[DISCORD] Webhook URL: {self.webhook_url}")
+            
             embed = self.create_lap_embed(lap_data)
             payload = {
                 "embeds": [embed]
             }
             
+            print(f"[DISCORD] Sending payload to Discord...")
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.post(
                     self.webhook_url,
@@ -158,8 +160,13 @@ class DiscordNotifier:
                     headers={"Content-Type": "application/json"}
                 )
                 
+                print(f"[DISCORD] Response status: {response.status_code}")
+                print(f"[DISCORD] Response text: {response.text}")
+                
                 # Discord returns 204 for successful webhook posts
-                return response.status_code in (200, 204)
+                success = response.status_code in (200, 204)
+                print(f"[DISCORD] Post successful: {success}")
+                return success
                 
         except httpx.TimeoutException:
             print("Discord webhook request timed out")
