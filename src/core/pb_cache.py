@@ -75,7 +75,7 @@ class PBCache:
             print(f"[PB_CACHE] Fetching from: {url}")
             print(f"[PB_CACHE] Params: {params}")
             
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
+            async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
                 response = await client.get(url, params=params)
                 
                 print(f"[PB_CACHE] Response status: {response.status_code}")
