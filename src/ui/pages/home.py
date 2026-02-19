@@ -320,6 +320,12 @@ class HomePage(ft.Column):
                     on_click=self._handle_pb_cache_click,
                     style=ft.ButtonStyle(color="#888888", side=ft.BorderSide(1, "#3d3d5c")),
                 ),
+                ft.OutlinedButton(
+                    "Logs",
+                    icon=ft.Icons.BUG_REPORT,
+                    on_click=self._handle_logs_click,
+                    style=ft.ButtonStyle(color="#888888", side=ft.BorderSide(1, "#3d3d5c")),
+                ),
             ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
             padding=ft.padding.only(left=20, right=20, top=16, bottom=16),
             bgcolor="#0f0f1a",
@@ -400,6 +406,19 @@ class HomePage(ft.Column):
                         action="OK"
                     )
                 )
+    
+    def _handle_logs_click(self, e):
+        """Handle Logs button click."""
+        print(f"[HOME] Logs button clicked!")
+        try:
+            from ..components.debug_logs import show_debug_logs
+            print(f"[HOME] Import successful, showing debug logs...")
+            show_debug_logs(self.page)
+            print(f"[HOME] Debug logs dialog should be visible")
+        except Exception as ex:
+            print(f"[HOME] Error showing debug logs: {ex}")
+            import traceback
+            traceback.print_exc()
     
     def update_config(self, config: AppConfig):
         """Update with new config and refresh UI."""

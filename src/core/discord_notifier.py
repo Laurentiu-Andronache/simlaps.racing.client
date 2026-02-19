@@ -7,6 +7,7 @@ and error handling.
 
 import httpx
 import asyncio
+from datetime import datetime
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
 

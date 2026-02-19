@@ -143,12 +143,7 @@ class PBCache:
             True if this is a new personal best, False otherwise
         """
         print(f"[PB_CACHE] check_and_update_pb: track={track_id}, car={car_id}, time={lap_time_ms}ms")
-        print(f"[PB_CACHE] Cache loaded: {self._loaded}, cache size: {len(self._cache)}")
-        
-        if not self._loaded:
-            # Cache not loaded, treat as PB to avoid missing notifications
-            print(f"[PB_CACHE] Cache not loaded, treating as PB")
-            return True
+        print(f"[PB_CACHE] Cache loaded: {self._loaded}, size: {len(self._cache)}")
         
         key = self._normalize_key(track_id, car_id)
         current = self._cache.get(key)
@@ -157,11 +152,9 @@ class PBCache:
         
         # If no existing PB or new time is faster, update and return True
         if current is None or lap_time_ms < current.best_time_ms:
-            print(f"[PB_CACHE] NEW PB! (no current or faster)")
-            self._cache[key] = PersonalBest(
-                best_time_ms=lap_time_ms,
-                updated_at=datetime.now()
-            )
+            new_pb = PersonalBest(best_time_ms=lap_time_ms, updated_at=datetime.now())
+            self._cache[key] = new_pb
+            print(f"[PB_CACHE] NEW PB! Updated cache: {key} -> {lap_time_ms}ms")
             return True
         
         print(f"[PB_CACHE] Not a PB (current: {current.best_time_ms}ms, new: {lap_time_ms}ms)")

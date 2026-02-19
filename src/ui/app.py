@@ -43,54 +43,94 @@ class SimLapsApp:
     
     def __init__(self, page: ft.Page):
         self.page = page
+        print("[APP] Initializing SimLapsApp...")
         self._setup_page()
         
         # Core services
+        print("[APP] Loading configuration...")
         self._config_manager = get_config_manager()
         self._config = self._config_manager.load()
+        print(f"[APP] Configuration loaded: server={self._config.server_url}")
+        
         self._api_client: Optional[APIClient] = None
         self._log_parser: Optional[LogParser] = None
         
         # Discord and PB services
+        print("[APP] Initializing Discord and PB services...")
         self._discord_notifier: Optional[DiscordNotifier] = None
         self._pb_cache = get_pb_cache(self._config.server_url)
+        print(f"[APP] PB cache initialized: {self._pb_cache is not None}")
         
         # Parser task
+        print("[APP] Initializing parser task...")
         self._parser_task: Optional[asyncio.Task] = None
         
         # Pages
+        print("[APP] Initializing UI pages...")
         self._home_page: Optional[HomePage] = None
         self._settings_page: Optional[SettingsPage] = None
         self._history_page: Optional[HistoryPage] = None
         self._current_page = AppPage.HOME
         
         # History tracking
+        print("[APP] Setting up history tracking...")
         self._history_entries: list[HistoryEntry] = []
         
         # Initialize
+        print("[APP] Starting initialization...")
         self._init_services()
         self._init_pages()
         self._show_page(AppPage.HOME)
+        print("[APP] Initialization complete!")
     
     def _setup_page(self):
-        """Configure the Flet page."""
-        self.page.title = "SimLaps Telemetry"
-        self.page.width = 500
-        self.page.height = 700
-        self.page.bgcolor = "#0f0f1a"
-        self.page.padding = 0
-        self.page.spacing = 0
+        """Configure Flet page."""
+        print("[APP] Setting up Flet page...")
+        try:
+            self.page.title = "SimLaps Telemetry"
+            self.page.width = 500
+            self.page.height = 700
+            self.page.bgcolor = "#0f0f1a"
+            self.page.padding = 0
+            self.page.spacing = 0
+            print("[APP] Flet page properties set")
+        except Exception as e:
+            print(f"[APP] Error setting up Flet page: {e}")
+            import traceback
+            traceback.print_exc()
+        
+        # Set window close handler
+        print("[APP] Setting up window close handler...")
+        try:
+            self.page.on_close = self._on_window_close
+            print("[APP] Window close handler set")
+        except Exception as e:
+            print(f"[APP] Error setting window close handler: {e}")
         
         # Set window icon
-        icon_path = self._get_icon_path()
-        if icon_path:
-            self.page.window.icon = icon_path
+        print("[APP] Setting up window icon...")
+        try:
+            icon_path = self._get_icon_path()
+            if icon_path:
+                self.page.window.icon = icon_path
+                print(f"[APP] Window icon set: {icon_path}")
+            else:
+                print("[APP] No icon file found")
+        except Exception as e:
+            print(f"[APP] Error setting window icon: {e}")
         
         # Dark theme
-        self.page.theme_mode = ft.ThemeMode.DARK
-        self.page.theme = ft.Theme(
-            color_scheme_seed="#7c3aed",
-        )
+        print("[APP] Setting up dark theme...")
+        try:
+            self.page.theme_mode = ft.ThemeMode.DARK
+            self.page.theme = ft.Theme(
+                color_scheme_seed="#7c3aed",
+            )
+            print("[APP] Dark theme applied")
+        except Exception as e:
+            print(f"[APP] Error setting up theme: {e}")
+        
+        print("[APP] Flet page setup complete!")
         
         # Window close handler
         self.page.on_close = self._on_window_close
@@ -238,39 +278,55 @@ class SimLapsApp:
         history_entry: HistoryEntry,
     ):
         """Submit a lap to the server."""
+        print(f"[SUBMIT] Starting lap submission: {lap.lap_time_str} on {session.track}")
+        print(f"[SUBMIT] Lap valid: {lap.is_valid}, submit_invalid: {self._config.submit_invalid_laps}")
+        print(f"[SUBMIT] Server URL: {self._config.server_url}")
+        
         card.update_status(LapCardStatus.SUBMITTING)
         
         try:
+            print(f"[SUBMIT] Sending API request...")
             result = await self._api_client.submit_lap(
                 session=session,
                 lap=lap,
                 submit_invalid=self._config.submit_invalid_laps,
             )
+            print(f"[SUBMIT] API response received: {result}")
         except Exception as e:
+            print(f"[SUBMIT] Submit error: {e}")
             card.update_status(LapCardStatus.FAILED, f"Submit error: {str(e)}")
             return
         
         if result is None:
+            print(f"[SUBMIT] No response from server")
             card.update_status(LapCardStatus.FAILED, "No response from server")
             return
         
         if result.status == SubmissionStatus.SUCCESS:
+            print(f"[SUBMIT] ✅ Lap submitted successfully!")
             card.update_status(LapCardStatus.SUBMITTED)
             history_entry.was_submitted = True
             
             # Post to Discord if configured
+            print(f"[SUBMIT] Checking Discord posting...")
             await self._post_to_discord(session, lap, steam_id=session.player_id, steam_name=session.player_name)
         elif result.status == SubmissionStatus.INVALID_LAP:
+            print(f"[SUBMIT] ❌ Lap rejected as invalid: {result.message}")
             card.update_status(LapCardStatus.INVALID, result.message)
         elif result.status == SubmissionStatus.GAME_NOT_RUNNING:
+            print(f"[SUBMIT] ❌ Game not running: {result.message}")
             card.update_status(LapCardStatus.FAILED, result.message)
         elif result.status == SubmissionStatus.SIGNATURE_ERROR:
+            print(f"[SUBMIT] ❌ Signature error: {result.message}")
             card.update_status(LapCardStatus.FAILED, result.message)
         elif result.status == SubmissionStatus.RATE_LIMITED:
+            print(f"[SUBMIT] ❌ Rate limited: {result.message}")
             card.update_status(LapCardStatus.FAILED, result.message)
         elif result.status == SubmissionStatus.PLAUSIBILITY_FAILED:
+            print(f"[SUBMIT] ❌ Plausibility check failed: {result.message}")
             card.update_status(LapCardStatus.FAILED, result.message)
         else:
+            print(f"[SUBMIT] ❌ Unknown error: {result.message}")
             card.update_status(LapCardStatus.FAILED, result.message)
     
     async def _post_to_discord(
@@ -282,33 +338,40 @@ class SimLapsApp:
     ):
         """Post lap to Discord if configured and meets criteria."""
         try:
+            print(f"[DISCORD] Starting Discord post check...")
+            
             # Check if Discord is properly configured
             if not self._config.discord_enabled:
+                print(f"[DISCORD] ❌ Discord disabled in settings")
                 return
             
             # Validate webhook URL
             if not self._config.discord_webhook_url or not self._config.discord_webhook_url.strip():
+                print(f"[DISCORD] ❌ No webhook URL configured")
                 return
             
             # Check if Discord notifier is initialized
             if not self._discord_notifier:
-                print("[APP] Discord notifier not initialized - skipping post")
+                print("[DISCORD] ❌ Discord notifier not initialized - skipping post")
                 return
+            
+            print(f"[DISCORD] ✅ Discord configured, checking PB criteria...")
             
             # Check personal best criteria
             is_pb = False
-            print(f"[APP] Discord PB-only mode: {self._config.discord_pb_only}")
+            print(f"[DISCORD] PB-only mode: {self._config.discord_pb_only}")
             if self._config.discord_pb_only:
                 is_pb = self._pb_cache.check_and_update_pb(session.track, session.car, lap.lap_time_ms)
-                print(f"[APP] PB check result: {is_pb}")
+                print(f"[DISCORD] PB check result: {is_pb}")
                 if not is_pb:
-                    print(f"[APP] Skipping Discord post: not a personal best")
+                    print(f"[DISCORD] ❌ Skipping Discord post: not a personal best")
                     return  # Not a personal best, skip posting
             else:
                 # Not PB-only mode, post all valid laps (or invalid if enabled)
                 is_pb = self._pb_cache.check_and_update_pb(session.track, session.car, lap.lap_time_ms)
-                print(f"[APP] PB check result (non-PB-only mode): {is_pb}")
+                print(f"[DISCORD] PB check result (non-PB-only mode): {is_pb}")
             
+            print(f"[DISCORD] ✅ Creating Discord lap data...")
             # Create Discord lap data
             sector_times = None
             if lap.sector1_ms is not None and lap.sector2_ms is not None and lap.sector3_ms is not None:
@@ -328,16 +391,19 @@ class SimLapsApp:
                 tire_compound=lap.tyre_compound if lap.tyre_compound != "Unknown" else None,
             )
             
+            print(f"[DISCORD] 📤 Posting to Discord webhook...")
             # Post to Discord (non-blocking, failure-safe)
             success = await self._discord_notifier.post_lap(discord_lap)
             if success:
-                print(f"[APP] Discord post successful: {lap.lap_time_str} on {session.track}")
+                print(f"[DISCORD] ✅ Discord post successful: {lap.lap_time_str} on {session.track}")
             else:
-                print(f"[APP] Discord post failed: {lap.lap_time_str} on {session.track}")
+                print(f"[DISCORD] ❌ Discord post failed: {lap.lap_time_str} on {session.track}")
                 # Note: Error details are already logged in DiscordNotifier.post_lap()
                 
         except Exception as e:
-            print(f"[APP] Error posting to Discord: {e}")
+            print(f"[DISCORD] 💥 Error posting to Discord: {e}")
+            import traceback
+            traceback.print_exc()
             # Discord failures should never block lap submission
     
     async def _on_parser_status(self, status: str):
@@ -543,6 +609,10 @@ class SimLapsApp:
 
 async def main(page: ft.Page):
     """Application entry point for Flet."""
+    # Start log capture early
+    from .components.debug_logs import start_log_capture
+    start_log_capture()
+    
     app = SimLapsApp(page)
     
     # Log initial configuration status
