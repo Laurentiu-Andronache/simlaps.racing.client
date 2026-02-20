@@ -13,7 +13,7 @@ from typing import Optional
 
 # Default configuration values
 DEFAULT_LOG_PATH = str(Path.home() / "Documents" / "ACE" / "log.txt")
-DEFAULT_SERVER_URL = "http://localhost:3000"
+DEFAULT_SERVER_URL = "https://simlaps.racing"
 APP_NAME = "SimLapsClient"
 
 
