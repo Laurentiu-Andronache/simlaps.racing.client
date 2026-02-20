@@ -72,6 +72,12 @@ class DebugLogsViewer:
             on_click=self._clear_logs,
             style=ft.ButtonStyle(bgcolor="#7c3aed"),
         )
+        self.export_game_logs_button = ft.ElevatedButton(
+            "Export Game Logs",
+            icon=ft.Icons.DOWNLOAD,
+            on_click=self._export_game_logs,
+            style=ft.ButtonStyle(bgcolor="#51cf66"),
+        )
         self.close_button = ft.ElevatedButton(
             "Close",
             icon=ft.Icons.CLOSE,
@@ -89,10 +95,114 @@ class DebugLogsViewer:
         return f"{status}\n\n{logs}"
 
     def _clear_logs(self, e=None):
-        """Clear the logs."""
+        """Clear logs."""
         _log_capture.clear_logs()
         self.logs_text.value = "Logs cleared."
         self.logs_text.update()
+
+    def _export_game_logs(self, e=None):
+        """Export game logs to file."""
+        print("[DEBUG_LOGS] EXPORT METHOD CALLED!")
+        self.page.snack_bar = ft.SnackBar(
+            content=ft.Text("Export method called!"),
+            bgcolor="#51cf66"
+        )
+        self.page.snack_bar.open = True
+        self.page.update()
+        
+        print("[DEBUG_LOGS] Export button clicked!")
+        try:
+            # Get the app instance from the page
+            app_instance = getattr(self.page, '_app_instance', None)
+            print(f"[DEBUG_LOGS] App instance: {app_instance}")
+            
+            if not app_instance:
+                print("[DEBUG_LOGS] No app instance found")
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text("App instance not available"),
+                    bgcolor="#ff6b6b"
+                )
+                self.page.snack_bar.open = True
+                self.page.update()
+                return
+            
+            if not hasattr(app_instance, '_log_parser'):
+                print("[DEBUG_LOGS] App instance has no _log_parser attribute")
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text("Log parser not available"),
+                    bgcolor="#ff6b6b"
+                )
+                self.page.snack_bar.open = True
+                self.page.update()
+                return
+            
+            log_parser = app_instance._log_parser
+            print(f"[DEBUG_LOGS] Log parser: {log_parser}")
+            
+            if not log_parser:
+                print("[DEBUG_LOGS] Log parser is None")
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text("Log parser not initialized"),
+                    bgcolor="#ff6b6b"
+                )
+                self.page.snack_bar.open = True
+                self.page.update()
+                return
+            
+            # Get log buffer and export to file
+            import os
+            from datetime import datetime
+            
+            # Check if log buffer has content
+            log_lines = log_parser.get_log_buffer()
+            print(f"[DEBUG_LOGS] Log buffer has {len(log_lines)} lines")
+            
+            if not log_lines:
+                print("[DEBUG_LOGS] Log buffer is empty")
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text("No logs to export"),
+                    bgcolor="#ff6b6b"
+                )
+                self.page.snack_bar.open = True
+                self.page.update()
+                return
+            
+            # Create filename with timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            downloads_path = os.path.join(os.path.expanduser("~"), "Downloads")
+            filename = f"game_logs_{timestamp}.txt"
+            filepath = os.path.join(downloads_path, filename)
+            
+            print(f"[DEBUG_LOGS] Exporting to: {filepath}")
+            
+            # Export logs
+            success = log_parser.export_logs_to_file(filepath)
+            print(f"[DEBUG_LOGS] Export result: {success}")
+            
+            if success:
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text(f"Game logs exported to {filename}"),
+                    bgcolor="#51cf66"
+                )
+            else:
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text("Failed to export game logs"),
+                    bgcolor="#ff6b6b"
+                )
+            
+            self.page.snack_bar.open = True
+            self.page.update()
+                
+        except Exception as ex:
+            print(f"[DEBUG_LOGS] Error exporting game logs: {ex}")
+            import traceback
+            traceback.print_exc()
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text(f"Error: {str(ex)}"),
+                bgcolor="#ff6b6b"
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
 
     def _close_dialog(self, e=None):
         """Close the debug logs dialog."""
@@ -110,7 +220,7 @@ class DebugLogsViewer:
                 content=ft.Column(
                     [
                         self.logs_text,
-                        ft.Row([self.clear_button, self.close_button], spacing=10),
+                        ft.Row([self.clear_button, self.export_game_logs_button, self.close_button], spacing=10),
                     ],
                     spacing=10,
                 ),

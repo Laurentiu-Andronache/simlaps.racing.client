@@ -447,17 +447,17 @@ class LogParser:
         self.on_user_detected = on_user_detected
 
         self.on_game_version = on_game_version
-
         
-
         self.sessions: list[SessionData] = []
 
         self.current_session: Optional[SessionData] = None
 
         self.context = LogContext()
-
         
-
+        # In-memory log storage for preservation
+        self.log_buffer: list[str] = []
+        self.max_log_lines = 100000  # Limit to prevent memory issues
+        
         self._last_activity_ts: Optional[float] = None
 
         self._running = False
@@ -500,7 +500,7 @@ class LogParser:
 
             "fuel": re.compile(r"FUEL car ([a-f0-9\-]+) setup with ([\d.]+) L"),
 
-            "compound": re.compile(r"setCompound Tyre: \d compound name: (\w+)"),
+            "compound": re.compile(r"compound: (\d+)"),
 
             "fuel_consumed": re.compile(
 
@@ -561,6 +561,36 @@ class LogParser:
         else:
 
             return 0
+
+
+
+    def _add_to_log_buffer(self, line: str):
+        """Add a line to the in-memory log buffer with size limit."""
+        self.log_buffer.append(line)
+        
+        # Prevent memory issues by limiting buffer size
+        if len(self.log_buffer) > self.max_log_lines:
+            # Remove oldest lines to maintain limit
+            excess = len(self.log_buffer) - self.max_log_lines
+            self.log_buffer = self.log_buffer[excess:]
+    
+    def get_log_buffer(self) -> list[str]:
+        """Get a copy of the current log buffer."""
+        return self.log_buffer.copy()
+    
+    def clear_log_buffer(self):
+        """Clear the in-memory log buffer."""
+        self.log_buffer.clear()
+    
+    def export_logs_to_file(self, file_path: str) -> bool:
+        """Export the in-memory log buffer to a file."""
+        try:
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write('\n'.join(self.log_buffer))
+            return True
+        except Exception as e:
+            _debug.log(f"[ERROR] Failed to export logs to {file_path}: {e}")
+            return False
 
 
 
@@ -659,6 +689,9 @@ class LogParser:
         """
 
         line = line.strip()
+        
+        # Store line in memory buffer for preservation
+        self._add_to_log_buffer(line)
 
         self._last_activity_ts = time.time()
 
@@ -991,10 +1024,10 @@ class LogParser:
             return None
 
 
-        if "setCompound Tyre:" in line:
+        if "compound:" in line:
             m = self._patterns["compound"].search(line)
             if m:
-                self.context.tyre_compound = m.group(1)
+                self.context.tyre_compound = f"compound {m.group(1)}"
 
         # On Split events - only collect splits for player's car
         if "Split completed for car" in line:

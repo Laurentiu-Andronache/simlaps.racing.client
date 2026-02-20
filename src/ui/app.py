@@ -46,6 +46,9 @@ class SimLapsApp:
         print("[APP] Initializing SimLapsApp...")
         self._setup_page()
         
+        # Store app instance reference for components
+        page._app_instance = self
+        
         # Core services
         print("[APP] Loading configuration...")
         self._config_manager = get_config_manager()
