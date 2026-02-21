@@ -73,3 +73,6 @@ SERVER_SECRET.txt
 # OS files
 .DS_Store
 Thumbs.db
+
+#obfuscated
+obfuscated/

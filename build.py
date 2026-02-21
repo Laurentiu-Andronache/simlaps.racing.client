@@ -47,7 +47,7 @@ from version import VERSION
 # Configuration
 APP_NAME = "SimLapsClient"
 APP_VERSION = VERSION
-ENTRY_POINT = "src/main.py"
+ENTRY_POINT = "main.py"  # Moved to root level
 ICON_PATH = "assets/icon.ico"
 DIST_DIR = "dist"
 BUILD_DIR = "build"
@@ -97,12 +97,20 @@ def check_dependencies():
     # Map package names to their import names
     required = {
         "pyinstaller": "PyInstaller",
+        "pyarmor": "pyarmor",
     }
     missing = []
     
     for package, import_name in required.items():
         try:
-            __import__(import_name)
+            if package == "pyarmor":
+                # PyArmor doesn't have a Python import, check via command
+                pyarmor_exe = get_venv_executable("pyarmor")
+                result = subprocess.run([pyarmor_exe, "--version"], capture_output=True, text=True)
+                if result.returncode != 0:
+                    missing.append(package)
+            else:
+                __import__(import_name)
         except ImportError:
             missing.append(package)
     
@@ -115,15 +123,69 @@ def check_dependencies():
     return True
 
 
+def obfuscate_source():
+    """Obfuscate source code with PyArmor."""
+    print("Obfuscating source code with PyArmor...")
+    
+    pyarmor_exe = get_venv_executable("pyarmor")
+    
+    # PyArmor obfuscation command (using free features only)
+    cmd = [
+        pyarmor_exe,
+        "gen",
+        "--output", OBFUSCATED_DIR,
+        "--obf-code", "0",  # Basic obfuscation (free tier)
+        "--obf-module", "0",  # Basic module obfuscation (free tier)
+        "src",  # Obfuscate entire src directory
+    ]
+    
+    print(f"  Running: {' '.join(cmd[:8])}...")
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    
+    if result.returncode != 0:
+        print(f"  PyArmor error: {result.stderr}")
+        print(f"  stdout: {result.stdout}")
+        
+        # Check if it's a license issue
+        if "out of license" in result.stderr or "trial" in result.stdout.lower():
+            print("  WARNING: PyArmor trial limitation detected")
+            print("  Falling back to basic obfuscation...")
+            
+            # Try with minimal arguments
+            simple_cmd = [
+                pyarmor_exe,
+                "gen",
+                "--output", OBFUSCATED_DIR,
+                "src"
+            ]
+            
+            print(f"  Running: {' '.join(simple_cmd)}")
+            result = subprocess.run(simple_cmd, capture_output=True, text=True)
+            
+            if result.returncode != 0:
+                print(f"  Simple PyArmor also failed: {result.stderr}")
+                return False
+    
+    # Verify obfuscated output
+    if os.path.exists(OBFUSCATED_DIR):
+        print(f"  Obfuscation complete: {OBFUSCATED_DIR}/")
+        return True
+    else:
+        print("  Obfuscation failed: output directory not found")
+        return False
+
+
 def build_executable():
     """Build the executable with PyInstaller."""
     print("Building executable with PyInstaller...")
     
     pyinstaller_exe = get_venv_executable("pyinstaller")
     
-    # Always source from current directory (no obfuscation)
-    src_dir = "."
+    # Use obfuscated source if available
+    src_dir = "."  # Always use root since main.py is at root
     entry = ENTRY_POINT
+    
+    print(f"  Using source: {src_dir}")
     
     # PyInstaller arguments
     cmd = [
@@ -190,6 +252,10 @@ def build_executable():
     
     # Add the source directory to path so imports work
     cmd.extend(["--paths", src_dir])
+    
+    # Add obfuscated src directory to path if available
+    if os.path.exists(OBFUSCATED_DIR):
+        cmd.extend(["--paths", os.path.join(OBFUSCATED_DIR)])
     
     # Add entry point
     cmd.append(entry)
@@ -286,6 +352,7 @@ def main():
     parser = argparse.ArgumentParser(description="Build SimLaps Client")
     parser.add_argument("--clean", action="store_true", help="Clean build artifacts")
     parser.add_argument("--spec", action="store_true", help="Create spec file only")
+    parser.add_argument("--no-obfuscate", action="store_true", help="Build without PyArmor obfuscation (faster, for testing)")
     
     args = parser.parse_args()
     
@@ -301,6 +368,9 @@ def main():
         return 0
     
     # Check dependencies
+    if not check_dependencies():
+        return 1
+    
     # Secret management is now handled directly in security.py
     # We no longer inject secrets at build time to simplify the process
     # and avoid "secret mismatch" errors due to build artifacts.
@@ -308,6 +378,14 @@ def main():
     
     # Clean previous build
     clean()
+    
+    # Obfuscate source unless disabled
+    if not args.no_obfuscate:
+        if not obfuscate_source():
+            print("\nOBFUSCATION FAILED!")
+            return 1
+    else:
+        print("Skipping obfuscation (building from source)")
 
     # Build executable
     if not build_executable():
@@ -318,7 +396,9 @@ def main():
     print("BUILD SUCCESSFUL!")
     print("=" * 50)
     print(f"\nExecutable: {DIST_DIR}/{APP_NAME}.exe")
-    print(f"Server secret is now hardcoded in src/core/security.py")
+    if not args.no_obfuscate:
+        print("Source code obfuscated with PyArmor")
+    print("Server secret is now hardcoded in src/core/security.py")
     
     return 0
 

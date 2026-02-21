@@ -66,23 +66,20 @@ class DebugLogsViewer:
             bgcolor="#1a1a2e",
             text_style=ft.TextStyle(color="#ffffff", size=12, font_family="Consolas"),
         )
-        self.clear_button = ft.ElevatedButton(
+        self.clear_button = ft.OutlinedButton(
             "Clear Logs",
-            icon=ft.Icons.CLEAR,
             on_click=self._clear_logs,
-            style=ft.ButtonStyle(bgcolor="#7c3aed"),
+            style=ft.ButtonStyle(color="#888888", side=ft.BorderSide(1, "#3d3d5c")),
         )
-        self.export_game_logs_button = ft.ElevatedButton(
+        self.export_game_logs_button = ft.OutlinedButton(
             "Export Game Logs",
-            icon=ft.Icons.DOWNLOAD,
             on_click=self._export_game_logs,
-            style=ft.ButtonStyle(bgcolor="#51cf66"),
+            style=ft.ButtonStyle(color="#888888", side=ft.BorderSide(1, "#3d3d5c")),
         )
-        self.close_button = ft.ElevatedButton(
+        self.close_button = ft.OutlinedButton(
             "Close",
-            icon=ft.Icons.CLOSE,
             on_click=self._close_dialog,
-            style=ft.ButtonStyle(bgcolor="#6b7280"),
+            style=ft.ButtonStyle(color="#888888", side=ft.BorderSide(1, "#3d3d5c")),
         )
 
         self.dialog = None
