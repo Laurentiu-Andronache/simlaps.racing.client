@@ -1,19 +1,3 @@
-"""
-
-Log Parser for ACE game logs.
-
-
-
-Adapted from telemetry.py - monitors ACE log files in real-time and extracts
-
-lap time data for submission to the SimLaps server.
-
-
-
-Includes anti-cheat measures: only processes logs when game is running.
-
-"""
-
 import re
 
 import os
@@ -385,6 +369,9 @@ class LogParser:
             "compound": re.compile(r"compound: (\d+)"),
             "car_tyre_compound": re.compile(
                 r"\[platformCore\] \[info\] CarId: ([a-f0-9\-]+) Tyre: (\d+) compound: (\d+)"
+            ),
+            "physics_compound": re.compile(
+                r"setCompound Tyre: (\d+) compound name: (\S+)"
             ),
             "fuel_consumed": re.compile(
                 r"\[([\d\-: .]+)\] \[gameplay\] \[info\] Energy source car ([a-f0-9\-]+) for driver [a-f0-9\-]+ "
@@ -834,6 +821,34 @@ class LogParser:
                     else:
                         self.context.tyre_compound = f"compound {compound_num}"
 
+        # Tyre compound from physics log
+        if "setCompound Tyre" in line and "compound name:" in line:
+            m = self._patterns["physics_compound"].search(line)
+            if m:
+                tyre_pos = m.group(1)
+                compound_name = m.group(2)
+
+                # Reset compound tracking on first tyre
+                if tyre_pos == "0":
+                    if hasattr(self.context, "_physics_tyre_compounds_seen"):
+                        del self.context._physics_tyre_compounds_seen
+
+                # Track compounds to detect mixed setups
+                if not hasattr(self.context, "_physics_tyre_compounds_seen"):
+                    self.context._physics_tyre_compounds_seen = []
+
+                if compound_name not in self.context._physics_tyre_compounds_seen:
+                    self.context._physics_tyre_compounds_seen.append(compound_name)
+
+                # If multiple different compounds, mark as "Mixed"
+                if len(self.context._physics_tyre_compounds_seen) > 1:
+                    self.context.tyre_compound = "Mixed"
+                else:
+                    self.context.tyre_compound = compound_name
+                _debug.log(
+                    f"[TYRE] Physics tyre compound update: {self.context.tyre_compound}"
+                )
+
         # Physics lap counter - reliable lap 1 / out-lap detection
         if "[physics] [info] Lap test evOnLapCompleted" in line:
             m = self._patterns["physics_lap"].search(line)
@@ -1022,6 +1037,7 @@ class LogParser:
                     sector3_ms = splits.get(2)
 
                     # Enhanced validity checks based on real log analysis
+                    # Note: These checks must run AFTER all split processing is complete
                     # 1. Penalty detected - already handled above
                     if self._current_lap_data["unexpected_split"]:
                         self._current_lap_data["is_valid"] = False
