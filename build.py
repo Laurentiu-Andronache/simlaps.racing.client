@@ -128,6 +128,12 @@ def obfuscate_source():
     print("Obfuscating source code with PyArmor...")
     
     pyarmor_exe = get_venv_executable("pyarmor")
+
+    # Only obfuscate sensitive files to stay within trial limits
+    files_to_obfuscate = [
+        "src/core/security.py",
+        "src/core/api_client.py",
+    ]
     
     # PyArmor obfuscation command (using free features only)
     cmd = [
@@ -136,10 +142,10 @@ def obfuscate_source():
         "--output", OBFUSCATED_DIR,
         "--obf-code", "0",  # Basic obfuscation (free tier)
         "--obf-module", "0",  # Basic module obfuscation (free tier)
-        "src",  # Obfuscate entire src directory
+        *files_to_obfuscate,
     ]
     
-    print(f"  Running: {' '.join(cmd[:8])}...")
+    print(f"  Running: pyarmor gen --output {OBFUSCATED_DIR} ...")
     result = subprocess.run(cmd, capture_output=True, text=True)
     
     if result.returncode != 0:
@@ -156,10 +162,10 @@ def obfuscate_source():
                 pyarmor_exe,
                 "gen",
                 "--output", OBFUSCATED_DIR,
-                "src"
+                *files_to_obfuscate,
             ]
             
-            print(f"  Running: {' '.join(simple_cmd)}")
+            print(f"  Running: pyarmor gen --output {OBFUSCATED_DIR} ...")
             result = subprocess.run(simple_cmd, capture_output=True, text=True)
             
             if result.returncode != 0:
