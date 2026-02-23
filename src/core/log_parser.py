@@ -525,9 +525,12 @@ class LogParser:
 
             "date": re.compile(r"^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})"),
 
-            # setCompound Tyre: N compound name: X
-            "set_compound": re.compile(
-                r"\[physics\] \[info\] setCompound Tyre: (\d+) compound name: (\w+)"
+            "set_compound_old": re.compile(
+                r"setCompound Tyre:\s*(\d+)\s+compound(?: name)?:\s*(\w+)"
+            ),
+
+            "set_compound_new": re.compile(
+                r"CarId:\s*[a-f0-9\-]+\s+Tyre:\s*(\d+)\s+compound:\s*(\w+)"
             ),
 
             "fuel_filled": re.compile(
@@ -807,16 +810,30 @@ class LogParser:
         }
 
     def _handle_compound(self, line: str) -> None:
-        if "setCompound Tyre:" not in line or "compound name:" not in line:
+        # Fast pre-check
+        if not ("Tyre:" in line and "compound" in line):
             return
-        m = self._pats["set_compound"].search(line)
-        if m:
-            pos, code = int(m.group(1)), m.group(2)
-            self.context.tyre.set(pos, code)
-            _debug.log(
-                f"[COMPOUND] Tyre {pos} → {code}  "
-                f"(resolved: {self.context.tyre.compound_name})"
-            )
+
+        m = self._pats["set_compound_old"].search(line)
+        if not m:
+            m = self._pats["set_compound_new"].search(line)
+
+        if not m:
+            return
+
+        pos = int(m.group(1))
+        code = m.group(2)
+
+        # Only valid tyre positions
+        if pos not in (0, 1, 2, 3):
+            return
+
+        self.context.tyre.set(pos, code)
+
+        _debug.log(
+            f"[COMPOUND] Tyre {pos} → {code} "
+            f"(resolved: {self.context.tyre.compound_name})"
+        )
 
     def _handle_weather(self, line: str) -> None:
         if "GameModeSelectionWeatherType_" not in line:
