@@ -12,7 +12,7 @@ from typing import Optional
 
 
 # Default configuration values
-DEFAULT_LOG_PATH = str(Path.home() / "Documents" / "ACE" / "log.txt")
+DEFAULT_LOG_PATH = str(Path.home() / "Saved Games" / "ACE" / "log.txt")
 DEFAULT_SERVER_URL = "https://simlaps.racing"
 APP_NAME = "SimLapsClient"
 
@@ -111,6 +111,7 @@ class ConfigManager:
         Load configuration from file.
         
         Creates default config if file doesn't exist.
+        Migrates old ACE log path to new location.
         
         Returns:
             Loaded or default configuration
@@ -122,6 +123,9 @@ class ConfigManager:
             try:
                 with open(self.config_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
+                # Migrate old Documents/ACE path to new Saved Games/ACE path
+                if data.get("log_path") and "Documents\\ACE\\log.txt" in data["log_path"]:
+                    data["log_path"] = DEFAULT_LOG_PATH
                 self._config = AppConfig.from_dict(data)
             except (json.JSONDecodeError, IOError) as e:
                 print(f"Error loading config: {e}")

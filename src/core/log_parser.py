@@ -459,7 +459,7 @@ class LogParser:
     Supports one-shot (`parse_file`) and live-tail (`follow`) modes.
     """
 
-    DEFAULT_LOG_PATH = Path.home() / "Documents" / "ACE" / "log.txt"
+    DEFAULT_LOG_PATH = Path.home() / "Saved Games" / "ACE" / "log.txt"
 
     def __init__(
         self,
