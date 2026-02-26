@@ -76,7 +76,7 @@ That's it! No login, no API keys, no configuration needed.
 
 Access Settings to customize:
 
-- **Log File Path**: Location of your ACE log file (default: `Documents\ACE\log.txt`)
+- **Log File Path**: Location of your ACE log file (default: `Saved Games\ACE\log.txt`)
 - **Server URL**: SimLaps server address
 - **Auto-submit**: Enable/disable automatic lap submission
 - **Minimize to Tray**: Keep running in background
@@ -220,7 +220,7 @@ The client is ready but ACE isn't running. Start the game.
 
 1. Ensure ACE has been run at least once
 2. Check the log path in Settings
-3. Default location: `C:\Users\{username}\Documents\ACE\log.txt`
+3. Default location: `C:\Users\{username}\Saved Games\ACE\log.txt`
 
 ### Laps not being detected
 
