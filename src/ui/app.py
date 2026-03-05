@@ -224,6 +224,19 @@ class SimLapsApp:
             # Determine if we should submit this lap
             should_submit = self._config.auto_submit and (lap.is_valid or self._config.submit_invalid_laps)
             print(f"[APP] should_submit={should_submit}, is_valid={lap.is_valid}")
+            print(
+                "[APP] lap diagnostics: "
+                f"state={getattr(lap, 'lap_state', 'UNKNOWN')} "
+                f"type={getattr(lap, 'lap_type', 'UNKNOWN')} "
+                f"phys_lap={getattr(lap, 'physics_lap_number', None)} "
+                f"sectors=({lap.sector1_ms},{lap.sector2_ms},{lap.sector3_ms}) "
+                f"consistent={getattr(lap, 'sectors_consistent', None)}"
+            )
+            if not lap.is_valid:
+                print(
+                    "[APP] invalid reason: "
+                    f"state={getattr(lap, 'lap_state', 'UNKNOWN')}"
+                )
             
             # Determine initial status
             if not lap.is_valid and not self._config.submit_invalid_laps:

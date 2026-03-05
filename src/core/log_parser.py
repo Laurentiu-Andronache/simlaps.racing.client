@@ -57,20 +57,6 @@ KNOWN_HYBRID_CARS: frozenset[str] = frozenset({
     "ks_mclaren_artura",
 })
 
-# Human-readable compound names keyed by the short log code.
-COMPOUND_NAMES: dict[str, str] = {
-    "S":  "Slicks",
-    "SC": "SuperCar",
-    "HC": "HyperCar",
-    "RD": "Road",
-    "E":  "Eco",
-    "W":  "Wet",
-    "M":  "Medium",
-    "H":  "Hard",
-    "SS": "SuperSoft",
-    "MS": "MedSoft",
-}
-
 # Raw GameModeType → normalised session label.
 SESSION_TYPE_MAP: dict[str, str] = {
     "INSTANT_RACE": "RACE",
@@ -199,9 +185,8 @@ class TyreState:
             return "Unknown"
         codes = set(self._compounds.values())
         if len(codes) == 1:
-            code = next(iter(codes))
-            return COMPOUND_NAMES.get(code, code)
-        names = sorted({COMPOUND_NAMES.get(c, c) for c in codes})
+            return next(iter(codes))
+        names = sorted(codes)
         return f"Mixed ({'/'.join(names)})"
 
     @property
@@ -494,6 +479,9 @@ class LogParser:
         self._last_activity_ts: Optional[float] = None
         self._running: bool = False
         self._emit_callbacks: bool = False
+        
+        # Track last seen car ID for compound detection
+        self._last_car_uuid: Optional[str] = None
 
         self._compile_patterns()
 
@@ -531,6 +519,10 @@ class LogParser:
 
             "set_compound_new": re.compile(
                 r"CarId:\s*[a-f0-9\-]+\s+Tyre:\s*(\d+)\s+compound:\s*(\w+)"
+            ),
+
+            "loading_tyre_compound": re.compile(
+                r"LOADING TYRE COMPOUND ([\w\s]+)\s+\((\w+)\)"
             ),
 
             "fuel_filled": re.compile(
@@ -809,8 +801,36 @@ class LogParser:
             "player_id": player_id,
         }
 
+    def _handle_car_teleport(self, line: str) -> None:
+        """Handle CarTeleportCompleted lines to track last seen car ID."""
+        if "CarTeleportCompleted" not in line:
+            return
+        # Extract car ID from the line
+        parts = line.split()
+        for i, part in enumerate(parts):
+            if part == "CarTeleportCompleted" and i + 1 < len(parts):
+                car_uuid = parts[i + 1].strip()
+                if self._is_player_car(car_uuid):
+                    self._last_car_uuid = car_uuid
+                    _debug.log(f"[CAR_TELEPORT] Player car detected: {car_uuid}")
+                break
+
     def _handle_compound(self, line: str) -> None:
-        # Fast pre-check
+        # Check for LOADING TYRE COMPOUND format (appears after CarTeleportCompleted)
+        if "LOADING TYRE COMPOUND" in line:
+            m = self._pats["loading_tyre_compound"].search(line)
+            if m and self._last_car_uuid and self._is_player_car(self._last_car_uuid):
+                compound_name = m.group(1).strip()  # Use full name directly
+                # Set all 4 tires to the same compound
+                for pos in (0, 1, 2, 3):
+                    self.context.tyre.set(pos, compound_name)
+                _debug.log(
+                    f"[COMPOUND] All tires → {compound_name} "
+                    f"(resolved: {self.context.tyre.compound_name})"
+                )
+            return
+
+        # Handle old setCompound formats
         if not ("Tyre:" in line and "compound" in line):
             return
 
@@ -1126,8 +1146,21 @@ class LogParser:
 
         # ── 6. Split-end confirmation ──────────────────────────────────────────
         if not ip.split_end_confirmed:
-            _debug.log("[VALIDITY] INVALID_SPLIT: no split-end confirmation")
-            return LapState.INVALID_SPLIT
+            # Live tailing can occasionally observe a complete lap payload with
+            # split_end missing due to log write timing. In practice-like modes,
+            # trust fully populated + consistent sectors as a fallback.
+            if (
+                session_type in PRACTICE_LIKE
+                and s1 is not None and s2 is not None and s3 is not None
+                and abs((s1 + s2 + s3) - lap_time_ms) <= SECTOR_SUM_TOLERANCE_MS
+            ):
+                _debug.log(
+                    "[VALIDITY] split-end missing but sectors are "
+                    "complete/consistent in practice-like mode"
+                )
+            else:
+                _debug.log("[VALIDITY] INVALID_SPLIT: no split-end confirmation")
+                return LapState.INVALID_SPLIT
 
         # ── 7. Sector consistency guard ────────────────────────────────────────
         # At this point s1/s2/s3 are guaranteed non-None (keys 0,1,2 all exist).
@@ -1338,6 +1371,7 @@ class LogParser:
         self._handle_connect(line)
         self._handle_driver(line)
         self._handle_gamecar_meta(line)
+        self._handle_car_teleport(line)
         self._handle_compound(line)
         self._handle_weather(line)
 
@@ -1453,7 +1487,15 @@ class LogParser:
             # ── Live tail ──────────────────────────────────────────────────────
             _debug.log("Entering live tail loop …")
             while self._running:
+                line_start_pos = fh.tell()
                 line = fh.readline()
+
+                # Guard against processing partially written lines in live-tail.
+                # If a trailing newline is missing, rewind and retry on next poll.
+                if line and not line.endswith("\n"):
+                    fh.seek(line_start_pos)
+                    await asyncio.sleep(poll_interval)
+                    continue
 
                 if line:
                     if "Game Started!" in line:
