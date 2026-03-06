@@ -209,7 +209,7 @@ class TyreState:
 class InProgressLap:
     """Collects all per-lap signals until 'New lap carId' fires."""
 
-    # Sector times: key = split index (0/1/2), value = ms
+    # Sector times: key = split index (0..N), value = ms
     splits: dict[int, int] = field(default_factory=dict)
 
     # Validity flags — each independently marks the lap invalid
@@ -1093,9 +1093,8 @@ class LogParser:
     def _determine_lap_state(
         self,
         ip: InProgressLap,
-        s1: Optional[int],
-        s2: Optional[int],
-        s3: Optional[int],
+        split_keys: list[int],
+        split_times: list[int],
         lap_time_ms: int,
         session_type: str,
     ) -> LapState:
@@ -1135,12 +1134,20 @@ class LogParser:
             return LapState.INVALID_SPLIT
 
         # ── 5. Split key guard ────────────────────────────────────────────────
-        # Keys must be exactly {0, 1, 2}.  dict keys can't duplicate, so this
-        # also catches missing sectors and out-of-range indices.
-        if sorted(ip.splits.keys()) != [0, 1, 2]:
+        # Keys must be contiguous from 0 (e.g. [0,1] or [0,1,2]) and we
+        # require at least two sectors to avoid validating partial laps.
+        if len(split_keys) < 2:
             _debug.log(
-                f"[VALIDITY] INVALID_SPLIT: keys={sorted(ip.splits.keys())} "
-                f"expected [0,1,2]"
+                f"[VALIDITY] INVALID_SPLIT: keys={split_keys} "
+                "expected at least [0,1]"
+            )
+            return LapState.INVALID_SPLIT
+
+        expected_keys = list(range(split_keys[-1] + 1))
+        if split_keys != expected_keys:
+            _debug.log(
+                f"[VALIDITY] INVALID_SPLIT: keys={split_keys} "
+                f"expected {expected_keys}"
             )
             return LapState.INVALID_SPLIT
 
@@ -1151,8 +1158,7 @@ class LogParser:
             # trust fully populated + consistent sectors as a fallback.
             if (
                 session_type in PRACTICE_LIKE
-                and s1 is not None and s2 is not None and s3 is not None
-                and abs((s1 + s2 + s3) - lap_time_ms) <= SECTOR_SUM_TOLERANCE_MS
+                and abs(sum(split_times) - lap_time_ms) <= SECTOR_SUM_TOLERANCE_MS
             ):
                 _debug.log(
                     "[VALIDITY] split-end missing but sectors are "
@@ -1163,8 +1169,7 @@ class LogParser:
                 return LapState.INVALID_SPLIT
 
         # ── 7. Sector consistency guard ────────────────────────────────────────
-        # At this point s1/s2/s3 are guaranteed non-None (keys 0,1,2 all exist).
-        sector_sum = s1 + s2 + s3  # type: ignore[operator]
+        sector_sum = sum(split_times)
         if abs(sector_sum - lap_time_ms) > SECTOR_SUM_TOLERANCE_MS:
             _debug.log(
                 f"[VALIDITY] INVALID_SECTORS: sum={sector_sum} "
@@ -1191,6 +1196,8 @@ class LogParser:
 
         lap_time_ms = self._parse_lap_time_ms(time_str)
         ip = self._ip
+        split_keys: list[int] = sorted(ip.splits.keys())
+        split_times: list[int] = [ip.splits[key] for key in split_keys]
 
         # ── Sector extraction ─────────────────────────────────────────────────
         s1: Optional[int] = ip.splits.get(0)
@@ -1209,17 +1216,23 @@ class LogParser:
                     f" → back-calculated: {s1_calc} ms"
                 )
                 s1 = s1_calc if s1_calc > 0 else None
+                if split_keys and split_keys[0] == 0 and s1 is not None:
+                    split_times[0] = s1
 
         session_type = self.current_session.session_type
 
         # ── Lap state ─────────────────────────────────────────────────────────
-        lap_state = self._determine_lap_state(ip, s1, s2, s3, lap_time_ms, session_type)
+        lap_state = self._determine_lap_state(
+            ip, split_keys, split_times, lap_time_ms, session_type
+        )
         is_valid = lap_state == LapState.PUSH
 
         # ── Sector consistency flag ────────────────────────────────────────────
         sectors_consistent: Optional[bool] = None
-        if s1 is not None and s2 is not None and s3 is not None:
-            sectors_consistent = abs((s1 + s2 + s3) - lap_time_ms) <= SECTOR_SUM_TOLERANCE_MS
+        if len(split_times) >= 2:
+            sectors_consistent = (
+                abs(sum(split_times) - lap_time_ms) <= SECTOR_SUM_TOLERANCE_MS
+            )
 
         # ── Fuel ──────────────────────────────────────────────────────────────
         fuel_used = ip.fuel_used
