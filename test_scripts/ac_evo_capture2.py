@@ -2,17 +2,17 @@
 ac_evo_capture2.py — Capture all available AC Evo shared memory at 60 Hz
 =========================================================================
 Reads every known region using the EXACT session-namespaced paths found
-by shm_tracer:  \Sessions\1\BaseNamedObjects\acpmf_*
+by shm_tracer:  \\Sessions\\1\\BaseNamedObjects\\acpmf_*
 
 Background
 ----------
-Python's mmap tagname uses the "Local\" prefix which normally resolves to
-\Sessions\<current>\BaseNamedObjects\<name>.  If AC Evo is running in a
+Python's mmap tagname uses the "Local\\" prefix which normally resolves to
+\\Sessions\\<current>\\BaseNamedObjects\\<name>.  If AC Evo is running in a
 DIFFERENT Windows session (e.g. session 1 while our script is in session 0
-under an elevated command prompt), "Local\" won't find it.
+under an elevated command prompt), "Local\\" won't find it.
 
-This script tries both the standard "Local\" path AND a direct kernel path
-via CreateFileMapping with a full object name, falling back gracefully.
+This script tries both the standard "Local\\" path AND a direct kernel path
+via OpenFileMapping with a full object name, falling back gracefully.
 
 Usage
 -----
@@ -29,7 +29,6 @@ Output
 
 import ctypes
 import ctypes.wintypes
-import mmap
 import json
 import struct
 import time
@@ -288,7 +287,7 @@ SESSIONS_TO_TRY = [None, 1, 2, 3, 0]   # None = use Local\ (current session)
 class RegionReader:
     """
     Opens a named shared memory region, trying multiple session paths.
-    Falls back from Local\name → Global\name → \Sessions\N\BaseNamedObjects\name
+    Falls back from Local\\name → Global\\name → \\Sessions\\N\\BaseNamedObjects\\name
     because AC Evo may run in a different Windows session from our script.
     """
 
@@ -296,49 +295,41 @@ class RegionReader:
         self.base_name   = base_name
         self.struct_type = struct_type
         self.size        = ctypes.sizeof(struct_type)
-        self._mm         = None
         self._path_used  = None
         self._raw_handle = None
 
     def connect(self) -> bool:
-        # Try the standard mmap paths first (same session)
-        for prefix in ("Local\\", "Global\\"):
-            tag = prefix + self.base_name
-            try:
-                mm = mmap.mmap(-1, self.size, tagname=tag, access=mmap.ACCESS_READ)
-                self._mm        = mm
-                self._path_used = tag
-                return True
-            except Exception:
-                pass
-
-        # Try explicit session paths via OpenFileMappingW with full NT name
-        # This works when AC Evo is in session 1 but our script runs in session 0
+        # IMPORTANT: never create mappings from the client side.
+        # Using mmap(..., tagname=...) with -1 can create the object when absent,
+        # which can interfere with game startup. Open existing mapping only.
         FILE_MAP_READ = 4
+        names_to_try = [
+            f"Local\\{self.base_name}",
+            f"Global\\{self.base_name}",
+        ]
         for session in SESSIONS_TO_TRY:
-            if session is None:
-                continue
-            full_name = f"\\Sessions\\{session}\\BaseNamedObjects\\{self.base_name}"
-            handle = kernel32.OpenFileMappingW(FILE_MAP_READ, False, full_name)
+            if session is not None:
+                names_to_try.append(
+                    f"\\Sessions\\{session}\\BaseNamedObjects\\{self.base_name}"
+                )
+
+        for name in names_to_try:
+            handle = kernel32.OpenFileMappingW(FILE_MAP_READ, False, name)
             if not handle:
                 continue
             addr = kernel32.MapViewOfFile(handle, FILE_MAP_READ, 0, 0, self.size)
             if not addr:
                 kernel32.CloseHandle(handle)
                 continue
-            # Wrap in a mmap-like object using ctypes directly
             self._raw_handle = handle
             self._raw_addr   = addr
-            self._path_used  = full_name
+            self._path_used  = name
             return True
 
         return False
 
     def read_raw(self) -> bytes:
-        if self._mm is not None:
-            self._mm.seek(0)
-            return self._mm.read(self.size)
-        elif hasattr(self, "_raw_addr") and self._raw_addr:
+        if hasattr(self, "_raw_addr") and self._raw_addr:
             return (ctypes.c_char * self.size).from_address(self._raw_addr).raw
         raise RuntimeError(f"Region {self.base_name} not connected")
 
@@ -347,11 +338,6 @@ class RegionReader:
         return self.struct_type.from_buffer_copy(raw)
 
     def close(self):
-        if self._mm:
-            try:
-                self._mm.close()
-            except Exception:
-                pass
         if hasattr(self, "_raw_addr") and self._raw_addr:
             kernel32.UnmapViewOfFile(self._raw_addr)
         if self._raw_handle:
@@ -403,6 +389,23 @@ def raw_ints(data: bytes) -> list:
     return out
 
 
+def try_connect_all(regions: dict, readers: dict, announce: bool = False) -> list:
+    """Try to connect any regions not currently connected."""
+    connected = []
+    for key, (base_name, struct_type) in regions.items():
+        if key in readers:
+            continue
+        r = RegionReader(base_name, struct_type)
+        if r.connect():
+            readers[key] = r
+            connected.append(key)
+            if announce:
+                print(f"  ✅  {key:<10}  {r._path_used}")
+        elif announce:
+            print(f"  ❌  {key:<10}  not found")
+    return connected
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Main capture loop
 # ─────────────────────────────────────────────────────────────────────────────
@@ -413,6 +416,7 @@ def main():
     parser.add_argument("--out",   type=str,   default="",  help="Output .jsonl path")
     parser.add_argument("--raw",   action="store_true",     help="Also include raw float32/int32 arrays in each frame")
     parser.add_argument("--wait",  action="store_true",     help="Wait for regions to appear instead of failing immediately")
+    parser.add_argument("--reconnect-secs", type=float, default=2.0, help="Retry interval for missing/disconnected regions")
     args = parser.parse_args()
 
     interval = 1.0 / max(1, args.hz)
@@ -421,26 +425,14 @@ def main():
     # ── Open regions ──────────────────────────────────────────────────────────
     readers = {}
     print("Connecting to AC Evo shared memory regions…\n")
-
-    for key, (base_name, struct_type) in REGIONS.items():
-        r = RegionReader(base_name, struct_type)
-        if r.connect():
-            readers[key] = r
-            print(f"  ✅  {key:<10}  {r._path_used}")
-        else:
-            print(f"  ❌  {key:<10}  not found")
+    try_connect_all(REGIONS, readers, announce=True)
 
     if not readers:
         if args.wait:
             print("\nNo regions found. Waiting for game to start (Ctrl+C to abort)…")
             while not readers:
                 time.sleep(2)
-                for key, (base_name, struct_type) in REGIONS.items():
-                    if key not in readers:
-                        r = RegionReader(base_name, struct_type)
-                        if r.connect():
-                            readers[key] = r
-                            print(f"  ✅  {key:<10}  {r._path_used}")
+                try_connect_all(REGIONS, readers, announce=True)
         else:
             print("\nNo shared memory regions found.")
             print("Make sure AC Evo is running and you are in a session.")
@@ -469,6 +461,7 @@ def main():
 
     frames = 0
     last_packet = {}
+    next_reconnect_at = time.monotonic()
 
     with open(outpath, "w", encoding="utf-8") as f:
 
@@ -476,6 +469,8 @@ def main():
             "_record_type": "meta",
             "_captured_at": datetime.now(timezone.utc).isoformat(),
             "_hz":          args.hz,
+            "_reconnect_secs": args.reconnect_secs,
+            "_regions_known": list(REGIONS.keys()),
             "_regions_found": list(readers.keys()),
             "_region_paths":  {k: r._path_used for k, r in readers.items()},
             "_region_sizes":  {k: r.size for k, r in readers.items()},
@@ -485,6 +480,14 @@ def main():
 
         while running:
             t0 = time.perf_counter()
+            now_mono = time.monotonic()
+
+            if now_mono >= next_reconnect_at:
+                newly_connected = try_connect_all(REGIONS, readers, announce=False)
+                if newly_connected:
+                    names = ", ".join(newly_connected)
+                    print(f"  Reconnected region(s): {names}")
+                next_reconnect_at = now_mono + max(0.2, args.reconnect_secs)
 
             frame_data = {
                 "_record_type": "frame",
@@ -492,36 +495,42 @@ def main():
                 "_wall_ns":     time.time_ns(),
             }
 
-            skip = True   # will be cleared if any region has new data
+            disconnected = []
 
-            for key, reader in readers.items():
+            for key, reader in list(readers.items()):
                 try:
                     raw = reader.read_raw()
                 except Exception as e:
                     frame_data[key] = {"_error": str(e)}
+                    disconnected.append(key)
                     continue
 
                 s = reader.struct_type.from_buffer_copy(raw)
 
-                # Dedup: skip if physics/graphics packetId hasn't changed
+                unchanged = False
                 if key in ("physics", "graphics"):
                     pid = getattr(s, "packetId", None)
                     if pid is not None:
                         if last_packet.get(key) == pid:
-                            frame_data[key] = {"_unchanged": True, "packetId": pid}
-                            continue
+                            unchanged = True
                         last_packet[key] = pid
-                    skip = False
-                else:
-                    skip = False
 
                 d = struct_to_dict(s)
+                if unchanged:
+                    d["_unchanged"] = True
                 frame_data[key] = d
 
                 # Optionally attach the raw interpretation alongside the struct
                 if args.raw:
                     frame_data[f"{key}_raw_f32"] = raw_floats(raw)
                     frame_data[f"{key}_raw_i32"] = raw_ints(raw)
+
+            for key in disconnected:
+                try:
+                    readers[key].close()
+                except Exception:
+                    pass
+                readers.pop(key, None)
 
             # Always write the frame even if unchanged (so timeline is intact)
             f.write(json.dumps(frame_data) + "\n")

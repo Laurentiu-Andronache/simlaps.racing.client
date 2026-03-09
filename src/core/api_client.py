@@ -193,6 +193,12 @@ class APIClient:
                 # Skip invalid fuel values
                 pass
 
+        # Add setup notes (serialized session setup map) if available.
+        if session.setup_notes:
+            setup_notes = session.setup_notes.strip()
+            if setup_notes:
+                payload["setupNotes"] = setup_notes
+
         # Sign the payload (adds _timestamp, _nonce, _signature)
         signed_payload = sign_payload(payload)
         

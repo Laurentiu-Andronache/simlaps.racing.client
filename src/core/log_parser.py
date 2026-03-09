@@ -346,6 +346,7 @@ class SessionData:
     initial_fuel: float = 0.0
     fuel_used_session: float = 0.0
     fuel_reliable: bool = True
+    setup_notes: Optional[str] = None
     start_time: str = field(default_factory=lambda: datetime.now().isoformat())
     laps: list[LapData] = field(default_factory=list)
     stints: list[StintData] = field(default_factory=list)
@@ -376,6 +377,7 @@ class SessionData:
             "initial_fuel": self.initial_fuel,
             "fuel_used_session": self.fuel_used_session,
             "fuel_reliable": self.fuel_reliable,
+            "setup_notes": self.setup_notes,
             "start_time": self.start_time,
             "laps": [lap.to_dict() for lap in self.laps],
             "stints": [s.to_dict() for s in self.stints],
@@ -416,6 +418,8 @@ class LogContext:
 
         # All car UUIDs that belong to this player (handles reconnections).
         self.player_car_uuids: set[str] = set()
+        # Session setup map: setting name -> latest value.
+        self.setup_values: dict[str, str] = {}
 
     def reset_for_new_session(self) -> None:
         self.tyre.reset()
@@ -423,6 +427,7 @@ class LogContext:
         self.prev_hundredmeters = 0
         self.fuel_spike_count = 0
         self.player_car_uuids.clear()
+        self.setup_values.clear()
         if self.car_uuid:
             self.player_car_uuids.add(self.car_uuid)
 
@@ -570,6 +575,9 @@ class LogParser:
 
             "penalty": re.compile(
                 r"UINotificationType_SessionPenalty|\{PENALTY_ADDED_KEY\}"
+            ),
+            "setup_group": re.compile(
+                r"KS-SETUP-GROUP\s+(.+)$"
             ),
         }
 
@@ -864,6 +872,37 @@ class LogParser:
             self.context.weather = suffix
             if self.current_session:
                 self.current_session.weather = suffix
+
+    def _serialize_setup_notes(self) -> Optional[str]:
+        if not self.context.setup_values:
+            return None
+        rows: list[str] = []
+        for key, value in self.context.setup_values.items():
+            rows.append(f"{key} {value}".strip())
+        return "\n".join(rows)
+
+    def _handle_setup_group(self, line: str) -> None:
+        if "KS-SETUP-GROUP" not in line:
+            return
+        m = self._pats["setup_group"].search(line)
+        if not m:
+            return
+
+        raw_setting = m.group(1).strip()
+        if not raw_setting:
+            return
+
+        parts = raw_setting.split(maxsplit=1)
+        key = parts[0]
+        value = parts[1].strip() if len(parts) > 1 else ""
+
+        # Keep only the latest value for each setup key.
+        self.context.setup_values[key] = value
+
+        if self.current_session:
+            self.current_session.setup_notes = self._serialize_setup_notes()
+
+        _debug.log(f"[SETUP] {key}={value!r}")
 
     def _handle_session_start(self, line: str) -> bool:
         """Parse 'Game Started!' and initialise a fresh SessionData.
@@ -1401,6 +1440,7 @@ class LogParser:
             return None
 
         # ── In-session events ─────────────────────────────────────────────────
+        self._handle_setup_group(line)
         self._handle_fuel(line)
         self._handle_track_limits(line)
         self._handle_splits_race(line)
