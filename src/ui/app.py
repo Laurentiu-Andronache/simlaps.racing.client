@@ -237,6 +237,18 @@ class SimLapsApp:
                     "[APP] invalid reason: "
                     f"state={getattr(lap, 'lap_state', 'UNKNOWN')}"
                 )
+
+            # Update local PB cache for every valid lap (independent of Discord posting)
+            if lap.is_valid and lap.lap_time_ms > 0:
+                if session.track and session.track != "Unknown" and session.car and session.car != "Unknown":
+                    is_pb = self._pb_cache.check_and_update_pb(
+                        session.track,
+                        session.car,
+                        lap.lap_time_ms,
+                    )
+                    print(f"[APP] PB cache update (valid lap): {is_pb}")
+                else:
+                    print("[APP] Skipping PB cache update: missing track/car")
             
             # Determine initial status
             if not lap.is_valid and not self._config.submit_invalid_laps:
