@@ -1,9 +1,5 @@
 # Agent Instructions
 
-## Shell
-- Always run commands through Git Bash on Windows.
-- Use: `C:\Progra~1\Git\bin\bash.exe -lc "<command>"`
-- Do not use PowerShell unless Git Bash cannot run a required command.
 
 ## Python Environment
 - Use the project virtual environment for Python commands:
