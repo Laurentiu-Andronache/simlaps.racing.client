@@ -924,7 +924,11 @@ class LogParser:
         self.context.current_car = raw_car
         self.context.weather = raw_weather
         self.context.car_is_hybrid = raw_car in KNOWN_HYBRID_CARS
+        
+        # Preserve setup values across session reset
+        preserved_setup_values = self.context.setup_values.copy()
         self.context.reset_for_new_session()
+        self.context.setup_values = preserved_setup_values
 
         tm = self._pats["date"].match(line)
         start_time = tm.group(1) if tm else datetime.now().isoformat()
@@ -941,6 +945,12 @@ class LogParser:
             fuel_reliable=not self.context.car_is_hybrid,
             start_time=start_time,
         )
+        
+        # Apply any setup values that were captured before this session started
+        if self.context.setup_values:
+            self.current_session.setup_notes = self._serialize_setup_notes()
+            _debug.log(f"[SESSION] Applied {len(self.context.setup_values)} setup values to new session")
+        
         self._reset_in_progress()
         self._finalise_stints()
 
@@ -1436,11 +1446,13 @@ class LogParser:
                 _debug.log("[SESSION] END_SESSION for player car — finalising")
                 self._finalise_current_session()
 
+        # ── Setup values (captured regardless of session state) ─────────────────
+        self._handle_setup_group(line)
+
         if not self.current_session:
             return None
 
         # ── In-session events ─────────────────────────────────────────────────
-        self._handle_setup_group(line)
         self._handle_fuel(line)
         self._handle_track_limits(line)
         self._handle_splits_race(line)
