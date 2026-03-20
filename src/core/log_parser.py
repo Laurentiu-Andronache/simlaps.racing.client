@@ -175,6 +175,19 @@ class TyreState:
 
     def set(self, pos: int, code: str) -> None:
         self._compounds[pos] = code
+        # Check if all 4 tires now have the same compound
+        if len(self._compounds) == 4:
+            codes = set(self._compounds.values())
+            if len(codes) == 1:
+                # All tires have the same compound, this is a uniform change
+                final_compound = codes.pop()
+                _debug.log(f"[COMPOUND] Detected uniform compound change: {final_compound}")
+                # Clear any previous mixed state and set uniform compound
+                self._compounds = {0: final_compound, 1: final_compound, 2: final_compound, 3: final_compound}
+
+    def set_all(self, code: str) -> None:
+        """Set all 4 tires to the same compound."""
+        self._compounds = {0: code, 1: code, 2: code, 3: code}
 
     def reset(self) -> None:
         self._compounds.clear()
@@ -526,9 +539,8 @@ class LogParser:
                 r"CarId:\s*[a-f0-9\-]+\s+Tyre:\s*(\d+)\s+compound:\s*(\w+)"
             ),
 
-            "loading_tyre_compound": re.compile(
-                r"LOADING TYRE COMPOUND ([\w\s]+)\s+\((\w+)\)"
-            ),
+            "loading_tyre_compound": re.compile(r"LOADING TYRE COMPOUND (.+)"),
+            "tyre_compound_summary": re.compile(r"TYRE COMPOUND: (.+)"),
 
             "fuel_filled": re.compile(
                 r"FUEL car ([a-f0-9\-]+) filled with ([\d.]+) L"
@@ -829,11 +841,23 @@ class LogParser:
             m = self._pats["loading_tyre_compound"].search(line)
             if m and self._last_car_uuid and self._is_player_car(self._last_car_uuid):
                 compound_name = m.group(1).strip()  # Use full name directly
-                # Set all 4 tires to the same compound
-                for pos in (0, 1, 2, 3):
-                    self.context.tyre.set(pos, compound_name)
+                # Set all 4 tires to the same compound, replacing any existing values
+                self.context.tyre.set_all(compound_name)
                 _debug.log(
                     f"[COMPOUND] All tires → {compound_name} "
+                    f"(resolved: {self.context.tyre.compound_name})"
+                )
+            return
+        
+        # Check for final TYRE COMPOUND summary lines
+        if "TYRE COMPOUND:" in line:
+            m = self._pats["tyre_compound_summary"].search(line)
+            if m:
+                compound_name = m.group(1).strip()
+                # This is the final compound state, overwrite everything
+                self.context.tyre.set_all(compound_name)
+                _debug.log(
+                    f"[COMPOUND] Final state → {compound_name} "
                     f"(resolved: {self.context.tyre.compound_name})"
                 )
             return

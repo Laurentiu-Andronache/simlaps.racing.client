@@ -5,7 +5,7 @@ Single source of truth for version numbers.
 """
 
 # Game name
-GAME_NAME = "SimLaps Client"
+GAME_NAME = "AC EVO"
 
 # Version components
 VERSION_MAJOR = 1
