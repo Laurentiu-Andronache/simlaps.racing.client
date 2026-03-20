@@ -869,18 +869,8 @@ class LogParser:
                 )
             return
         
-        # Check for final TYRE COMPOUND summary lines
-        if "TYRE COMPOUND:" in line:
-            m = self._pats["tyre_compound_summary"].search(line)
-            if m:
-                compound_name = m.group(1).strip()
-                # This is the final compound state, overwrite everything
-                self.context.tyre.set_all(compound_name)
-                _debug.log(
-                    f"[COMPOUND] Final state → {compound_name} "
-                    f"(resolved: {self.context.tyre.compound_name})"
-                )
-            return
+        # TYRE COMPOUND summary lines are ignored - they include all cars in session
+        # We only track individual setCompound calls for the player's car
 
         # Handle old setCompound formats
         if not ("Tyre:" in line and "compound" in line):
