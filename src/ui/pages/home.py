@@ -15,7 +15,7 @@ from ..components.status_bar import StatusBar, ConnectionStatus
 from ...core.log_parser import SessionData, LapData
 from ...core.api_client import SubmissionStatus
 from ...utils.config import AppConfig
-from ...version import GAME_NAME
+from ...version import GAME_DISPLAY_NAME
 
 
 def get_icon_path() -> Optional[str]:
@@ -73,7 +73,7 @@ class HomePage(ft.Column):
         
         # UI Components - create them first
         self._game_version_text = ft.Text(
-            GAME_NAME,
+            GAME_DISPLAY_NAME,
             size=10,
             color="#666666",
         )
@@ -456,7 +456,7 @@ class HomePage(ft.Column):
         """Update the detected game version."""
         if self._game_version != version:
             self._game_version = version
-            self._game_version_text.value = f"{GAME_NAME} {version}"
+            self._game_version_text.value = f"{GAME_DISPLAY_NAME} {version}"
             if self.page:
                 self._game_version_text.update()
     

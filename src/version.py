@@ -4,8 +4,11 @@ SimLaps Client Version Information
 Single source of truth for version numbers.
 """
 
-# Game name
-GAME_NAME = "AC EVO"
+# Game name (for client display - bottom right)
+GAME_NAME = "SimLaps Client"
+
+# Game display name (for game version display - top left)  
+GAME_DISPLAY_NAME = "AC EVO"
 
 # Version components
 VERSION_MAJOR = 1
