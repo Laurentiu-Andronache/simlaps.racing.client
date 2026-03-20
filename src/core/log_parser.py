@@ -505,6 +505,26 @@ class LogParser:
 
     # ── Pattern compilation ───────────────────────────────────────────────────
 
+    def _map_compound_code(self, code: str) -> str:
+        """Map numeric and short compound codes to readable names."""
+        compound_map = {
+            "0": "Default",
+            "1": "Street", 
+            "2": "Super Car",
+            "3": "GT",
+            "4": "Cup",
+            "5": "Super Soft",
+            "6": "Soft",
+            "7": "Medium",
+            "8": "Hard",
+            "9": "Wet",
+            "10": "Ice",
+            "E": "Endurance",
+            "SC": "Super Car",
+            "SM": "Soft Medium",
+        }
+        return compound_map.get(code, code)
+
     def _compile_patterns(self) -> None:
         self._pats: dict[str, re.Pattern] = {
             "version": re.compile(r"Build release ([^,]+),"),
@@ -876,11 +896,14 @@ class LogParser:
         pos = int(m.group(1))
         code = m.group(2)
 
+        # Map compound codes to readable names
+        compound_name = self._map_compound_code(code)
+
         # Only valid tyre positions
         if pos not in (0, 1, 2, 3):
             return
 
-        self.context.tyre.set(pos, code)
+        self.context.tyre.set(pos, compound_name)
 
         _debug.log(
             f"[COMPOUND] Tyre {pos} → {code} "
