@@ -505,24 +505,6 @@ class LogParser:
 
     # ── Pattern compilation ───────────────────────────────────────────────────
 
-    def _map_compound_code(self, code: str) -> str:
-        """Preserve ACE compound tokens unless we only have a legacy numeric."""
-        legacy_numeric_map = {
-            "0": "Default",
-            "1": "Street",
-            "2": "Super Car",
-            "3": "GT",
-            "4": "Cup",
-            "5": "Super Soft",
-            "6": "Soft",
-            "7": "Medium",
-            "8": "Hard",
-            "9": "Wet",
-            "10": "Ice",
-        }
-        code = code.strip()
-        return legacy_numeric_map.get(code, code)
-
     def _compile_patterns(self) -> None:
         self._pats: dict[str, re.Pattern] = {
             "version": re.compile(r"Build release ([^,]+),"),
@@ -878,8 +860,7 @@ class LogParser:
         pos = int(m.group(1))
         code = m.group(2)
 
-        # Map compound codes to readable names
-        compound_name = self._map_compound_code(code)
+        compound_name = code.strip()
 
         # Only valid tyre positions
         if pos not in (0, 1, 2, 3):
