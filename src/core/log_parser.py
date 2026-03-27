@@ -506,10 +506,10 @@ class LogParser:
     # ── Pattern compilation ───────────────────────────────────────────────────
 
     def _map_compound_code(self, code: str) -> str:
-        """Map numeric and short compound codes to readable names."""
-        compound_map = {
+        """Preserve ACE compound tokens unless we only have a legacy numeric."""
+        legacy_numeric_map = {
             "0": "Default",
-            "1": "Street", 
+            "1": "Street",
             "2": "Super Car",
             "3": "GT",
             "4": "Cup",
@@ -519,11 +519,9 @@ class LogParser:
             "8": "Hard",
             "9": "Wet",
             "10": "Ice",
-            "E": "Endurance",
-            "SC": "Super Car",
-            "SM": "Soft Medium",
         }
-        return compound_map.get(code, code)
+        code = code.strip()
+        return legacy_numeric_map.get(code, code)
 
     def _compile_patterns(self) -> None:
         self._pats: dict[str, re.Pattern] = {
@@ -553,10 +551,6 @@ class LogParser:
 
             "set_compound_old": re.compile(
                 r"setCompound Tyre:\s*(\d+)\s+compound(?: name)?:\s*(\w+)"
-            ),
-
-            "set_compound_new": re.compile(
-                r"CarId:\s*[a-f0-9\-]+\s+Tyre:\s*(\d+)\s+compound:\s*(\w+)"
             ),
 
             "loading_tyre_compound": re.compile(r"LOADING TYRE COMPOUND (.+)"),
@@ -869,17 +863,15 @@ class LogParser:
                 )
             return
         
-        # TYRE COMPOUND summary lines are ignored - they include all cars in session
-        # We only track individual setCompound calls for the player's car
-
-        # Handle old setCompound formats
-        if not ("Tyre:" in line and "compound" in line):
+        # TYRE COMPOUND summary lines are ignored - they include all cars in
+        # session. Likewise, platformCore numeric "CarId ... compound: N"
+        # events are not reliable compound identifiers in ACE and can disagree
+        # with the authoritative physics "setCompound ... compound name: XX"
+        # line for the same tyre update.
+        if "setCompound Tyre:" not in line:
             return
 
         m = self._pats["set_compound_old"].search(line)
-        if not m:
-            m = self._pats["set_compound_new"].search(line)
-
         if not m:
             return
 
@@ -950,6 +942,9 @@ class LogParser:
         m = self._pats["game_started"].search(line)
         if not m:
             return False
+
+        if self.current_session:
+            self._finalise_current_session()
 
         raw_type, raw_track_desc, raw_car, raw_weather = (
             m.group(1), m.group(2), m.group(3).strip(), m.group(4).strip()
@@ -1445,6 +1440,9 @@ class LogParser:
     def _finalise_current_session(self) -> None:
         if not self.current_session:
             return
+        # Session-end metadata should reflect the latest known tyre state even
+        # if no lap was completed after the final pit/setup change.
+        self.current_session.tyre_compound = self.context.tyre.compound_name
         # Emit aborted lap if the session ends mid-lap
         self._maybe_emit_aborted_lap()
         self._finalise_stints()
@@ -1481,7 +1479,6 @@ class LogParser:
         if "END_SESSION car" in line and self.context.car_uuid:
             if self.context.car_uuid in line:
                 _debug.log("[SESSION] END_SESSION for player car — finalising")
-                self._finalise_current_session()
 
         # ── Setup values (captured regardless of session state) ─────────────────
         self._handle_setup_group(line)
