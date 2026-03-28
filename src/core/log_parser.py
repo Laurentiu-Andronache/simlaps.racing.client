@@ -174,16 +174,8 @@ class TyreState:
         self._compounds: dict[int, str] = {}
 
     def set(self, pos: int, code: str) -> None:
+        """Set compound for a specific tire position."""
         self._compounds[pos] = code
-        # Check if all 4 tires now have the same compound
-        if len(self._compounds) == 4:
-            codes = set(self._compounds.values())
-            if len(codes) == 1:
-                # All tires have the same compound, this is a uniform change
-                final_compound = codes.pop()
-                _debug.log(f"[COMPOUND] Detected uniform compound change: {final_compound}")
-                # Clear any previous mixed state and set uniform compound
-                self._compounds = {0: final_compound, 1: final_compound, 2: final_compound, 3: final_compound}
 
     def set_all(self, code: str) -> None:
         """Set all 4 tires to the same compound."""
@@ -505,6 +497,7 @@ class LogParser:
 
     # ── Pattern compilation ───────────────────────────────────────────────────
 
+    
     def _compile_patterns(self) -> None:
         self._pats: dict[str, re.Pattern] = {
             "version": re.compile(r"Build release ([^,]+),"),
