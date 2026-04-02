@@ -9,6 +9,7 @@ Usage:
     python3 ac_lap_analyzer.py ac_evo_raw_20260330_223000.jsonl
 """
 
+import argparse
 import json
 import math
 import sys
@@ -22,6 +23,9 @@ def load_frames(path):
     meta = None
     with open(path) as f:
         for line in f:
+            line = line.strip()
+            if not line:
+                continue
             d = json.loads(line)
             if d.get("_record_type") == "meta":
                 meta = d
@@ -32,19 +36,234 @@ def load_frames(path):
 def get_physics(frame):
     return frame["regions"]["physics"]
 
+TRACK_CATALOG = {
+    "spa": {
+        "name": "Circuit de Spa-Francorchamps",
+        "aliases": ["spa", "spa-francorchamps"],
+        "default_config": "current",
+        "configs": {
+            "current": {
+                "name": "Current",
+                "aliases": ["current", "gp", "full"],
+                "corners": [
+                    {"id": 1, "name": "La Source", "start": 0.070, "end": 0.100},
+                    {"id": 2, "name": "Eau Rouge", "start": 0.100, "end": 0.108},
+                    {"id": 3, "name": "Raidillon Left", "start": 0.108, "end": 0.117},
+                    {"id": 4, "name": "Raidillon Right", "start": 0.117, "end": 0.126},
+                    {"id": 5, "name": "Les Combes 1", "start": 0.128, "end": 0.145},
+                    {"id": 6, "name": "Les Combes 2", "start": 0.145, "end": 0.160},
+                    {"id": 7, "name": "Les Combes 3", "start": 0.190, "end": 0.208},
+                    {"id": 8, "name": "Bruxelles", "start": 0.208, "end": 0.236},
+                    {"id": 9, "name": "No Name", "start": 0.330, "end": 0.352},
+                    {"id": 10, "name": "Pouhon 1", "start": 0.418, "end": 0.442},
+                    {"id": 11, "name": "Pouhon 2", "start": 0.442, "end": 0.472},
+                    {"id": 12, "name": "Fagnes 1", "start": 0.488, "end": 0.498},
+                    {"id": 13, "name": "Fagnes 2", "start": 0.498, "end": 0.508},
+                    {"id": 14, "name": "Campus", "start": 0.710, "end": 0.722},
+                    {"id": 15, "name": "Paul Frere", "start": 0.722, "end": 0.752},
+                    {"id": 16, "name": "Blanchimont 1", "start": 0.820, "end": 0.832},
+                    {"id": 17, "name": "Blanchimont 2", "start": 0.832, "end": 0.842},
+                    {"id": 18, "name": "Bus Stop 1", "start": 0.928, "end": 0.942},
+                    {"id": 19, "name": "Bus Stop 2", "start": 0.942, "end": 0.955},
+                ],
+            },
+        },
+    },
+    "laguna_seca": {
+        "name": "Laguna Seca",
+        "aliases": ["laguna", "laguna-seca", "laguna_seca", "mazda-raceway", "weathertech-raceway"],
+        "default_config": "full",
+        "configs": {
+            "full": {
+                "name": "11-Corner Layout",
+                "aliases": ["full", "11-corner", "11_corner"],
+                "corners": [
+                    {"id": 1, "name": "Andretti Hairpin 1", "start": 0.065, "end": 0.090},
+                    {"id": 2, "name": "Andretti Hairpin 2", "start": 0.090, "end": 0.120},
+                    {"id": 3, "name": "Turn 3", "start": 0.185, "end": 0.225},
+                    {"id": 4, "name": "Turn 4", "start": 0.285, "end": 0.325},
+                    {"id": 5, "name": "Turn 5", "start": 0.380, "end": 0.425},
+                    {"id": 6, "name": "Turn 6", "start": 0.475, "end": 0.520},
+                    {"id": 7, "name": "Corkscrew Left", "start": 0.590, "end": 0.615},
+                    {"id": 8, "name": "Corkscrew Right", "start": 0.615, "end": 0.645},
+                    {"id": 9, "name": "Rainey Curve", "start": 0.700, "end": 0.745},
+                    {"id": 10, "name": "Turn 10", "start": 0.810, "end": 0.850},
+                    {"id": 11, "name": "Turn 11", "start": 0.900, "end": 0.960},
+                ],
+            },
+        },
+    },
+    "nordschleife": {
+        "name": "Nurburgring Nordschleife",
+        "aliases": ["nordschleife", "nurburgring-nordschleife", "nurburg-nordschleife"],
+        "default_config": "24h",
+        "configs": {
+            "24h": {"name": "24H", "aliases": ["24h"], "corners": []},
+            "touristenfahrten": {"name": "Touristenfahrten", "aliases": ["touristenfahrten", "tourist"], "corners": []},
+        },
+    },
+    "nurburgring_gp": {
+        "name": "Nurburgring Grand Prix",
+        "aliases": ["nurburgring-gp", "nurburgring_gp", "gp-strecke"],
+        "default_config": "full_gp",
+        "configs": {
+            "full_gp": {"name": "Full GP", "aliases": ["full", "gp"], "corners": []},
+        },
+    },
+    "brands_hatch": {
+        "name": "Brands Hatch",
+        "aliases": ["brands", "brands-hatch", "brands_hatch"],
+        "default_config": "gp",
+        "configs": {
+            "gp": {"name": "GP", "aliases": ["gp"], "corners": []},
+            "indy": {"name": "Indy", "aliases": ["indy"], "corners": []},
+        },
+    },
+    "cota": {
+        "name": "Circuit of the Americas",
+        "aliases": ["cota", "circuit-of-the-americas"],
+        "default_config": "gp",
+        "configs": {
+            "gp": {"name": "GP", "aliases": ["gp", "full"], "corners": []},
+            "national": {"name": "National", "aliases": ["national"], "corners": []},
+        },
+    },
+    "donington": {
+        "name": "Donington Park",
+        "aliases": ["donington", "donington-park", "donington_park"],
+        "default_config": "gp",
+        "configs": {
+            "gp": {"name": "Grand Prix", "aliases": ["gp", "grand-prix"], "corners": []},
+            "national": {"name": "National", "aliases": ["national"], "corners": []},
+        },
+    },
+    "monza": {
+        "name": "Monza",
+        "aliases": ["monza"],
+        "default_config": "v0_4",
+        "configs": {
+            "v0_4": {"name": "v0.4", "aliases": ["v0.4", "v0_4", "full", "gp"], "corners": []},
+        },
+    },
+    "bathurst": {
+        "name": "Mount Panorama",
+        "aliases": ["bathurst", "mount-panorama", "mount_panorama"],
+        "default_config": "full",
+        "configs": {
+            "full": {"name": "Full", "aliases": ["full"], "corners": []},
+        },
+    },
+    "fuji": {
+        "name": "Fuji Speedway",
+        "aliases": ["fuji", "fuji-speedway", "fuji_speedway"],
+        "default_config": "full",
+        "configs": {
+            "full": {"name": "Full", "aliases": ["full"], "corners": []},
+        },
+    },
+    "imola": {
+        "name": "Imola",
+        "aliases": ["imola", "autodromo-enzo-e-dino-ferrari"],
+        "default_config": "full",
+        "configs": {
+            "full": {"name": "Full", "aliases": ["full"], "corners": []},
+        },
+    },
+    "oulton_park": {
+        "name": "Oulton Park",
+        "aliases": ["oulton", "oulton-park", "oulton_park"],
+        "default_config": "international",
+        "configs": {
+            "international": {"name": "International", "aliases": ["international"], "corners": []},
+            "foster": {"name": "Foster", "aliases": ["foster"], "corners": []},
+        },
+    },
+    "road_atlanta": {
+        "name": "Road Atlanta",
+        "aliases": ["road-atlanta", "road_atlanta"],
+        "default_config": "full",
+        "configs": {
+            "full": {"name": "Full", "aliases": ["full"], "corners": []},
+        },
+    },
+    "red_bull_ring": {
+        "name": "Red Bull Ring",
+        "aliases": ["red-bull-ring", "red_bull_ring", "rbr"],
+        "default_config": "full",
+        "configs": {
+            "full": {"name": "Full", "aliases": ["full", "gp"], "corners": []},
+        },
+    },
+    "suzuka": {
+        "name": "Suzuka Circuit",
+        "aliases": ["suzuka", "suzuka-circuit", "suzuka_circuit"],
+        "default_config": "full",
+        "configs": {
+            "full": {"name": "Full", "aliases": ["full", "gp"], "corners": []},
+        },
+    },
+}
+
+def build_track_profile(track_key, config_key):
+    track = TRACK_CATALOG[track_key]
+    config = track["configs"][config_key]
+    return {
+        "track_key": track_key,
+        "track_name": track["name"],
+        "config_key": config_key,
+        "config_name": config["name"],
+        "display_name": f"{track['name']} ({config['name']})",
+        "corners": config.get("corners", []),
+    }
+
+def select_track_profile(path=None, track_name=None, config_name=None):
+    if track_name:
+        for track_key, track in TRACK_CATALOG.items():
+            labels = [track_key, *track.get("aliases", [])]
+            if track_name.lower() in labels:
+                if config_name:
+                    for config_key, config in track["configs"].items():
+                        config_labels = [config_key, *config.get("aliases", [])]
+                        if config_name.lower() in config_labels:
+                            return track_key, build_track_profile(track_key, config_key)
+                    raise ValueError(f"Unknown config '{config_name}' for track '{track_name}'")
+                return track_key, build_track_profile(track_key, track["default_config"])
+        raise ValueError(f"Unknown track '{track_name}'")
+
+    path_l = os.path.normpath(path).lower() if path else ""
+    for track_key, track in TRACK_CATALOG.items():
+        if any(alias in path_l for alias in track.get("aliases", [])):
+            for config_key, config in track["configs"].items():
+                if any(alias in path_l for alias in config.get("aliases", [])):
+                    return track_key, build_track_profile(track_key, config_key)
+            return track_key, build_track_profile(track_key, track["default_config"])
+
+    return None, None
+
 # ─── Build track map (integrate world velocity) ───────────────────────────────
 
 def build_track(frames, hz=1.0, start_idx=0):
-    """Integrate velocity to get (x, z) positions in world space."""
+    """Build track points from world position when available, else velocity."""
     x, z = 0.0, 0.0
     dt = 1.0 / max(hz, 1e-9)
     track = []
     for i, frame in enumerate(frames[start_idx:], start_idx):
         ph = get_physics(frame)
-        vx = ph["velocity"]["x"]
-        vz = ph["velocity"]["z"]
-        x += vx * dt
-        z += vz * dt
+        wp = ph.get("world_position") or ph.get("worldPosition")
+        if wp and isinstance(wp, dict):
+            x = float(wp.get("x", x))
+            z = float(wp.get("z", z))
+        else:
+            vx = ph["velocity"]["x"]
+            vz = ph["velocity"]["z"]
+            x += vx * dt
+            z += vz * dt
+
+        norm_pos = (
+            ph.get("normalized_spline_position")
+            or ph.get("spNormalizedCarPosition")
+            or ph.get("normalizedCarPosition")
+        )
         track.append({
             "frame": i,
             "x": x,
@@ -56,24 +275,32 @@ def build_track(frames, hz=1.0, start_idx=0):
             "gas": ph.get("gas", 0),
             "gear": ph.get("gear", 0),
             "rpms": ph.get("rpms", 0),
+            "norm_pos": float(norm_pos) if norm_pos is not None else None,
         })
     return track
 
 # ─── Detect laps ──────────────────────────────────────────────────────────────
 
-def detect_laps(track, hz=1.0, min_lap_time_s=60.0, warmup_time_s=40.0):
-    """
-    Find lap start frames by detecting when the car returns near a
-    reference position on the S/F straight.
+def _detect_laps_by_norm_pos(track, hz=1.0, min_lap_time_s=60.0):
+    """Detect laps from the game's normalized spline position when present."""
+    min_lap_frames = max(1, int(round(min_lap_time_s * hz)))
+    boundaries = []
+    prev_norm = None
 
-    Strategy:
-    1. Skip the first `warmup_time_s` as an out-lap / pit exit.
-    2. Pick the first high-speed, low-steer frame in that window as the
-       S/F reference point.
-    3. Detect subsequent crossings within 20 m of that reference.
+    for pt in track:
+        norm = pt.get("norm_pos")
+        if norm is None:
+            return None
+        if prev_norm is not None and prev_norm > 0.92 and norm < 0.08:
+            frame = pt["frame"]
+            if not boundaries or (frame - boundaries[-1]) >= min_lap_frames:
+                boundaries.append(frame)
+        prev_norm = norm
 
-    Returns list of frame indices marking lap starts.
-    """
+    return boundaries if len(boundaries) >= 2 else None
+
+def _detect_laps_by_position(track, hz=1.0, min_lap_time_s=60.0, warmup_time_s=40.0):
+    """Fallback lap detection using dead-reckoned world position."""
     min_lap_frames = max(1, int(round(min_lap_time_s * hz)))
     warmup_frames = max(0, int(round(warmup_time_s * hz)))
 
@@ -102,6 +329,21 @@ def detect_laps(track, hz=1.0, min_lap_time_s=60.0, warmup_time_s=40.0):
 
     return boundaries
 
+def detect_laps(track, hz=1.0, min_lap_time_s=60.0, warmup_time_s=40.0):
+    """Detect lap boundaries, preferring normalized spline position."""
+    norm_result = _detect_laps_by_norm_pos(track, hz=hz, min_lap_time_s=min_lap_time_s)
+    if norm_result:
+        print("Lap detection: using normalized car position")
+        return norm_result
+
+    print("Lap detection: using dead-reckoning position")
+    return _detect_laps_by_position(
+        track,
+        hz=hz,
+        min_lap_time_s=min_lap_time_s,
+        warmup_time_s=warmup_time_s,
+    )
+
 # ─── Detect corners within a lap ─────────────────────────────────────────────
 
 def detect_corners(track, lap_start_frame, lap_end_frame, hz=1.0,
@@ -116,17 +358,21 @@ def detect_corners(track, lap_start_frame, lap_end_frame, hz=1.0,
     merge_gap = max(1, int(round(merge_gap_s * hz)))
     min_dur = max(1, int(round(min_dur_s * hz)))
 
-    all_frames = {pt["frame"]: pt for pt in track}
-    seg = [pt for pt in track
+    seg = [dict(pt) for pt in track
            if lap_start_frame <= pt["frame"] < lap_end_frame]
+    if len(seg) < 4:
+        return []
+
+    n = max(len(seg) - 1, 1)
+    for idx, pt in enumerate(seg):
+        pt["lap_pos"] = idx / n
 
     # Heading delta per frame
-    corner_flags = []
+    corner_flags = [False]
     for i in range(1, len(seg)):
         dh = seg[i]["heading"] - seg[i - 1]["heading"]
         dh = (dh + math.pi) % (2 * math.pi) - math.pi  # normalize to [-π, π]
         corner_flags.append(abs(dh) * hz > dheading_rate_thresh)
-    corner_flags = [False] + corner_flags  # align with seg
 
     # Merge nearby corner flags
     in_corner = False
@@ -169,7 +415,7 @@ def detect_corners(track, lap_start_frame, lap_end_frame, hz=1.0,
             "exit_speed": window[-1]["speed"],
             "apex_x": apex["x"],
             "apex_z": apex["z"],
-            "lap_pos": ci_start / max(len(seg) - 1, 1),  # 0–1 normalized lap position
+            "lap_pos": seg[ci_start]["lap_pos"],
         })
 
     # Re-number corners
@@ -178,13 +424,67 @@ def detect_corners(track, lap_start_frame, lap_end_frame, hz=1.0,
 
     return result
 
+def detect_profiled_corners(track, lap_start_frame, lap_end_frame, profile):
+    seg = [dict(pt) for pt in track if lap_start_frame <= pt["frame"] < lap_end_frame]
+    if not seg:
+        return []
+
+    has_norm_pos = seg[0].get("norm_pos") is not None
+    n = max(len(seg) - 1, 1)
+    for idx, pt in enumerate(seg):
+        pt["lap_pos"] = pt["norm_pos"] if has_norm_pos else idx / n
+
+    result = []
+    for spec in profile["corners"]:
+        window = [pt for pt in seg if spec["start"] <= pt["lap_pos"] <= spec["end"]]
+        if not window:
+            continue
+        apex = min(window, key=lambda pt: pt["speed"])
+        result.append({
+            "id": spec["id"],
+            "name": spec["name"],
+            "start_frame": window[0]["frame"],
+            "end_frame": window[-1]["frame"],
+            "apex_frame": apex["frame"],
+            "apex_speed": apex["speed"],
+            "min_speed": min(pt["speed"] for pt in window),
+            "entry_speed": window[0]["speed"],
+            "exit_speed": window[-1]["speed"],
+            "apex_x": apex["x"],
+            "apex_z": apex["z"],
+            "lap_pos": apex["lap_pos"],
+        })
+
+    return result
+
+def match_corners(ref_corners, lap_corners, tol=0.15):
+    """Sequential nearest-neighbor corner matching."""
+    matched = {}
+    last_idx = 0
+    for ref_corner in ref_corners:
+        best = None
+        best_dist = tol
+        for i in range(last_idx, len(lap_corners)):
+            dist = abs(lap_corners[i]["lap_pos"] - ref_corner["lap_pos"])
+            if dist < best_dist:
+                best_dist = dist
+                best = lap_corners[i]
+                last_idx = i
+        matched[ref_corner["id"]] = best
+    return matched
+
 # ─── Main analysis ────────────────────────────────────────────────────────────
 
-def analyze(path):
+def analyze(path, track_name=None, config_name=None):
     meta, frames = load_frames(path)
-    hz = meta.get("_hz", 1.0) if meta else 1.0
+    hz = float(meta.get("_hz", 1.0)) if meta else 1.0
+    track_key, track_profile = select_track_profile(path=path, track_name=track_name, config_name=config_name)
     print(f"Loaded {len(frames)} frames at {hz} Hz "
           f"({len(frames) / hz / 60:.1f} min)")
+    if track_profile:
+        print(f"Track profile: {track_profile['display_name']}")
+    else:
+        print("Track profile: none - using auto corner detection")
 
     # Find driving start (first frame with speed > 5 km/h after initial standstill)
     drive_start = 0
@@ -206,7 +506,10 @@ def analyze(path):
         lap_track = [pt for pt in track if s <= pt["frame"] < e]
         if len(lap_track) < 20:
             continue
-        corners = detect_corners(track, s, e, hz=hz)
+        if track_profile and track_profile["corners"]:
+            corners = detect_profiled_corners(track, s, e, track_profile)
+        else:
+            corners = detect_corners(track, s, e, hz=hz)
         lap_time = (e - s) / hz
         laps.append({
             "lap_num": i + 1,
@@ -227,42 +530,41 @@ def analyze(path):
         print("ERROR: No complete laps detected. Check the file.")
         sys.exit(1)
 
-    # Build a corner map using the first lap as reference
-    ref_corners = laps[0]["corners"]
-    num_corners = len(ref_corners)
-    print(f"\nUsing Lap 1 as reference: {num_corners} corners")
+    best_lap = min(laps, key=lambda lap: lap["lap_time_s"])
+    ref_corners = best_lap["corners"]
+    print(f"\nReference corners from Lap {best_lap['lap_num']} (best lap): {len(ref_corners)} corners")
 
-    # For each lap, match corners to reference by lap_pos proximity
-    def match_corners(ref, lap_corners, num_ref):
-        matched = {}
-        for ref_c in ref:
-            best = None
-            best_dist = 0.15  # max 15% lap position difference
-            for lc in lap_corners:
-                d = abs(lc["lap_pos"] - ref_c["lap_pos"])
-                if d < best_dist:
-                    best_dist = d
-                    best = lc
-            matched[ref_c["id"]] = best
-        return matched
-
-    # Assemble corner speed table: corner_id → {lap_num: apex_speed}
+    corner_data = defaultdict(dict)
     corner_speeds = defaultdict(dict)
     for lap in laps:
-        matched = match_corners(ref_corners, lap["corners"], num_corners)
+        matched = match_corners(ref_corners, lap["corners"])
         for cid, corner in matched.items():
             if corner:
+                seg_time = (corner["end_frame"] - corner["start_frame"]) / hz
+                corner_data[cid][lap["lap_num"]] = {
+                    "apex": round(corner["apex_speed"], 1),
+                    "entry": round(corner["entry_speed"], 1),
+                    "exit": round(corner["exit_speed"], 1),
+                    "seg_time": round(seg_time, 3),
+                }
                 corner_speeds[cid][lap["lap_num"]] = corner["apex_speed"]
 
-    # Full telemetry table (all driving frames)
-    telem = [pt for pt in track
-             if any(l["start_frame"] <= pt["frame"] < l["end_frame"]
-                    for l in laps)]
+    session_start = laps[0]["start_frame"]
+    session_end = laps[-1]["end_frame"]
+    telem = [pt for pt in track if session_start <= pt["frame"] < session_end]
 
     return {
         "meta": meta,
+        "hz": hz,
+        "track_key": track_key,
+        "track_name": track_profile["track_name"] if track_profile else None,
+        "config_key": track_profile["config_key"] if track_profile else None,
+        "config_name": track_profile["config_name"] if track_profile else None,
+        "track_label": track_profile["display_name"] if track_profile else None,
         "laps": laps,
+        "best_lap_num": best_lap["lap_num"],
         "ref_corners": ref_corners,
+        "corner_data": corner_data,
         "corner_speeds": corner_speeds,
         "telem": telem,
         "drive_start": drive_start,
@@ -278,6 +580,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>AC Evo Lap Analysis</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js"></script>
 <style>
   :root {
     --bg: #0d0d0f;
@@ -444,7 +747,7 @@ function makeLapFilters(containerId, onChange) {
     const btn = document.createElement('button');
     btn.className = 'lap-btn active';
     btn.style.color = lapColor(lap.lap_num);
-    btn.textContent = `L${lap.lap_num} – ${lap.lap_time_str}`;
+    btn.textContent = `L${lap.lap_num}${lap.lap_num===DATA.best_lap_num?'*':''} - ${lap.lap_time_str}`;
     btn.dataset.lap = lap.lap_num;
     btn.addEventListener('click', () => {
       if (activeLaps.has(lap.lap_num)) activeLaps.delete(lap.lap_num);
@@ -467,8 +770,8 @@ function syncFilterButtons() {
 // ─── Summary stats ────────────────────────────────────────────────────────────
 function renderStats() {
   const row = document.getElementById('stats-row');
-  const best = Math.min(...DATA.laps.map(l => l.lap_time_s));
-  const bestLap = DATA.laps.find(l => l.lap_time_s === best);
+  const bestLap = DATA.laps.find(l => l.lap_num === DATA.best_lap_num)
+    || DATA.laps.reduce((best, lap) => lap.lap_time_s < best.lap_time_s ? lap : best, DATA.laps[0]);
   const maxSpd = Math.max(...DATA.laps.map(l => l.max_speed));
   const stats = [
     { label: 'Laps', value: DATA.laps.length },
@@ -479,8 +782,9 @@ function renderStats() {
   row.innerHTML = stats.map(s =>
     `<div class="stat"><div class="label">${s.label}</div><div class="value">${s.value}</div></div>`
   ).join('');
+  const prefix = DATA.track_label || DATA.track_name || '';
   document.getElementById('session-info').textContent =
-    `${DATA.laps.length} laps detected  •  ${DATA.laps[0].lap_time_str} – ${DATA.laps[DATA.laps.length-1].lap_time_str}`;
+    `${prefix ? prefix + '  |  ' : ''}${DATA.laps.length} laps detected  -  best ${bestLap.lap_time_str}`;
 }
 
 // ─── Track map ────────────────────────────────────────────────────────────────
@@ -610,8 +914,8 @@ function buildSpeedChart() {
   const datasets = DATA.laps
     .filter(l => activeLaps.has(l.lap_num))
     .map(lap => ({
-      label: `Lap ${lap.lap_num} (${lap.lap_time_str})`,
-      data: lap.track.map((pt, i) => ({ x: i, y: pt.speed })),
+      label: `Lap ${lap.lap_num}${lap.lap_num===DATA.best_lap_num?'*':''} (${lap.lap_time_str})`,
+      data: lap.track.map((pt, i) => ({ x: i / Math.max(lap.track.length - 1, 1) * 100, y: pt.speed })),
       borderColor: lapColor(lap.lap_num),
       backgroundColor: 'transparent',
       borderWidth: 1.8,
@@ -619,20 +923,20 @@ function buildSpeedChart() {
       tension: 0.3,
     }));
 
-  // Add corner shading on first active lap
-  const activeLap = DATA.laps.find(l => activeLaps.has(l.lap_num));
+  // Add corner shading on the best lap
+  const activeLap = DATA.laps.find(l => l.lap_num === DATA.best_lap_num) || DATA.laps[0];
   const annotations = {};
   if (activeLap) {
     activeLap.corners.forEach(c => {
-      const s = c.start_frame - activeLap.start_frame;
-      const e = c.end_frame - activeLap.start_frame;
+      const s = (c.start_frame - activeLap.start_frame) / Math.max(activeLap.track.length - 1, 1) * 100;
+      const e = (c.end_frame - activeLap.start_frame) / Math.max(activeLap.track.length - 1, 1) * 100;
       annotations[`corner${c.id}`] = {
         type: 'box',
         xMin: s, xMax: e,
         backgroundColor: 'rgba(255,255,255,0.04)',
         borderColor: 'rgba(255,255,255,0.1)',
         borderWidth: 1,
-        label: { content: `C${c.id}`, display: true, color: '#9ca3af', font: { size: 9 } },
+        label: { content: c.name || `C${c.id}`, display: true, color: '#9ca3af', font: { size: 9 } },
       };
     });
   }
@@ -645,8 +949,8 @@ function buildSpeedChart() {
       animation: false,
       interaction: { mode: 'index', intersect: false },
       scales: {
-        x: { type: 'linear', title: { display: true, text: 'Lap time (s)', color: '#6b7280' },
-             grid: { color: '#1e2028' }, ticks: { color: '#6b7280' } },
+        x: { type: 'linear', min: 0, max: 100, title: { display: true, text: 'Lap progress (%)', color: '#6b7280' },
+             grid: { color: '#1e2028' }, ticks: { color: '#6b7280', callback: v => v + '%' } },
         y: { title: { display: true, text: 'Speed (km/h)', color: '#6b7280' },
              grid: { color: '#1e2028' }, ticks: { color: '#6b7280' } },
       },
@@ -664,7 +968,7 @@ function buildCornerChart() {
   const ctx = document.getElementById('corner-chart').getContext('2d');
   if (cornerChart) cornerChart.destroy();
 
-  const labels = DATA.ref_corners.map(c => `C${c.id}`);
+  const labels = DATA.ref_corners.map(c => c.name || `C${c.id}`);
   const datasets = DATA.laps.map(lap => ({
     label: `Lap ${lap.lap_num}`,
     data: DATA.ref_corners.map(c => {
@@ -702,16 +1006,16 @@ function buildCornerTable() {
   let html = `<thead><tr><th>Corner</th>${lapNums.map(n => `<th>Lap ${n}</th>`).join('')}<th>Δ Best–Worst</th></tr></thead><tbody>`;
 
   DATA.ref_corners.forEach(c => {
-    const speeds = DATA.corner_speeds[c.id] || {};
-    const vals = lapNums.map(n => speeds[n]).filter(v => v !== undefined);
+    const speeds = DATA.corner_data?.[c.id] || {};
+    const vals = lapNums.map(n => speeds[n]?.apex).filter(v => v !== undefined);
     const best = vals.length ? Math.max(...vals) : null;
     const worst = vals.length ? Math.min(...vals) : null;
     const delta = best !== null ? (best - worst).toFixed(1) : '—';
 
-    html += `<tr><td><span class="badge" style="background:var(--border)">C${c.id}</span></td>`;
+    html += `<tr><td><span class="badge" style="background:var(--border)">${c.name || `C${c.id}`}</span></td>`;
     lapNums.forEach(n => {
-      const v = speeds[n];
-      if (!v) { html += `<td style="color:var(--muted)">—</td>`; return; }
+      const v = speeds[n]?.apex;
+      if (v === undefined) { html += `<td style="color:var(--muted)">-</td>`; return; }
       const isB = v === best;
       const isW = v === worst;
       const color = isB ? 'var(--green)' : isW ? 'var(--red)' : 'var(--text)';
@@ -737,19 +1041,19 @@ function buildInputsChart() {
   const datasets = [
     {
       label: 'Brake',
-      data: lap.track.map((pt, i) => ({ x: i, y: pt.brake * 100 })),
+      data: lap.track.map((pt, i) => ({ x: i / Math.max(lap.track.length - 1, 1) * 100, y: pt.brake * 100 })),
       borderColor: '#ef4444', backgroundColor: 'rgba(239,68,68,0.15)',
       fill: true, borderWidth: 1.5, pointRadius: 0, tension: 0.2,
     },
     {
       label: 'Throttle',
-      data: lap.track.map((pt, i) => ({ x: i, y: pt.gas * 100 })),
+      data: lap.track.map((pt, i) => ({ x: i / Math.max(lap.track.length - 1, 1) * 100, y: pt.gas * 100 })),
       borderColor: '#22c55e', backgroundColor: 'rgba(34,197,94,0.1)',
       fill: true, borderWidth: 1.5, pointRadius: 0, tension: 0.2,
     },
     {
       label: 'Gear × 10',
-      data: lap.track.map((pt, i) => ({ x: i, y: pt.gear * 10 })),
+      data: lap.track.map((pt, i) => ({ x: i / Math.max(lap.track.length - 1, 1) * 100, y: pt.gear * 10 })),
       borderColor: '#eab308', backgroundColor: 'transparent',
       borderWidth: 1.5, pointRadius: 0, tension: 0,
       borderDash: [4, 2],
@@ -763,7 +1067,7 @@ function buildInputsChart() {
       responsive: true,
       animation: false,
       scales: {
-        x: { type: 'linear', grid: { color: '#1e2028' }, ticks: { color: '#6b7280' } },
+        x: { type: 'linear', min: 0, max: 100, grid: { color: '#1e2028' }, ticks: { color: '#6b7280', callback: v => v + '%' } },
         y: { min: 0, max: 100, grid: { color: '#1e2028' }, ticks: { color: '#6b7280', callback: v => v + '%' } },
       },
       plugins: { legend: { labels: { color: '#e0e2ea', boxWidth: 12 } } }
@@ -780,7 +1084,7 @@ window.addEventListener('DOMContentLoaded', () => {
   DATA.laps.forEach(l => {
     const opt = document.createElement('option');
     opt.value = l.lap_num;
-    opt.textContent = `Lap ${l.lap_num} (${l.lap_time_str})`;
+    opt.textContent = `Lap ${l.lap_num}${l.lap_num===DATA.best_lap_num?'*':''} (${l.lap_time_str})`;
     sel.appendChild(opt);
   });
 
@@ -818,16 +1122,21 @@ def render_html(data, output_path):
         for c in lap["corners"]:
             corners_json.append({
                 "id": c["id"],
+                "name": c.get("name"),
                 "start_frame": c["start_frame"],
                 "end_frame": c["end_frame"],
                 "apex_frame": c["apex_frame"],
                 "apex_speed": round(c["apex_speed"], 1),
+                "entry_speed": round(c["entry_speed"], 1),
+                "exit_speed": round(c["exit_speed"], 1),
                 "apex_x": round(c["apex_x"], 1),
                 "apex_z": round(c["apex_z"], 1),
                 "lap_pos": round(c["lap_pos"], 4),
             })
         laps_json.append({
             "lap_num": lap["lap_num"],
+            "start_frame": lap["start_frame"],
+            "end_frame": lap["end_frame"],
             "lap_time_s": round(lap["lap_time_s"], 2),
             "lap_time_str": lap["lap_time_str"],
             "max_speed": round(lap["max_speed"], 1),
@@ -837,20 +1146,30 @@ def render_html(data, output_path):
         })
 
     ref_corners_json = [
-        {"id": c["id"], "lap_pos": round(c["lap_pos"], 4)}
+        {"id": c["id"], "name": c.get("name"), "lap_pos": round(c["lap_pos"], 4)}
         for c in data["ref_corners"]
     ]
 
-    # corner_speeds: {corner_id: {lap_num: speed}} — keys are ints
+    corner_data_json = {}
+    for cid, lap_dict in data["corner_data"].items():
+        corner_data_json[str(cid)] = {
+            str(int(ln)): snapshot for ln, snapshot in lap_dict.items()
+        }
+
     corner_speeds_json = {}
     for cid, lap_dict in data["corner_speeds"].items():
-        corner_speeds_json[cid] = {
-            int(ln): round(float(spd), 1) for ln, spd in lap_dict.items()
+        corner_speeds_json[str(cid)] = {
+            str(int(ln)): round(float(spd), 1) for ln, spd in lap_dict.items()
         }
 
     payload = {
+        "track_name": data.get("track_name"),
+        "config_name": data.get("config_name"),
+        "track_label": data.get("track_label"),
+        "best_lap_num": data.get("best_lap_num"),
         "laps": laps_json,
         "ref_corners": ref_corners_json,
+        "corner_data": corner_data_json,
         "corner_speeds": corner_speeds_json,
     }
 
@@ -865,17 +1184,24 @@ def render_html(data, output_path):
 # ─── Entry point ──────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print(__doc__)
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description="Analyze AC Evo JSONL telemetry into an HTML report")
+    parser.add_argument("input_path", help="Input JSONL path")
+    parser.add_argument("output_path", nargs="?", help="Output HTML path")
+    parser.add_argument("--track", dest="track_name", help="Track key/name override, e.g. spa or laguna_seca")
+    parser.add_argument("--config", dest="config_name", help="Track configuration override, e.g. current, gp, indy")
+    args = parser.parse_args()
 
-    input_path = sys.argv[1]
+    input_path = args.input_path
     if not os.path.exists(input_path):
         print(f"ERROR: File not found: {input_path}")
         sys.exit(1)
 
     base = os.path.splitext(os.path.basename(input_path))[0]
-    output_path = sys.argv[2] if len(sys.argv) > 2 else f"{base}_analysis.html"
+    output_path = args.output_path if args.output_path else f"{base}_analysis.html"
 
-    data = analyze(input_path)
+    try:
+        data = analyze(input_path, track_name=args.track_name, config_name=args.config_name)
+    except ValueError as exc:
+        print(f"ERROR: {exc}")
+        sys.exit(1)
     render_html(data, output_path)
