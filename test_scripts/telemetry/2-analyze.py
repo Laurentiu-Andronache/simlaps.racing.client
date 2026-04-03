@@ -16,6 +16,12 @@ import sys
 import os
 from collections import defaultdict
 
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
+
+from track_catalog import select_track_profile
+
 # ─── Parse JSONL ─────────────────────────────────────────────────────────────
 
 def load_frames(path):
@@ -34,211 +40,8 @@ def load_frames(path):
     return meta, frames
 
 def get_physics(frame):
-    return frame["regions"]["physics"]
-
-TRACK_CATALOG = {
-    "spa": {
-        "name": "Circuit de Spa-Francorchamps",
-        "aliases": ["spa", "spa-francorchamps"],
-        "default_config": "current",
-        "configs": {
-            "current": {
-                "name": "Current",
-                "aliases": ["current", "gp", "full"],
-                "corners": [
-                    {"id": 1, "name": "La Source", "start": 0.070, "end": 0.100},
-                    {"id": 2, "name": "Eau Rouge", "start": 0.100, "end": 0.108},
-                    {"id": 3, "name": "Raidillon Left", "start": 0.108, "end": 0.117},
-                    {"id": 4, "name": "Raidillon Right", "start": 0.117, "end": 0.126},
-                    {"id": 5, "name": "Les Combes 1", "start": 0.128, "end": 0.145},
-                    {"id": 6, "name": "Les Combes 2", "start": 0.145, "end": 0.160},
-                    {"id": 7, "name": "Les Combes 3", "start": 0.190, "end": 0.208},
-                    {"id": 8, "name": "Bruxelles", "start": 0.208, "end": 0.236},
-                    {"id": 9, "name": "No Name", "start": 0.330, "end": 0.352},
-                    {"id": 10, "name": "Pouhon 1", "start": 0.418, "end": 0.442},
-                    {"id": 11, "name": "Pouhon 2", "start": 0.442, "end": 0.472},
-                    {"id": 12, "name": "Fagnes 1", "start": 0.488, "end": 0.498},
-                    {"id": 13, "name": "Fagnes 2", "start": 0.498, "end": 0.508},
-                    {"id": 14, "name": "Campus", "start": 0.710, "end": 0.722},
-                    {"id": 15, "name": "Paul Frere", "start": 0.722, "end": 0.752},
-                    {"id": 16, "name": "Blanchimont 1", "start": 0.820, "end": 0.832},
-                    {"id": 17, "name": "Blanchimont 2", "start": 0.832, "end": 0.842},
-                    {"id": 18, "name": "Bus Stop 1", "start": 0.928, "end": 0.942},
-                    {"id": 19, "name": "Bus Stop 2", "start": 0.942, "end": 0.955},
-                ],
-            },
-        },
-    },
-    "laguna_seca": {
-        "name": "Laguna Seca",
-        "aliases": ["laguna", "laguna-seca", "laguna_seca", "mazda-raceway", "weathertech-raceway"],
-        "default_config": "full",
-        "configs": {
-            "full": {
-                "name": "11-Corner Layout",
-                "aliases": ["full", "11-corner", "11_corner"],
-                "corners": [
-                    {"id": 1, "name": "Andretti Hairpin 1", "start": 0.065, "end": 0.090},
-                    {"id": 2, "name": "Andretti Hairpin 2", "start": 0.090, "end": 0.120},
-                    {"id": 3, "name": "Turn 3", "start": 0.185, "end": 0.225},
-                    {"id": 4, "name": "Turn 4", "start": 0.285, "end": 0.325},
-                    {"id": 5, "name": "Turn 5", "start": 0.380, "end": 0.425},
-                    {"id": 6, "name": "Turn 6", "start": 0.475, "end": 0.520},
-                    {"id": 7, "name": "Corkscrew Left", "start": 0.590, "end": 0.615},
-                    {"id": 8, "name": "Corkscrew Right", "start": 0.615, "end": 0.645},
-                    {"id": 9, "name": "Rainey Curve", "start": 0.700, "end": 0.745},
-                    {"id": 10, "name": "Turn 10", "start": 0.810, "end": 0.850},
-                    {"id": 11, "name": "Turn 11", "start": 0.900, "end": 0.960},
-                ],
-            },
-        },
-    },
-    "nordschleife": {
-        "name": "Nurburgring Nordschleife",
-        "aliases": ["nordschleife", "nurburgring-nordschleife", "nurburg-nordschleife"],
-        "default_config": "24h",
-        "configs": {
-            "24h": {"name": "24H", "aliases": ["24h"], "corners": []},
-            "touristenfahrten": {"name": "Touristenfahrten", "aliases": ["touristenfahrten", "tourist"], "corners": []},
-        },
-    },
-    "nurburgring_gp": {
-        "name": "Nurburgring Grand Prix",
-        "aliases": ["nurburgring-gp", "nurburgring_gp", "gp-strecke"],
-        "default_config": "full_gp",
-        "configs": {
-            "full_gp": {"name": "Full GP", "aliases": ["full", "gp"], "corners": []},
-        },
-    },
-    "brands_hatch": {
-        "name": "Brands Hatch",
-        "aliases": ["brands", "brands-hatch", "brands_hatch"],
-        "default_config": "gp",
-        "configs": {
-            "gp": {"name": "GP", "aliases": ["gp"], "corners": []},
-            "indy": {"name": "Indy", "aliases": ["indy"], "corners": []},
-        },
-    },
-    "cota": {
-        "name": "Circuit of the Americas",
-        "aliases": ["cota", "circuit-of-the-americas"],
-        "default_config": "gp",
-        "configs": {
-            "gp": {"name": "GP", "aliases": ["gp", "full"], "corners": []},
-            "national": {"name": "National", "aliases": ["national"], "corners": []},
-        },
-    },
-    "donington": {
-        "name": "Donington Park",
-        "aliases": ["donington", "donington-park", "donington_park"],
-        "default_config": "gp",
-        "configs": {
-            "gp": {"name": "Grand Prix", "aliases": ["gp", "grand-prix"], "corners": []},
-            "national": {"name": "National", "aliases": ["national"], "corners": []},
-        },
-    },
-    "monza": {
-        "name": "Monza",
-        "aliases": ["monza"],
-        "default_config": "v0_4",
-        "configs": {
-            "v0_4": {"name": "v0.4", "aliases": ["v0.4", "v0_4", "full", "gp"], "corners": []},
-        },
-    },
-    "bathurst": {
-        "name": "Mount Panorama",
-        "aliases": ["bathurst", "mount-panorama", "mount_panorama"],
-        "default_config": "full",
-        "configs": {
-            "full": {"name": "Full", "aliases": ["full"], "corners": []},
-        },
-    },
-    "fuji": {
-        "name": "Fuji Speedway",
-        "aliases": ["fuji", "fuji-speedway", "fuji_speedway"],
-        "default_config": "full",
-        "configs": {
-            "full": {"name": "Full", "aliases": ["full"], "corners": []},
-        },
-    },
-    "imola": {
-        "name": "Imola",
-        "aliases": ["imola", "autodromo-enzo-e-dino-ferrari"],
-        "default_config": "full",
-        "configs": {
-            "full": {"name": "Full", "aliases": ["full"], "corners": []},
-        },
-    },
-    "oulton_park": {
-        "name": "Oulton Park",
-        "aliases": ["oulton", "oulton-park", "oulton_park"],
-        "default_config": "international",
-        "configs": {
-            "international": {"name": "International", "aliases": ["international"], "corners": []},
-            "foster": {"name": "Foster", "aliases": ["foster"], "corners": []},
-        },
-    },
-    "road_atlanta": {
-        "name": "Road Atlanta",
-        "aliases": ["road-atlanta", "road_atlanta"],
-        "default_config": "full",
-        "configs": {
-            "full": {"name": "Full", "aliases": ["full"], "corners": []},
-        },
-    },
-    "red_bull_ring": {
-        "name": "Red Bull Ring",
-        "aliases": ["red-bull-ring", "red_bull_ring", "rbr"],
-        "default_config": "full",
-        "configs": {
-            "full": {"name": "Full", "aliases": ["full", "gp"], "corners": []},
-        },
-    },
-    "suzuka": {
-        "name": "Suzuka Circuit",
-        "aliases": ["suzuka", "suzuka-circuit", "suzuka_circuit"],
-        "default_config": "full",
-        "configs": {
-            "full": {"name": "Full", "aliases": ["full", "gp"], "corners": []},
-        },
-    },
-}
-
-def build_track_profile(track_key, config_key):
-    track = TRACK_CATALOG[track_key]
-    config = track["configs"][config_key]
-    return {
-        "track_key": track_key,
-        "track_name": track["name"],
-        "config_key": config_key,
-        "config_name": config["name"],
-        "display_name": f"{track['name']} ({config['name']})",
-        "corners": config.get("corners", []),
-    }
-
-def select_track_profile(path=None, track_name=None, config_name=None):
-    if track_name:
-        for track_key, track in TRACK_CATALOG.items():
-            labels = [track_key, *track.get("aliases", [])]
-            if track_name.lower() in labels:
-                if config_name:
-                    for config_key, config in track["configs"].items():
-                        config_labels = [config_key, *config.get("aliases", [])]
-                        if config_name.lower() in config_labels:
-                            return track_key, build_track_profile(track_key, config_key)
-                    raise ValueError(f"Unknown config '{config_name}' for track '{track_name}'")
-                return track_key, build_track_profile(track_key, track["default_config"])
-        raise ValueError(f"Unknown track '{track_name}'")
-
-    path_l = os.path.normpath(path).lower() if path else ""
-    for track_key, track in TRACK_CATALOG.items():
-        if any(alias in path_l for alias in track.get("aliases", [])):
-            for config_key, config in track["configs"].items():
-                if any(alias in path_l for alias in config.get("aliases", [])):
-                    return track_key, build_track_profile(track_key, config_key)
-            return track_key, build_track_profile(track_key, track["default_config"])
-
-    return None, None
+    """Get physics data from frame, returning None if not present."""
+    return frame.get("regions", {}).get("physics")
 
 # ─── Build track map (integrate world velocity) ───────────────────────────────
 
@@ -249,6 +52,8 @@ def build_track(frames, hz=1.0, start_idx=0):
     track = []
     for i, frame in enumerate(frames[start_idx:], start_idx):
         ph = get_physics(frame)
+        if not ph:
+            continue
         wp = ph.get("world_position") or ph.get("worldPosition")
         if wp and isinstance(wp, dict):
             x = float(wp.get("x", x))
@@ -436,7 +241,9 @@ def detect_profiled_corners(track, lap_start_frame, lap_end_frame, profile):
 
     result = []
     for spec in profile["corners"]:
-        window = [pt for pt in seg if spec["start"] <= pt["lap_pos"] <= spec["end"]]
+        # Use half-open intervals so adjacent profiled corners do not share
+        # the same boundary frame and report duplicated apex speeds.
+        window = [pt for pt in seg if spec["start"] <= pt["lap_pos"] < spec["end"]]
         if not window:
             continue
         apex = min(window, key=lambda pt: pt["speed"])
@@ -456,6 +263,12 @@ def detect_profiled_corners(track, lap_start_frame, lap_end_frame, profile):
         })
 
     return result
+
+
+def match_profiled_corners(ref_corners, lap_corners):
+    """Match profiled corners by stable corner id rather than lap position."""
+    lap_by_id = {corner["id"]: corner for corner in lap_corners}
+    return {ref_corner["id"]: lap_by_id.get(ref_corner["id"]) for ref_corner in ref_corners}
 
 def match_corners(ref_corners, lap_corners, tol=0.15):
     """Sequential nearest-neighbor corner matching."""
@@ -489,10 +302,11 @@ def analyze(path, track_name=None, config_name=None):
     # Find driving start (first frame with speed > 5 km/h after initial standstill)
     drive_start = 0
     for i, f in enumerate(frames):
-        if get_physics(f).get("speed_kmh", 0) > 5:
+        ph = get_physics(f)
+        if ph and ph.get("speed_kmh", 0) > 5:
             # Confirm sustained by checking a few frames ahead
-            if all(get_physics(frames[min(i+j, len(frames)-1)])
-                   .get("speed_kmh", 0) > 2 for j in range(5)):
+            if all(get_physics(frames[min(i+j, len(frames)-1)]).get("speed_kmh", 0) > 2 
+                   for j in range(5) if get_physics(frames[min(i+j, len(frames)-1)])):
                 drive_start = max(0, i - 5)
                 break
 
@@ -537,7 +351,10 @@ def analyze(path, track_name=None, config_name=None):
     corner_data = defaultdict(dict)
     corner_speeds = defaultdict(dict)
     for lap in laps:
-        matched = match_corners(ref_corners, lap["corners"])
+        if track_profile and track_profile["corners"]:
+            matched = match_profiled_corners(ref_corners, lap["corners"])
+        else:
+            matched = match_corners(ref_corners, lap["corners"])
         for cid, corner in matched.items():
             if corner:
                 seg_time = (corner["end_frame"] - corner["start_frame"]) / hz
@@ -1196,7 +1013,7 @@ if __name__ == "__main__":
         print(f"ERROR: File not found: {input_path}")
         sys.exit(1)
 
-    base = os.path.splitext(os.path.basename(input_path))[0]
+    base = os.path.splitext(input_path)[0]
     output_path = args.output_path if args.output_path else f"{base}_analysis.html"
 
     try:

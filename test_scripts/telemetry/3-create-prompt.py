@@ -158,8 +158,10 @@ def build_prompt(data, hz, args):
     lines.append("(entry/apex/exit speeds in km/h; segment time = frames in corner / hz)")
     lines.append("")
 
-    best_corners  = {c["id"]: c for c in best_lap["corners"]}
-    worst_corners = {c["id"]: c for c in worst_lap["corners"]}
+    lap_corner_map = {
+        lap["lap_num"]: {corner["id"]: corner for corner in lap["corners"]}
+        for lap in laps
+    }
 
     for spec in ref_corners:
         cid  = spec["id"]
@@ -173,49 +175,73 @@ def build_prompt(data, hz, args):
         worst_apex = min(apex_vals)
         variation  = best_apex - worst_apex
 
-        bc = best_corners.get(cid)
-        wc = worst_corners.get(cid)
+        corners_for_lap = []
+        for lap in laps:
+            corner = lap_corner_map[lap["lap_num"]].get(cid)
+            if corner:
+                corners_for_lap.append((lap["lap_num"], corner))
+
+        if not corners_for_lap:
+            continue
+
+        best_apex_lap_num, _ = max(corners_for_lap, key=lambda item: item[1]["apex_speed"])
+        worst_apex_lap_num, _ = min(corners_for_lap, key=lambda item: item[1]["apex_speed"])
+        fastest_seg_lap_num, fastest_corner = min(
+            corners_for_lap,
+            key=lambda item: corner_segment_time(item[1], hz),
+        )
+        slowest_seg_lap_num, slowest_corner = max(
+            corners_for_lap,
+            key=lambda item: corner_segment_time(item[1], hz),
+        )
 
         lines.append(f"--- {name} (Corner {cid}) ---")
-        lines.append(f"  Variation: {variation:.1f} km/h  {variation_label(variation)}")
+        lines.append(f"  Apex speed range: {variation:.1f} km/h  {variation_label(variation)}")
 
         # Apex speeds across all laps
         lap_speed_strs = [f"Lap {ln}: {spd:.1f}" for ln, spd in sorted(speeds.items())]
         lines.append(f"  Apex speeds:  {',  '.join(lap_speed_strs)}")
-        lines.append(f"  Best apex:    {best_apex:.1f} km/h (Lap {max(speeds, key=speeds.get)})")
-        lines.append(f"  Worst apex:   {worst_apex:.1f} km/h (Lap {min(speeds, key=speeds.get)})")
+        lines.append(f"  Highest apex: {best_apex:.1f} km/h (Lap {best_apex_lap_num})")
+        lines.append(f"  Lowest apex:  {worst_apex:.1f} km/h (Lap {worst_apex_lap_num})")
 
-        # Entry / exit comparison between best and worst lap
-        if bc and wc:
-            entry_delta = bc["entry_speed"] - wc["entry_speed"]
-            apex_delta  = bc["apex_speed"]  - wc["apex_speed"]
-            exit_delta  = bc["exit_speed"]  - wc["exit_speed"]
+        entry_delta = fastest_corner["entry_speed"] - slowest_corner["entry_speed"]
+        apex_delta  = fastest_corner["apex_speed"]  - slowest_corner["apex_speed"]
+        exit_delta  = fastest_corner["exit_speed"]  - slowest_corner["exit_speed"]
 
-            lines.append(
-                f"  Entry  — best lap: {bc['entry_speed']:.1f}  |  "
-                f"worst lap: {wc['entry_speed']:.1f}  |  Δ {entry_delta:+.1f} km/h"
-            )
-            lines.append(
-                f"  Apex   — best lap: {bc['apex_speed']:.1f}  |  "
-                f"worst lap: {wc['apex_speed']:.1f}  |  Δ {apex_delta:+.1f} km/h"
-            )
-            lines.append(
-                f"  Exit   — best lap: {bc['exit_speed']:.1f}  |  "
-                f"worst lap: {wc['exit_speed']:.1f}  |  Δ {exit_delta:+.1f} km/h"
-            )
+        lines.append(
+            f"  Fastest segment: Lap {fastest_seg_lap_num}  "
+            f"{corner_segment_time(fastest_corner, hz):.2f}s"
+        )
+        lines.append(
+            f"  Slowest segment: Lap {slowest_seg_lap_num}  "
+            f"{corner_segment_time(slowest_corner, hz):.2f}s"
+        )
+        lines.append(
+            f"  Entry  — Lap {fastest_seg_lap_num}: {fastest_corner['entry_speed']:.1f}  |  "
+            f"Lap {slowest_seg_lap_num}: {slowest_corner['entry_speed']:.1f}  |  "
+            f"Δ {entry_delta:+.1f} km/h"
+        )
+        lines.append(
+            f"  Apex   — Lap {fastest_seg_lap_num}: {fastest_corner['apex_speed']:.1f}  |  "
+            f"Lap {slowest_seg_lap_num}: {slowest_corner['apex_speed']:.1f}  |  "
+            f"Δ {apex_delta:+.1f} km/h"
+        )
+        lines.append(
+            f"  Exit   — Lap {fastest_seg_lap_num}: {fastest_corner['exit_speed']:.1f}  |  "
+            f"Lap {slowest_seg_lap_num}: {slowest_corner['exit_speed']:.1f}  |  "
+            f"Δ {exit_delta:+.1f} km/h"
+        )
 
-            # Segment time delta
-            best_seg  = corner_segment_time(bc, hz)
-            worst_seg = corner_segment_time(wc, hz)
-            seg_delta = worst_seg - best_seg
-            lines.append(
-                f"  Segment time — best: {best_seg:.2f}s  |  "
-                f"worst: {worst_seg:.2f}s  |  Δ +{seg_delta:.2f}s"
-            )
+        seg_delta = (
+            corner_segment_time(slowest_corner, hz) -
+            corner_segment_time(fastest_corner, hz)
+        )
+        lines.append(
+            f"  Segment delta: +{seg_delta:.2f}s"
+        )
 
-            # Diagnosed likely cause
-            issue = classify_corner_issue(entry_delta, apex_delta, exit_delta)
-            lines.append(f"  Likely issue: {issue}")
+        issue = classify_corner_issue(entry_delta, apex_delta, exit_delta)
+        lines.append(f"  Likely issue: {issue}")
 
         lines.append("")
 
@@ -224,10 +250,15 @@ def build_prompt(data, hz, args):
     ranked = []
     for spec in ref_corners:
         cid = spec["id"]
-        bc  = best_corners.get(cid)
-        wc  = worst_corners.get(cid)
-        if bc and wc:
-            delta = corner_segment_time(wc, hz) - corner_segment_time(bc, hz)
+        corners_for_lap = []
+        for lap in laps:
+            corner = lap_corner_map[lap["lap_num"]].get(cid)
+            if corner:
+                corners_for_lap.append(corner)
+        if len(corners_for_lap) >= 2:
+            fastest = min(corners_for_lap, key=lambda corner: corner_segment_time(corner, hz))
+            slowest = max(corners_for_lap, key=lambda corner: corner_segment_time(corner, hz))
+            delta = corner_segment_time(slowest, hz) - corner_segment_time(fastest, hz)
             ranked.append((delta, spec.get("name") or f"Corner {cid}", cid))
     ranked.sort(reverse=True)
     for delta, name, cid in ranked:
