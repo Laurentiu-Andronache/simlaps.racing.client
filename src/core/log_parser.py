@@ -492,6 +492,9 @@ class LogParser:
         
         # Track last seen car ID for compound detection
         self._last_car_uuid: Optional[str] = None
+        self._pending_compound_ts: Optional[str] = None
+        self._pending_compound_updates: dict[int, str] = {}
+        self._pending_compound_confirmed: set[int] = set()
 
         self._compile_patterns()
 
@@ -526,6 +529,9 @@ class LogParser:
 
             "set_compound_old": re.compile(
                 r"setCompound Tyre:\s*(\d+)\s+compound(?: name)?:\s*(\w+)"
+            ),
+            "platformcore_compound": re.compile(
+                r"CarId:\s*([a-f0-9\-]+)\s+Tyre:\s*(\d+)\s+compound:\s*(\d+)"
             ),
 
             "loading_tyre_compound": re.compile(r"LOADING TYRE COMPOUND (.+)"),
@@ -593,6 +599,14 @@ class LogParser:
         if len(parts) == 2:
             return int(parts[0]) * 1000 + int(parts[1].ljust(3, "0")[:3])
         return 0
+
+    def _extract_line_timestamp(self, line: str) -> Optional[str]:
+        if not line.startswith("["):
+            return None
+        end = line.find("]")
+        if end <= 1:
+            return None
+        return line[1:end]
 
     def _is_player_car(self, car_uuid: str) -> bool:
         return (
@@ -825,6 +839,8 @@ class LogParser:
                 break
 
     def _handle_compound(self, line: str) -> None:
+        self._handle_compound_v2(line)
+        return
         # Check for LOADING TYRE COMPOUND format (appears after CarTeleportCompleted)
         if "LOADING TYRE COMPOUND" in line:
             m = self._pats["loading_tyre_compound"].search(line)
@@ -865,6 +881,111 @@ class LogParser:
             f"[COMPOUND] Tyre {pos} → {code} "
             f"(resolved: {self.context.tyre.compound_name})"
         )
+
+    def _handle_compound_v2(self, line: str) -> None:
+        # Check for LOADING TYRE COMPOUND format (appears after CarTeleportCompleted)
+        if "LOADING TYRE COMPOUND" in line:
+            self._flush_pending_compound_batch()
+            m = self._pats["loading_tyre_compound"].search(line)
+            if m and self._last_car_uuid and self._is_player_car(self._last_car_uuid):
+                compound_name = m.group(1).strip()
+                self.context.tyre.set_all(compound_name)
+                _debug.log(
+                    f"[COMPOUND] All tires -> {compound_name} "
+                    f"(resolved: {self.context.tyre.compound_name})"
+                )
+            return
+
+        # TYRE COMPOUND summary lines are ignored - they include all cars in
+        # session. platformCore numeric lines are only used as player-car
+        # confirmation for an adjacent physics setCompound batch.
+        if "setCompound Tyre:" not in line and "CarId:" not in line:
+            return
+
+        line_ts = self._extract_line_timestamp(line)
+
+        if "setCompound Tyre:" not in line:
+            m = self._pats["platformcore_compound"].search(line)
+            if not m or not self._is_player_car(m.group(1)):
+                return
+            pos = int(m.group(2))
+            if (
+                line_ts
+                and line_ts == self._pending_compound_ts
+                and pos in self._pending_compound_updates
+            ):
+                self._pending_compound_confirmed.add(pos)
+                _debug.log(f"[COMPOUND] Player-confirmed tyre {pos} at {line_ts}")
+            return
+
+        m = self._pats["set_compound_old"].search(line)
+        if not m:
+            return
+
+        pos = int(m.group(1))
+        code = m.group(2)
+        compound_name = code.strip()
+
+        if pos not in (0, 1, 2, 3):
+            return
+
+        if self._pending_compound_ts and line_ts != self._pending_compound_ts:
+            self._flush_pending_compound_batch()
+
+        if not line_ts:
+            self.context.tyre.set(pos, compound_name)
+            _debug.log(
+                f"[COMPOUND] Tyre {pos} -> {code} "
+                f"(resolved: {self.context.tyre.compound_name})"
+            )
+            return
+
+        self._pending_compound_ts = line_ts
+        self._pending_compound_updates[pos] = compound_name
+        _debug.log(
+            f"[COMPOUND] Pending tyre {pos} -> {code} at {line_ts} "
+            f"(positions={sorted(self._pending_compound_updates)})"
+        )
+
+    def _flush_pending_compound_batch(self) -> None:
+        if not self._pending_compound_updates:
+            self._pending_compound_ts = None
+            self._pending_compound_confirmed.clear()
+            return
+
+        pending = dict(self._pending_compound_updates)
+        confirmed = {
+            pos: pending[pos]
+            for pos in sorted(self._pending_compound_confirmed)
+            if pos in pending
+        }
+        has_full_batch = set(pending) == {0, 1, 2, 3}
+        prelap_window = self.current_session is None or not self.current_session.laps
+
+        if confirmed:
+            for pos, compound in confirmed.items():
+                self.context.tyre.set(pos, compound)
+            _debug.log(
+                f"[COMPOUND] Applied player-confirmed positions "
+                f"{sorted(confirmed)} -> {self.context.tyre.compound_name}"
+            )
+        elif has_full_batch and prelap_window:
+            self.context.tyre.reset()
+            for pos, compound in pending.items():
+                self.context.tyre.set(pos, compound)
+            _debug.log(
+                f"[COMPOUND] Applied pre-lap full set at {self._pending_compound_ts} "
+                f"-> {self.context.tyre.compound_name}"
+            )
+        else:
+            _debug.log(
+                f"[COMPOUND] Ignored unscoped batch at {self._pending_compound_ts} "
+                f"(positions={sorted(pending)} confirmed={sorted(self._pending_compound_confirmed)})"
+            )
+
+        self._pending_compound_ts = None
+        self._pending_compound_updates.clear()
+        self._pending_compound_confirmed.clear()
 
     def _handle_weather(self, line: str) -> None:
         if "GameModeSelectionWeatherType_" not in line:
@@ -916,6 +1037,8 @@ class LogParser:
         m = self._pats["game_started"].search(line)
         if not m:
             return False
+
+        self._flush_pending_compound_batch()
 
         if self.current_session:
             self._finalise_current_session()
@@ -1244,6 +1367,8 @@ class LogParser:
         if not m:
             return None
 
+        self._flush_pending_compound_batch()
+
         timestamp, car_id, time_str = m.group(1), m.group(2), m.group(3)
 
         if not self.current_session or not self._is_player_car(car_id):
@@ -1362,6 +1487,8 @@ class LogParser:
         if not has_data or not self.current_session:
             return None
 
+        self._flush_pending_compound_batch()
+
         compound = self.context.tyre.compound_name
         lap_number = (ip.physics_lap_num or len(self.current_session.laps) + 1)
 
@@ -1395,6 +1522,7 @@ class LogParser:
 
     def _start_new_session(self, session_type: str, _line: str) -> None:
         """Fallback session creator for edge cases (no 'Game Started!' seen)."""
+        self._flush_pending_compound_batch()
         self.context.reset_for_new_session()
         self.current_session = SessionData(
             session_type=SESSION_TYPE_MAP.get(session_type, session_type),
@@ -1414,6 +1542,7 @@ class LogParser:
     def _finalise_current_session(self) -> None:
         if not self.current_session:
             return
+        self._flush_pending_compound_batch()
         # Session-end metadata should reflect the latest known tyre state even
         # if no lap was completed after the final pit/setup change.
         self.current_session.tyre_compound = self.context.tyre.compound_name
@@ -1432,6 +1561,14 @@ class LogParser:
         line = line.strip()
         if not line:
             return None
+
+        line_ts = self._extract_line_timestamp(line)
+        if (
+            self._pending_compound_ts
+            and line_ts
+            and line_ts != self._pending_compound_ts
+        ):
+            self._flush_pending_compound_batch()
 
         self._add_to_log_buffer(line)
         self._last_activity_ts = time.time()
@@ -1489,6 +1626,7 @@ class LogParser:
                 if completed and self.current_session:
                     await self._emit_lap(self.current_session, completed)
 
+        self._flush_pending_compound_batch()
         self._finalise_current_session()
         await self._emit_status(f"Done — {len(self.sessions)} session(s)")
         return self.sessions
@@ -1600,6 +1738,7 @@ class LogParser:
                     current_size = None
 
                 if current_size is not None and current_size < fh.tell():
+                    self._flush_pending_compound_batch()
                     _debug.log("[TRUNCATE] Log file reset — restarting context")
                     self.context = LogContext()
                     self.current_session = None
