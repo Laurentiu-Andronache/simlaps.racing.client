@@ -46,18 +46,37 @@ def get_physics(frame):
 # ─── Build track map (integrate world velocity) ───────────────────────────────
 
 def build_track(frames, hz=1.0, start_idx=0):
-    """Build track points from world position when available, else velocity."""
-    x, z = 0.0, 0.0
-    dt = 1.0 / max(hz, 1e-9)
+    """Collapse list of frames into a list of points with x/z (dead reckoning), speed, inputs."""
     track = []
-    for i, frame in enumerate(frames[start_idx:], start_idx):
-        ph = get_physics(frame)
+    x = z = 0.0
+    dt = 1.0 / hz
+
+    def _safe_4(arr, default=0.0):
+        if not isinstance(arr, (list, tuple)):
+            return [default, default, default, default]
+        out = [default, default, default, default]
+        for i in range(min(4, len(arr))):
+            out[i] = arr[i]
+        return out
+
+    def _sanitize_slip(v):
+        try:
+            v = float(v)
+        except Exception:
+            return 0.0
+        if not math.isfinite(v) or v < 0:
+            return 0.0
+        # Wheel slip is usually small-ish; clamp absurd spikes so prompt isn't polluted.
+        return min(v, 5.0)
+
+    for i in range(start_idx, len(frames)):
+        f = frames[i]
+        ph = get_physics(f)
         if not ph:
             continue
         wp = ph.get("world_position") or ph.get("worldPosition")
         if wp and isinstance(wp, dict):
             x = float(wp.get("x", x))
-            z = float(wp.get("z", z))
         else:
             vx = ph["velocity"]["x"]
             vz = ph["velocity"]["z"]
@@ -69,6 +88,20 @@ def build_track(frames, hz=1.0, start_idx=0):
             or ph.get("spNormalizedCarPosition")
             or ph.get("normalizedCarPosition")
         )
+
+        # Extract per-wheel arrays (4 wheels: FL, FR, RL, RR)
+        tyre_core_temp = _safe_4(ph.get("tyre_core_temp"), default=0.0)
+        wheels_pressure = _safe_4(ph.get("wheels_pressure"), default=0.0)
+        wheel_slip_raw = _safe_4(ph.get("wheel_slip"), default=0.0)
+        wheel_slip = [_sanitize_slip(v) for v in wheel_slip_raw]
+        wheel_load = _safe_4(ph.get("wheel_load"), default=0.0)
+        suspension_travel = _safe_4(ph.get("suspension_travel"), default=0.0)
+        camber_rad = _safe_4(ph.get("camber_rad"), default=0.0)
+        brake_temp = _safe_4(ph.get("brake_temp"), default=0.0)
+
+        acc_g = ph.get("acc_g") or {}
+        local_ang_vel = ph.get("local_angular_velocity") or {}
+
         track.append({
             "frame": i,
             "x": x,
@@ -81,6 +114,45 @@ def build_track(frames, hz=1.0, start_idx=0):
             "gear": ph.get("gear", 0),
             "rpms": ph.get("rpms", 0),
             "norm_pos": float(norm_pos) if norm_pos is not None else None,
+            # Car state data for coaching analysis
+            "abs": ph.get("abs", 0),
+            "tc": ph.get("tc", 0),
+            # Dynamics
+            "acc_g_x": acc_g.get("x", 0),
+            "acc_g_y": acc_g.get("y", 0),
+            "acc_g_z": acc_g.get("z", 0),
+            "yaw_rate": local_ang_vel.get("y", 0),
+            # Environment
+            "air_temp": ph.get("air_temp", 0),
+            "road_temp": ph.get("road_temp", 0),
+            "tyre_temp_fl": tyre_core_temp[0] if len(tyre_core_temp) > 0 else 0,
+            "tyre_temp_fr": tyre_core_temp[1] if len(tyre_core_temp) > 1 else 0,
+            "tyre_temp_rl": tyre_core_temp[2] if len(tyre_core_temp) > 2 else 0,
+            "tyre_temp_rr": tyre_core_temp[3] if len(tyre_core_temp) > 3 else 0,
+            "pressure_fl": wheels_pressure[0] if len(wheels_pressure) > 0 else 0,
+            "pressure_fr": wheels_pressure[1] if len(wheels_pressure) > 1 else 0,
+            "pressure_rl": wheels_pressure[2] if len(wheels_pressure) > 2 else 0,
+            "pressure_rr": wheels_pressure[3] if len(wheels_pressure) > 3 else 0,
+            "slip_fl": wheel_slip[0] if len(wheel_slip) > 0 else 0,
+            "slip_fr": wheel_slip[1] if len(wheel_slip) > 1 else 0,
+            "slip_rl": wheel_slip[2] if len(wheel_slip) > 2 else 0,
+            "slip_rr": wheel_slip[3] if len(wheel_slip) > 3 else 0,
+            "load_fl": wheel_load[0] if len(wheel_load) > 0 else 0,
+            "load_fr": wheel_load[1] if len(wheel_load) > 1 else 0,
+            "load_rl": wheel_load[2] if len(wheel_load) > 2 else 0,
+            "load_rr": wheel_load[3] if len(wheel_load) > 3 else 0,
+            "sus_fl": suspension_travel[0] if len(suspension_travel) > 0 else 0,
+            "sus_fr": suspension_travel[1] if len(suspension_travel) > 1 else 0,
+            "sus_rl": suspension_travel[2] if len(suspension_travel) > 2 else 0,
+            "sus_rr": suspension_travel[3] if len(suspension_travel) > 3 else 0,
+            "camber_fl": camber_rad[0] if len(camber_rad) > 0 else 0,
+            "camber_fr": camber_rad[1] if len(camber_rad) > 1 else 0,
+            "camber_rl": camber_rad[2] if len(camber_rad) > 2 else 0,
+            "camber_rr": camber_rad[3] if len(camber_rad) > 3 else 0,
+            "brake_temp_fl": brake_temp[0] if len(brake_temp) > 0 else 0,
+            "brake_temp_fr": brake_temp[1] if len(brake_temp) > 1 else 0,
+            "brake_temp_rl": brake_temp[2] if len(brake_temp) > 2 else 0,
+            "brake_temp_rr": brake_temp[3] if len(brake_temp) > 3 else 0,
         })
     return track
 
@@ -151,6 +223,53 @@ def detect_laps(track, hz=1.0, min_lap_time_s=60.0, warmup_time_s=40.0):
 
 # ─── Detect corners within a lap ─────────────────────────────────────────────
 
+def extract_car_state(pt):
+    """Extract car state data (ABS, TC, temps, slip) from a track point."""
+    if not pt:
+        return None
+    return {
+        "abs": pt.get("abs", 0),
+        "tc": pt.get("tc", 0),
+        "steer": pt.get("steer", 0),
+        "speed": pt.get("speed", 0),
+        "gas": pt.get("gas", 0),
+        "brake": pt.get("brake", 0),
+        "acc_g_x": pt.get("acc_g_x", 0),
+        "acc_g_y": pt.get("acc_g_y", 0),
+        "acc_g_z": pt.get("acc_g_z", 0),
+        "yaw_rate": pt.get("yaw_rate", 0),
+        "air_temp": pt.get("air_temp", 0),
+        "road_temp": pt.get("road_temp", 0),
+        "tyre_temp_fl": pt.get("tyre_temp_fl", 0),
+        "tyre_temp_fr": pt.get("tyre_temp_fr", 0),
+        "tyre_temp_rl": pt.get("tyre_temp_rl", 0),
+        "tyre_temp_rr": pt.get("tyre_temp_rr", 0),
+        "pressure_fl": pt.get("pressure_fl", 0),
+        "pressure_fr": pt.get("pressure_fr", 0),
+        "pressure_rl": pt.get("pressure_rl", 0),
+        "pressure_rr": pt.get("pressure_rr", 0),
+        "slip_fl": pt.get("slip_fl", 0),
+        "slip_fr": pt.get("slip_fr", 0),
+        "slip_rl": pt.get("slip_rl", 0),
+        "slip_rr": pt.get("slip_rr", 0),
+        "load_fl": pt.get("load_fl", 0),
+        "load_fr": pt.get("load_fr", 0),
+        "load_rl": pt.get("load_rl", 0),
+        "load_rr": pt.get("load_rr", 0),
+        "sus_fl": pt.get("sus_fl", 0),
+        "sus_fr": pt.get("sus_fr", 0),
+        "sus_rl": pt.get("sus_rl", 0),
+        "sus_rr": pt.get("sus_rr", 0),
+        "camber_fl": pt.get("camber_fl", 0),
+        "camber_fr": pt.get("camber_fr", 0),
+        "camber_rl": pt.get("camber_rl", 0),
+        "camber_rr": pt.get("camber_rr", 0),
+        "brake_temp_fl": pt.get("brake_temp_fl", 0),
+        "brake_temp_fr": pt.get("brake_temp_fr", 0),
+        "brake_temp_rl": pt.get("brake_temp_rl", 0),
+        "brake_temp_rr": pt.get("brake_temp_rr", 0),
+    }
+
 def detect_corners(track, lap_start_frame, lap_end_frame, hz=1.0,
                    dheading_rate_thresh=0.60, merge_gap_s=0.6,
                    min_dur_s=0.8):
@@ -209,6 +328,9 @@ def detect_corners(track, lap_start_frame, lap_end_frame, hz=1.0,
         window = seg[ci_start: ci_end + 1]
         apex_idx = min(range(len(window)), key=lambda i: window[i]["speed"])
         apex = window[apex_idx]
+        entry = window[0]
+        exit_pt = window[-1]
+        
         result.append({
             "id": cid,
             "start_frame": seg[ci_start]["frame"],
@@ -216,11 +338,15 @@ def detect_corners(track, lap_start_frame, lap_end_frame, hz=1.0,
             "apex_frame": apex["frame"],
             "apex_speed": apex["speed"],
             "min_speed": min(pt["speed"] for pt in window),
-            "entry_speed": window[0]["speed"],
-            "exit_speed": window[-1]["speed"],
+            "entry_speed": entry["speed"],
+            "exit_speed": exit_pt["speed"],
             "apex_x": apex["x"],
             "apex_z": apex["z"],
             "lap_pos": seg[ci_start]["lap_pos"],
+            # Car state at key points
+            "entry_state": extract_car_state(entry),
+            "apex_state": extract_car_state(apex),
+            "exit_state": extract_car_state(exit_pt),
         })
 
     # Re-number corners
@@ -247,6 +373,8 @@ def detect_profiled_corners(track, lap_start_frame, lap_end_frame, profile):
         if not window:
             continue
         apex = min(window, key=lambda pt: pt["speed"])
+        entry = window[0]
+        exit_pt = window[-1]
         result.append({
             "id": spec["id"],
             "name": spec["name"],
@@ -255,11 +383,15 @@ def detect_profiled_corners(track, lap_start_frame, lap_end_frame, profile):
             "apex_frame": apex["frame"],
             "apex_speed": apex["speed"],
             "min_speed": min(pt["speed"] for pt in window),
-            "entry_speed": window[0]["speed"],
-            "exit_speed": window[-1]["speed"],
+            "entry_speed": entry["speed"],
+            "exit_speed": exit_pt["speed"],
             "apex_x": apex["x"],
             "apex_z": apex["z"],
             "lap_pos": apex["lap_pos"],
+            # Car state at key points
+            "entry_state": extract_car_state(entry),
+            "apex_state": extract_car_state(apex),
+            "exit_state": extract_car_state(exit_pt),
         })
 
     return result
@@ -510,6 +642,25 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     <h2>Brake • Throttle • Gear</h2>
     <div class="lap-filters" id="inputs-lap-filters"></div>
     <canvas id="inputs-chart" height="200"></canvas>
+  </div>
+
+  <!-- Dynamics -->
+  <div class="section-title">Dynamics</div>
+  <div class="card" style="margin-bottom:16px">
+    <h2>Steering • G • Yaw • Brake Temp</h2>
+    <div style="margin-bottom:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+      <span style="font-size:12px; color:var(--muted)">Metric:</span>
+      <select id="dynamics-mode" onchange="buildDynamicsChart()">
+        <option value="steer">Steer (deg)</option>
+        <option value="yaw_rate">Yaw rate</option>
+        <option value="lat_g">Lateral G</option>
+        <option value="long_g">Longitudinal G</option>
+        <option value="brake_temp_front">Brake temp front (avg)</option>
+        <option value="brake_temp_rear">Brake temp rear (avg)</option>
+      </select>
+    </div>
+    <div class="lap-filters" id="dynamics-lap-filters"></div>
+    <canvas id="dynamics-chart" height="220"></canvas>
   </div>
 
 </div>
@@ -853,29 +1004,46 @@ function buildInputsChart() {
 
   const activeLapsList = DATA.laps.filter(l => activeLaps.has(l.lap_num));
   if (!activeLapsList.length) return;
-  const lap = activeLapsList[0];
 
-  const datasets = [
-    {
-      label: 'Brake',
+  const datasets = [];
+  activeLapsList.forEach(lap => {
+    const color = lapColor(lap.lap_num);
+    // Brake - solid line with lap color, no fill
+    datasets.push({
+      label: `L${lap.lap_num} Brake`,
       data: lap.track.map((pt, i) => ({ x: i / Math.max(lap.track.length - 1, 1) * 100, y: pt.brake * 100 })),
-      borderColor: '#ef4444', backgroundColor: 'rgba(239,68,68,0.15)',
-      fill: true, borderWidth: 1.5, pointRadius: 0, tension: 0.2,
-    },
-    {
-      label: 'Throttle',
+      borderColor: color,
+      backgroundColor: 'transparent',
+      borderWidth: 2,
+      borderDash: [],
+      pointRadius: 0,
+      tension: 0.2,
+    });
+    // Throttle - dashed line with lap color, no fill
+    datasets.push({
+      label: `L${lap.lap_num} Throttle`,
       data: lap.track.map((pt, i) => ({ x: i / Math.max(lap.track.length - 1, 1) * 100, y: pt.gas * 100 })),
-      borderColor: '#22c55e', backgroundColor: 'rgba(34,197,94,0.1)',
-      fill: true, borderWidth: 1.5, pointRadius: 0, tension: 0.2,
-    },
-    {
-      label: 'Gear × 10',
-      data: lap.track.map((pt, i) => ({ x: i / Math.max(lap.track.length - 1, 1) * 100, y: pt.gear * 10 })),
-      borderColor: '#eab308', backgroundColor: 'transparent',
-      borderWidth: 1.5, pointRadius: 0, tension: 0,
-      borderDash: [4, 2],
-    },
-  ];
+      borderColor: color,
+      backgroundColor: 'transparent',
+      borderWidth: 2,
+      borderDash: [4, 3],
+      pointRadius: 0,
+      tension: 0.2,
+    });
+  });
+
+  // Add gear trace for first lap only (gear is usually the same across laps)
+  const firstLap = activeLapsList[0];
+  datasets.push({
+    label: 'Gear × 10',
+    data: firstLap.track.map((pt, i) => ({ x: i / Math.max(firstLap.track.length - 1, 1) * 100, y: pt.gear * 10 })),
+    borderColor: '#eab308',
+    backgroundColor: 'transparent',
+    borderWidth: 1.5,
+    pointRadius: 0,
+    tension: 0,
+    borderDash: [2, 4],
+  });
 
   inputsChart = new Chart(ctx, {
     type: 'line',
@@ -886,6 +1054,73 @@ function buildInputsChart() {
       scales: {
         x: { type: 'linear', min: 0, max: 100, grid: { color: '#1e2028' }, ticks: { color: '#6b7280', callback: v => v + '%' } },
         y: { min: 0, max: 100, grid: { color: '#1e2028' }, ticks: { color: '#6b7280', callback: v => v + '%' } },
+      },
+      plugins: { legend: { labels: { color: '#e0e2ea', boxWidth: 12, font: { size: 10 } } } }
+    }
+  });
+}
+
+// ─── Dynamics chart ──────────────────────────────────────────────────────────
+let dynamicsChart = null;
+
+function dynValue(pt, mode) {
+  if (mode === 'steer') {
+    return (pt.steer || 0) * (180 / Math.PI);
+  }
+  if (mode === 'yaw_rate') return pt.yaw_rate || 0;
+  if (mode === 'lat_g') return pt.acc_g_x || 0;
+  if (mode === 'long_g') return pt.acc_g_z || 0;
+  if (mode === 'brake_temp_front') {
+    const fl = pt.brake_temp_fl || 0;
+    const fr = pt.brake_temp_fr || 0;
+    return (fl + fr) / 2;
+  }
+  if (mode === 'brake_temp_rear') {
+    const rl = pt.brake_temp_rl || 0;
+    const rr = pt.brake_temp_rr || 0;
+    return (rl + rr) / 2;
+  }
+  return 0;
+}
+
+function dynLabel(mode) {
+  if (mode === 'steer') return 'Steer (deg)';
+  if (mode === 'yaw_rate') return 'Yaw rate';
+  if (mode === 'lat_g') return 'Lateral G';
+  if (mode === 'long_g') return 'Longitudinal G';
+  if (mode === 'brake_temp_front') return 'Brake temp front (avg)';
+  if (mode === 'brake_temp_rear') return 'Brake temp rear (avg)';
+  return mode;
+}
+
+function buildDynamicsChart() {
+  const ctx = document.getElementById('dynamics-chart').getContext('2d');
+  if (dynamicsChart) dynamicsChart.destroy();
+
+  const activeLapsList = DATA.laps.filter(l => activeLaps.has(l.lap_num));
+  if (!activeLapsList.length) return;
+
+  const mode = document.getElementById('dynamics-mode').value;
+  const datasets = activeLapsList.map(lap => ({
+    label: `Lap ${lap.lap_num}${lap.lap_num===DATA.best_lap_num?'*':''} (${lap.lap_time_str})`,
+    data: lap.track.map((pt, i) => ({ x: i / Math.max(lap.track.length - 1, 1) * 100, y: dynValue(pt, mode) })),
+    borderColor: lapColor(lap.lap_num),
+    backgroundColor: 'transparent',
+    borderWidth: 1.8,
+    pointRadius: 0,
+    tension: 0.2,
+  }));
+
+  dynamicsChart = new Chart(ctx, {
+    type: 'line',
+    data: { datasets },
+    options: {
+      responsive: true,
+      animation: false,
+      interaction: { mode: 'index', intersect: false },
+      scales: {
+        x: { type: 'linear', min: 0, max: 100, grid: { color: '#1e2028' }, ticks: { color: '#6b7280', callback: v => v + '%' } },
+        y: { title: { display: true, text: dynLabel(mode), color: '#6b7280' }, grid: { color: '#1e2028' }, ticks: { color: '#6b7280' } },
       },
       plugins: { legend: { labels: { color: '#e0e2ea', boxWidth: 12 } } }
     }
@@ -905,14 +1140,16 @@ window.addEventListener('DOMContentLoaded', () => {
     sel.appendChild(opt);
   });
 
-  makeLapFilters('speed-lap-filters', () => { syncFilterButtons(); buildSpeedChart(); buildInputsChart(); });
-  makeLapFilters('inputs-lap-filters', () => { syncFilterButtons(); buildSpeedChart(); buildInputsChart(); });
+  makeLapFilters('speed-lap-filters', () => { syncFilterButtons(); buildSpeedChart(); buildInputsChart(); buildDynamicsChart(); });
+  makeLapFilters('inputs-lap-filters', () => { syncFilterButtons(); buildSpeedChart(); buildInputsChart(); buildDynamicsChart(); });
+  makeLapFilters('dynamics-lap-filters', () => { syncFilterButtons(); buildSpeedChart(); buildInputsChart(); buildDynamicsChart(); });
 
   drawTrackMap();
   buildSpeedChart();
   buildCornerChart();
   buildCornerTable();
   buildInputsChart();
+  buildDynamicsChart();
 });
 </script>
 </body>
@@ -932,6 +1169,14 @@ def render_html(data, output_path):
                 "brake": round(pt["brake"], 3),
                 "gas": round(pt["gas"], 3),
                 "gear": pt["gear"],
+                "steer": round(pt.get("steer", 0), 6),
+                "yaw_rate": round(pt.get("yaw_rate", 0), 6),
+                "acc_g_x": round(pt.get("acc_g_x", 0), 6),
+                "acc_g_z": round(pt.get("acc_g_z", 0), 6),
+                "brake_temp_fl": round(pt.get("brake_temp_fl", 0), 2),
+                "brake_temp_fr": round(pt.get("brake_temp_fr", 0), 2),
+                "brake_temp_rl": round(pt.get("brake_temp_rl", 0), 2),
+                "brake_temp_rr": round(pt.get("brake_temp_rr", 0), 2),
             }
             for pt in lap["track"]
         ]
@@ -998,14 +1243,436 @@ def render_html(data, output_path):
         f.write(html)
     print(f"\nSaved -> {output_path}")
 
+# ─── AI Coaching Prompt Generation ───────────────────────────────────────────
+
+def fmt_time(seconds):
+    m = int(seconds // 60)
+    s = seconds % 60
+    return f"{m}:{s:05.2f}"
+
+def corner_segment_time(corner, hz):
+    """Seconds elapsed from corner start_frame to end_frame."""
+    return (corner["end_frame"] - corner["start_frame"]) / hz
+
+def variation_label(delta_kmh):
+    if delta_kmh >= 25:
+        return "🔴 HIGH"
+    if delta_kmh >= 15:
+        return "🟠 MEDIUM"
+    return "🟢 LOW"
+
+def classify_corner_issue(entry_delta, apex_delta, exit_delta):
+    """
+    Heuristic: given speed deltas (best - worst) at entry/apex/exit,
+    suggest the most likely root cause.
+    """
+    if entry_delta > apex_delta and entry_delta > exit_delta:
+        return "Braking inconsistency — arriving at different speeds"
+    if exit_delta > entry_delta and exit_delta > apex_delta:
+        return "Throttle application point varies — losing drive on exit"
+    if apex_delta > entry_delta and apex_delta > exit_delta:
+        return "Line variation — mid-corner speed differs despite similar entry"
+    return "Mixed — entry and exit both vary"
+
+def format_car_state(state):
+    """Format car state (ABS, TC, temps, slip) for AI prompt."""
+    if not state:
+        return "No data"
+
+    abs_active = "YES" if state.get("abs", 0) > 0.5 else "no"
+    tc_active = "YES" if state.get("tc", 0) > 0.5 else "no"
+
+    steer_rad = float(state.get("steer", 0) or 0)
+    steer_deg = steer_rad * (180.0 / math.pi)
+    yaw_rate = float(state.get("yaw_rate", 0) or 0)
+
+    lat_g = float(state.get("acc_g_x", 0) or 0)
+    long_g = float(state.get("acc_g_z", 0) or 0)
+
+    temps = [float(state.get(f"tyre_temp_{x}", 0) or 0) for x in ["fl", "fr", "rl", "rr"]]
+    avg_temp = sum(temps) / len(temps) if temps else 0
+    temp_range = f"{min(temps):.0f}-{max(temps):.0f}" if temps else "N/A"
+
+    pressures = [float(state.get(f"pressure_{x}", 0) or 0) for x in ["fl", "fr", "rl", "rr"]]
+    avg_pressure = sum(pressures) / len(pressures) if pressures else 0
+
+    slips = [float(state.get(f"slip_{x}", 0) or 0) for x in ["fl", "fr", "rl", "rr"]]
+    front_slip = max(slips[0], slips[1]) if len(slips) >= 2 else 0
+    rear_slip = max(slips[2], slips[3]) if len(slips) >= 4 else 0
+
+    loads = [float(state.get(f"load_{x}", 0) or 0) for x in ["fl", "fr", "rl", "rr"]]
+    front_load = (loads[0] + loads[1]) / 2 if len(loads) >= 2 else 0
+    rear_load = (loads[2] + loads[3]) / 2 if len(loads) >= 4 else 0
+
+    sus = [float(state.get(f"sus_{x}", 0) or 0) for x in ["fl", "fr", "rl", "rr"]]
+    front_sus = (sus[0] + sus[1]) / 2 if len(sus) >= 2 else 0
+    rear_sus = (sus[2] + sus[3]) / 2 if len(sus) >= 4 else 0
+
+    bt = [float(state.get(f"brake_temp_{x}", 0) or 0) for x in ["fl", "fr", "rl", "rr"]]
+    front_bt = (bt[0] + bt[1]) / 2 if len(bt) >= 2 else 0
+    rear_bt = (bt[2] + bt[3]) / 2 if len(bt) >= 4 else 0
+
+    return (
+        f"ABS:{abs_active} TC:{tc_active} "
+        f"Steer:{steer_deg:+.1f}° Yaw:{yaw_rate:+.3f} "
+        f"G(lat/long):{lat_g:+.2f}/{long_g:+.2f} "
+        f"Slip(F/R):{front_slip:.2f}/{rear_slip:.2f} "
+        f"Load(F/R):{front_load:.0f}/{rear_load:.0f} "
+        f"Sus(F/R):{front_sus:.3f}/{rear_sus:.3f} "
+        f"BrakeT(F/R):{front_bt:.0f}/{rear_bt:.0f} "
+        f"TyreT:{avg_temp:.0f}°C({temp_range}) "
+        f"P:{avg_pressure:.1f}"
+    )
+
+def balance_hint(state):
+    """Very rough balance hint (understeer/oversteer/neutral) from per-point telemetry."""
+    if not state:
+        return "unknown"
+    slips = [float(state.get(f"slip_{x}", 0) or 0) for x in ["fl", "fr", "rl", "rr"]]
+    front_slip = max(slips[0], slips[1]) if len(slips) >= 2 else 0
+    rear_slip = max(slips[2], slips[3]) if len(slips) >= 4 else 0
+    steer = abs(float(state.get("steer", 0) or 0))
+    yaw = abs(float(state.get("yaw_rate", 0) or 0))
+
+    # If front slip dominates and you're using lots of steering without much rotation.
+    if front_slip > rear_slip * 1.15 and steer > 0.03 and yaw < 0.20:
+        return "understeer"
+    # If rear slip dominates and rotation is relatively high.
+    if rear_slip > front_slip * 1.15 and yaw > 0.25:
+        return "oversteer"
+    return "neutral"
+
+def build_ai_prompt(data, hz, args):
+    """Generate AI coaching prompt from analysis data."""
+    laps = data["laps"]
+    ref_corners = data["ref_corners"]
+    corner_speeds = data["corner_speeds"]
+
+    best_lap = min(laps, key=lambda l: l["lap_time_s"])
+    worst_lap = max(laps, key=lambda l: l["lap_time_s"])
+    time_diff = worst_lap["lap_time_s"] - best_lap["lap_time_s"]
+
+    track_label = (
+        data.get("track_label")
+        or data.get("track_name")
+        or "Unknown Track"
+    )
+
+    # ── Preamble / persona ────────────────────────────────────────────────────
+    lines = [
+        "You are an expert motorsport race engineer and driving coach with deep knowledge of",
+        f"{track_label}. Analyse the telemetry data below from an Assetto Corsa Evo session",
+        "and give specific, actionable coaching feedback grounded in the numbers provided.",
+        "",
+        "In addition to driving technique, also provide SETUP RECOMMENDATIONS grounded in the telemetry",
+        "signals included below (steering, yaw rate, lateral/longitudinal G, wheel slip, wheel loads,",
+        "suspension travel, brake temps, tire temps, and tire pressures).",
+        "",
+        "For setup, suggest concrete changes and explain why, focusing on:",
+        "- Tire pressures (hot pressure direction and consistency)",
+        "- Alignment (camber/toe) direction, if supported by the patterns",
+        "- Anti-roll bars / spring rate balance (front vs rear), if supported by balance hints",
+        "- Dampers (bump/rebound) direction, if supported by transient/oscillation clues",
+        "- Brake bias / ABS-related notes, if relevant",
+        "",
+        "SESSION CONTEXT:",
+        f"- Track:          {track_label}",
+    ]
+    if args.car:
+        lines.append(f"- Car:            {args.car}")
+    if args.driver:
+        lines.append(f"- Driver level:   {args.driver}")
+    if args.goal:
+        lines.append(f"- Session goal:   {args.goal}")
+    if args.best_ref:
+        lines.append(f"- Reference time: {args.best_ref} (benchmark / world-class for this car/track)")
+    if args.notes:
+        lines.append(f"- Driver notes:   {args.notes}")
+    lines.append("")
+
+    # ── Session overview ──────────────────────────────────────────────────────
+    lines.append("SESSION OVERVIEW:")
+    lines.append(f"- Total laps analysed: {len(laps)}")
+    lines.append(f"- Best lap:   #{best_lap['lap_num']}  {best_lap['lap_time_str']}")
+    lines.append(f"- Worst lap:  #{worst_lap['lap_num']}  {worst_lap['lap_time_str']}")
+    lines.append(f"- Delta best/worst: {time_diff:.2f}s")
+    lines.append(f"- Top speed: {max(l['max_speed'] for l in laps):.1f} km/h")
+    if args.best_ref:
+        try:
+            ref_s = sum(float(x) * 60**i for i, x in enumerate(reversed(args.best_ref.split(":"))))
+            gap = best_lap["lap_time_s"] - ref_s
+            lines.append(f"- Gap to reference: +{gap:.2f}s")
+        except Exception:
+            pass
+    lines.append("")
+
+    # ── Outlier detection ─────────────────────────────────────────────────────
+    outliers = []
+    # Lap 1 is often an outlier due to cold tires, traffic, warmup
+    if len(laps) >= 2 and laps[0]["lap_num"] == 1:
+        lap1_time = laps[0]["lap_time_s"]
+        lap2_time = laps[1]["lap_time_s"]
+        if lap1_time > lap2_time * 1.03:  # Lap 1 is >3% slower than Lap 2
+            outliers.append((1, "First lap - likely cold tires or traffic"))
+
+    # Any lap significantly slower than the best
+    for lap in laps:
+        if lap["lap_num"] == best_lap["lap_num"]:
+            continue
+        delta_pct = (lap["lap_time_s"] - best_lap["lap_time_s"]) / best_lap["lap_time_s"]
+        if delta_pct > 0.05:  # >5% slower than best
+            outliers.append((lap["lap_num"], f"{delta_pct*100:.1f}% slower than best lap"))
+
+    if outliers:
+        lines.append("⚠️  OUTLIER LAPS (may not represent true performance):")
+        for lap_num, reason in outliers:
+            lines.append(f"  Lap {lap_num}: {reason}")
+        lines.append("  → When analyzing, focus on the representative laps, not outliers")
+        lines.append("")
+
+    # ── Lap-by-lap summary ────────────────────────────────────────────────────
+    lines.append("LAP-BY-LAP SUMMARY:")
+    for lap in laps:
+        marker = " ← BEST" if lap["lap_num"] == best_lap["lap_num"] else \
+                 " ← WORST" if lap["lap_num"] == worst_lap["lap_num"] else ""
+        lines.append(
+            f"  Lap {lap['lap_num']}: {lap['lap_time_str']}  "
+            f"max {lap['max_speed']:.1f} km/h  "
+            f"avg {lap['avg_speed']:.1f} km/h{marker}"
+        )
+    lines.append("")
+
+    # ── Corner-by-corner analysis ─────────────────────────────────────────────
+    lines.append("CORNER-BY-CORNER ANALYSIS:")
+    lines.append("(entry/apex/exit speeds in km/h; segment time = frames in corner / hz)")
+    lines.append("")
+
+    lap_corner_map = {
+        lap["lap_num"]: {corner["id"]: corner for corner in lap["corners"]}
+        for lap in laps
+    }
+
+    for spec in ref_corners:
+        cid = spec["id"]
+        name = spec.get("name") or f"Corner {cid}"
+        speeds = corner_speeds.get(cid, {})
+        if not speeds:
+            continue
+
+        apex_vals = list(speeds.values())
+        best_apex = max(apex_vals)
+        worst_apex = min(apex_vals)
+        variation = best_apex - worst_apex
+
+        corners_for_lap = []
+        for lap in laps:
+            corner = lap_corner_map[lap["lap_num"]].get(cid)
+            if corner:
+                corners_for_lap.append((lap["lap_num"], corner))
+
+        if not corners_for_lap:
+            continue
+
+        best_apex_lap_num, _ = max(corners_for_lap, key=lambda item: item[1]["apex_speed"])
+        worst_apex_lap_num, _ = min(corners_for_lap, key=lambda item: item[1]["apex_speed"])
+        fastest_seg_lap_num, fastest_corner = min(
+            corners_for_lap,
+            key=lambda item: corner_segment_time(item[1], hz),
+        )
+        slowest_seg_lap_num, slowest_corner = max(
+            corners_for_lap,
+            key=lambda item: corner_segment_time(item[1], hz),
+        )
+
+        lines.append(f"--- {name} (Corner {cid}) ---")
+        lines.append(f"  Apex speed range: {variation:.1f} km/h  {variation_label(variation)}")
+
+        # Apex speeds across all laps
+        lap_speed_strs = [f"Lap {ln}: {spd:.1f}" for ln, spd in sorted(speeds.items())]
+        lines.append(f"  Apex speeds:  {',  '.join(lap_speed_strs)}")
+        lines.append(f"  Highest apex: {best_apex:.1f} km/h (Lap {best_apex_lap_num})")
+        lines.append(f"  Lowest apex:  {worst_apex:.1f} km/h (Lap {worst_apex_lap_num})")
+
+        entry_delta = fastest_corner["entry_speed"] - slowest_corner["entry_speed"]
+        apex_delta = fastest_corner["apex_speed"] - slowest_corner["apex_speed"]
+        exit_delta = fastest_corner["exit_speed"] - slowest_corner["exit_speed"]
+
+        lines.append(
+            f"  Fastest segment: Lap {fastest_seg_lap_num}  "
+            f"{corner_segment_time(fastest_corner, hz):.2f}s"
+        )
+        lines.append(
+            f"  Slowest segment: Lap {slowest_seg_lap_num}  "
+            f"{corner_segment_time(slowest_corner, hz):.2f}s"
+        )
+        lines.append(
+            f"  Entry  — Lap {fastest_seg_lap_num}: {fastest_corner['entry_speed']:.1f}  |  "
+            f"Lap {slowest_seg_lap_num}: {slowest_corner['entry_speed']:.1f}  |  "
+            f"Δ {entry_delta:+.1f} km/h"
+        )
+        lines.append(
+            f"  Apex   — Lap {fastest_seg_lap_num}: {fastest_corner['apex_speed']:.1f}  |  "
+            f"Lap {slowest_seg_lap_num}: {slowest_corner['apex_speed']:.1f}  |  "
+            f"Δ {apex_delta:+.1f} km/h"
+        )
+        lines.append(
+            f"  Exit   — Lap {fastest_seg_lap_num}: {fastest_corner['exit_speed']:.1f}  |  "
+            f"Lap {slowest_seg_lap_num}: {slowest_corner['exit_speed']:.1f}  |  "
+            f"Δ {exit_delta:+.1f} km/h"
+        )
+
+        seg_delta = (
+            corner_segment_time(slowest_corner, hz) -
+            corner_segment_time(fastest_corner, hz)
+        )
+        lines.append(
+            f"  Segment delta: +{seg_delta:.2f}s"
+        )
+
+        issue = classify_corner_issue(entry_delta, apex_delta, exit_delta)
+        lines.append(f"  Likely issue: {issue}")
+        
+        # Car state analysis at entry/apex/exit for fastest vs slowest lap
+        lines.append("  Car state (Entry | Apex | Exit):")
+        
+        # Fastest lap car state
+        fastest_entry = fastest_corner.get("entry_state")
+        fastest_apex = fastest_corner.get("apex_state")
+        fastest_exit = fastest_corner.get("exit_state")
+        if fastest_entry and fastest_apex and fastest_exit:
+            lines.append(
+                f"    Lap {fastest_seg_lap_num} (fastest): "
+                f"{format_car_state(fastest_entry)} | "
+                f"{format_car_state(fastest_apex)} | "
+                f"{format_car_state(fastest_exit)}"
+            )
+            lines.append(
+                f"    Balance hint @apex (Lap {fastest_seg_lap_num}): {balance_hint(fastest_apex)}"
+            )
+        
+        # Slowest lap car state
+        slowest_entry = slowest_corner.get("entry_state")
+        slowest_apex = slowest_corner.get("apex_state")
+        slowest_exit = slowest_corner.get("exit_state")
+        if slowest_entry and slowest_apex and slowest_exit:
+            lines.append(
+                f"    Lap {slowest_seg_lap_num} (slowest): "
+                f"{format_car_state(slowest_entry)} | "
+                f"{format_car_state(slowest_apex)} | "
+                f"{format_car_state(slowest_exit)}"
+            )
+            lines.append(
+                f"    Balance hint @apex (Lap {slowest_seg_lap_num}): {balance_hint(slowest_apex)}"
+            )
+
+        lines.append("")
+
+    # ── Ranked time-loss summary ──────────────────────────────────────────────
+    lines.append("TIME LOSS RANKING (worst → best, by segment time delta):")
+    ranked = []
+    for spec in ref_corners:
+        cid = spec["id"]
+        corners_for_lap = []
+        for lap in laps:
+            corner = lap_corner_map[lap["lap_num"]].get(cid)
+            if corner:
+                corners_for_lap.append(corner)
+        if len(corners_for_lap) >= 2:
+            fastest = min(corners_for_lap, key=lambda corner: corner_segment_time(corner, hz))
+            slowest = max(corners_for_lap, key=lambda corner: corner_segment_time(corner, hz))
+            delta = corner_segment_time(slowest, hz) - corner_segment_time(fastest, hz)
+            ranked.append((delta, spec.get("name") or f"Corner {cid}", cid))
+    ranked.sort(reverse=True)
+    for delta, name, cid in ranked:
+        lines.append(f"  {name:<30} +{delta:.2f}s")
+    lines.append("")
+
+    # ── Time analysis ─────────────────────────────────────────────────────────
+    lines.append("OVERALL TIME ANALYSIS:")
+    lines.append(f"  Best lap:  #{best_lap['lap_num']}  {best_lap['lap_time_str']}")
+    lines.append(f"  Worst lap: #{worst_lap['lap_num']}  {worst_lap['lap_time_str']}")
+    lines.append(f"  Delta: {time_diff:.2f}s")
+    lines.append("")
+
+    # ── Coaching request ──────────────────────────────────────────────────────
+    lines.append("=" * 60)
+    lines.append("COACHING REQUEST:")
+    lines.append("")
+    lines.append("Using the telemetry data above, provide specific, actionable coaching feedback:")
+    lines.append("")
+    lines.append("1. TIME LOSS PRIORITIES")
+    lines.append("   Which corners are costing the most time and why?")
+    lines.append("   Use the segment time deltas and entry/exit speed data, not just apex speed.")
+    lines.append("")
+    lines.append("2. CORNER TECHNIQUE — for each high/medium variation corner:")
+    lines.append("   - Brake point and release")
+    lines.append("   - Turn-in and apex")
+    lines.append("   - Throttle pickup point and exit")
+    lines.append("   - What the entry/exit delta pattern tells you about the driver's habit")
+    lines.append("")
+    lines.append("3. CONSISTENCY DIAGNOSIS")
+    lines.append("   For corners with HIGH variation, diagnose whether this is a")
+    lines.append("   reference-point problem, confidence problem, or technique problem.")
+    lines.append("")
+    lines.append("4. SINGLE BIGGEST IMPROVEMENT")
+    lines.append("   What one change would yield the most lap time?")
+    lines.append("   Be specific: not 'brake later' but 'at the Corkscrew, your entry speed")
+    lines.append("   varies by X km/h — pick the 150m board as a fixed brake reference.'")
+    lines.append("")
+    lines.append("5. SETUP RECOMMENDATIONS")
+    lines.append("   Based on the dynamics + tire/brake signals and balance hints (understeer/oversteer/neutral):")
+    lines.append("   provide setup changes with directionality (stiffer/softer, more/less), and the expected effect.")
+    lines.append("   Cover, where applicable:")
+    lines.append("   - Tire pressures (targets/hot adjustment direction)")
+    lines.append("   - Alignment (camber/toe) direction")
+    lines.append("   - ARBs/springs (front vs rear balance)")
+    lines.append("   - Dampers (bump/rebound direction for entry/exit stability)")
+    lines.append("   - Brake bias, if ABS shows up in corner entries")
+    lines.append("")
+    if args.best_ref:
+        lines.append("6. PATH TO REFERENCE TIME")
+        lines.append(f"   The driver is {time_diff:.2f}s off their own best and further from the")
+        lines.append(f"   {args.best_ref} reference. Map out where the remaining time is.")
+        lines.append("")
+    lines.append("Ground every recommendation in the specific km/h and time figures above.")
+    lines.append("=" * 60)
+
+    return "\n".join(lines)
+
+def render_ai_prompt(data, output_path, args):
+    """Generate and save AI coaching prompt."""
+    meta = data.get("meta") or {}
+    hz = float(meta.get("_hz", 1.0))
+
+    prompt = build_ai_prompt(data, hz, args)
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write("# AC Evo AI Coaching Prompt\n\n")
+        f.write("Copy and paste this into ChatGPT, Claude, or any AI assistant:\n\n")
+        f.write("```\n")
+        f.write(prompt)
+        f.write("\n```\n")
+
+    print(f"\nAI Prompt -> {output_path}")
+    print(f"Prompt length: {len(prompt):,} characters")
+
 # ─── Entry point ──────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Analyze AC Evo JSONL telemetry into an HTML report")
+    parser = argparse.ArgumentParser(
+        description="Analyze AC Evo JSONL telemetry into an HTML report with optional AI coaching prompt"
+    )
     parser.add_argument("input_path", help="Input JSONL path")
-    parser.add_argument("output_path", nargs="?", help="Output HTML path")
+    parser.add_argument("output_path", nargs="?", help="Output HTML path (optional)")
     parser.add_argument("--track", dest="track_name", help="Track key/name override, e.g. spa or laguna_seca")
     parser.add_argument("--config", dest="config_name", help="Track configuration override, e.g. current, gp, indy")
+    # AI coaching prompt options
+    parser.add_argument("--ai-prompt", action="store_true", help="Also generate AI coaching prompt")
+    parser.add_argument("--car", help="Car name/class (e.g. 'Porsche 911 GT3', 'GT4')")
+    parser.add_argument("--driver", help="Driver level: beginner / intermediate / advanced")
+    parser.add_argument("--goal", help="Session goal: 'reduce lap time' / 'improve consistency' / 'learn track'")
+    parser.add_argument("--notes", help="Free-text context, e.g. 'new to this track, struggling with Corkscrew'")
+    parser.add_argument("--best-ref", dest="best_ref", help="Reference lap time to benchmark against (e.g. 2:38.50)")
     args = parser.parse_args()
 
     input_path = args.input_path
@@ -1021,4 +1688,11 @@ if __name__ == "__main__":
     except ValueError as exc:
         print(f"ERROR: {exc}")
         sys.exit(1)
+
+    # Always generate HTML report
     render_html(data, output_path)
+
+    # Optionally generate AI coaching prompt
+    if args.ai_prompt:
+        prompt_path = f"{base}_ai_coaching_prompt.md"
+        render_ai_prompt(data, prompt_path, args)
