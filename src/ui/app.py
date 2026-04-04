@@ -18,12 +18,16 @@ from .components.pb_cache_viewer import show_pb_cache_dialog
 from .pages.history import HistoryPage, HistoryEntry
 from .components.lap_card import LapCardStatus
 from .components.status_bar import ConnectionStatus
-from ..core.log_parser import LogParser, SessionData, LapData
-from ..core.api_client import APIClient, SubmissionStatus
-from ..core.security import get_steam_user
-from ..core.discord_notifier import DiscordNotifier, LapData as DiscordLapData
-from ..core.pb_cache import get_pb_cache
-from ..utils.config import ConfigManager, AppConfig, get_config_manager
+from .components.telemetry_status import TelemetryStatus, TelemetryButton
+from src.core.log_parser import LogParser, SessionData, LapData
+from src.core.api_client import APIClient, SubmissionStatus
+from src.core.security import get_steam_user
+from src.core.discord_notifier import DiscordNotifier, LapData as DiscordLapData
+from src.core.pb_cache import get_pb_cache
+from src.core.telemetry_capture import TelemetryCapture
+from src.core.track_catalog import get_track_catalog
+from src.core.telemetry_analyzer import TelemetryAnalyzer
+from src.utils.config import ConfigManager, AppConfig, get_config_manager
 
 
 class AppPage(Enum):
@@ -67,6 +71,12 @@ class SimLapsApp:
         # Parser task
         print("[APP] Initializing parser task...")
         self._parser_task: Optional[asyncio.Task] = None
+        
+        # Telemetry services
+        self._telemetry_capture: Optional[TelemetryCapture] = None
+        self._telemetry_analyzer: Optional[TelemetryAnalyzer] = None
+        self._telemetry_button: Optional[TelemetryButton] = None
+        self._current_track_name: Optional[str] = None
         
         # Pages
         print("[APP] Initializing UI pages...")
@@ -175,6 +185,52 @@ class SimLapsApp:
             on_user_detected=self._on_user_detected,
             on_game_version=self._on_game_version,
         )
+        
+        # Initialize telemetry if enabled
+        self._init_telemetry_services()
+    
+    def _init_telemetry_services(self):
+        """Initialize telemetry capture and analyzer services."""
+        if not self._config.telemetry_enabled:
+            print("[APP] Telemetry disabled in settings")
+            return
+        
+        try:
+            self._telemetry_capture = TelemetryCapture(hz=20.0)
+            self._telemetry_analyzer = TelemetryAnalyzer(
+                output_dir=self._config.telemetry_output_path,
+                track_catalog=get_track_catalog(),
+            )
+            
+            # Create telemetry button
+            self._telemetry_button = TelemetryButton(
+                on_click=self._open_telemetry_location,
+                output_path=self._config.telemetry_output_path,
+            )
+            
+            # Set button on home page
+            if self._home_page:
+                self._home_page.set_telemetry_button(
+                    self._telemetry_button,
+                    self._config.telemetry_output_path,
+                )
+            
+            print(f"[APP] Telemetry services initialized: output={self._config.telemetry_output_path}")
+        except Exception as e:
+            print(f"[APP] Failed to initialize telemetry: {e}")
+            self._telemetry_capture = None
+            self._telemetry_analyzer = None
+    
+    def _open_telemetry_location(self, e, output_path):
+        """Open the telemetry output folder in file explorer."""
+        import subprocess
+        try:
+            if sys.platform == "win32":
+                subprocess.Popen(f'explorer "{output_path}"', shell=True)
+            else:
+                subprocess.Popen(["open", output_path])
+        except Exception as ex:
+            print(f"[APP] Failed to open telemetry location: {ex}")
     
     def _init_pages(self):
         """Initialize page components."""
@@ -220,6 +276,10 @@ class SimLapsApp:
             if session.player_id:
                 print(f"[APP] Updating detected user: {session.player_id}")
                 self._home_page.set_detected_user(session.player_id, session.player_name)
+            
+            # Update current track name for telemetry
+            if session.track and session.track != "Unknown":
+                self._current_track_name = session.track
             
             # Determine if we should submit this lap
             should_submit = self._config.auto_submit and (lap.is_valid or self._config.submit_invalid_laps)
@@ -449,12 +509,69 @@ class SimLapsApp:
                     ConnectionStatus.CONNECTED,
                     "Session active - recording laps",
                 )
+                # Start telemetry capture
+                await self._start_telemetry_capture()
             else:
                 # Still connected/monitoring, just no active session
                 self._home_page.set_connection_status(
                     ConnectionStatus.CONNECTED,
                     "Monitoring - waiting for session...",
                 )
+                # Stop telemetry capture and analyze
+                await self._stop_telemetry_capture()
+    
+    async def _start_telemetry_capture(self):
+        """Start telemetry capture when game session begins."""
+        if not self._telemetry_capture or not self._config.telemetry_enabled:
+            return
+        
+        try:
+            print("[APP] Starting telemetry capture...")
+            self._home_page.set_telemetry_status(TelemetryStatus.CAPTURING, 0)
+            success = await self._telemetry_capture.start_capture()
+            if not success:
+                print("[APP] Telemetry capture failed to start")
+                self._home_page.set_telemetry_status(TelemetryStatus.ERROR)
+        except Exception as e:
+            print(f"[APP] Error starting telemetry: {e}")
+            self._home_page.set_telemetry_status(TelemetryStatus.ERROR)
+    
+    async def _stop_telemetry_capture(self):
+        """Stop telemetry capture and generate analysis when game session ends."""
+        if not self._telemetry_capture or not self._telemetry_analyzer:
+            return
+        
+        try:
+            print("[APP] Stopping telemetry capture...")
+            frames = await self._telemetry_capture.stop_capture()
+            frame_count = len(frames)
+            print(f"[APP] Captured {frame_count} telemetry frames")
+            
+            if frame_count > 0:
+                # Show analyzing status
+                self._home_page.set_telemetry_status(TelemetryStatus.ANALYZING, frame_count)
+                
+                # Run analysis with track name
+                metadata = self._telemetry_capture.get_metadata()
+                result = await self._telemetry_analyzer.analyze(
+                    frames, 
+                    hz=10.0,
+                    metadata=metadata,
+                    track_name=self._current_track_name,
+                )
+                
+                print(f"[APP] Analysis complete: {result.laps_detected} laps, best: {result.best_lap_time:.2f}s")
+                self._home_page.set_telemetry_status(
+                    TelemetryStatus.COMPLETE,
+                    frame_count,
+                    result.html_path,
+                )
+            else:
+                self._home_page.set_telemetry_status(TelemetryStatus.IDLE)
+                
+        except Exception as e:
+            print(f"[APP] Error during telemetry analysis: {e}")
+            self._home_page.set_telemetry_status(TelemetryStatus.ERROR)
     
     async def _on_user_detected(self, steam_id: str, player_name: Optional[str]):
         """Handle user detection from log parser."""

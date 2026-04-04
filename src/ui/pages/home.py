@@ -12,6 +12,7 @@ from collections import deque
 
 from ..components.lap_card import LapCard, LapCardData, LapCardStatus
 from ..components.status_bar import StatusBar, ConnectionStatus
+from ..components.telemetry_status import TelemetryStatusIndicator, TelemetryStatus
 from ...core.log_parser import SessionData, LapData
 from ...core.api_client import SubmissionStatus
 from ...utils.config import AppConfig
@@ -90,6 +91,10 @@ class HomePage(ft.Column):
         )
         self._status_bar = StatusBar()
         self._game_status_container = ft.Container()
+        
+        # Telemetry components
+        self._telemetry_status = TelemetryStatusIndicator()
+        self._telemetry_button = None  # Will be set by app
         
         # Build initial game status
         self._update_game_status_ui()
@@ -269,9 +274,12 @@ class HomePage(ft.Column):
         
         # Status section
         status_section = ft.Container(
-            content=ft.Row([
-                ft.Icon(ft.Icons.INFO, color="#888888", size=16),
-                self._status_text,
+            content=ft.Column([
+                ft.Row([
+                    ft.Icon(ft.Icons.INFO, color="#888888", size=16),
+                    self._status_text,
+                ], spacing=8),
+                self._telemetry_status,
             ], spacing=8),
             padding=ft.padding.symmetric(vertical=12, horizontal=16),
             bgcolor="#16162a",
@@ -331,6 +339,9 @@ class HomePage(ft.Column):
             bgcolor="#0f0f1a",
         )
         
+        # Telemetry button (added dynamically)
+        self._telemetry_button_container = ft.Container()
+        
         # Game status container wrapper
         game_status_wrapper = ft.Container(
             content=self._game_status_container,
@@ -346,6 +357,7 @@ class HomePage(ft.Column):
             status_section,
             laps_header,
             laps_container,
+            self._telemetry_button_container,
             buttons,
             self._status_bar,
         ]
@@ -507,3 +519,24 @@ class HomePage(ft.Column):
     def get_status_bar(self) -> StatusBar:
         """Get the status bar component."""
         return self._status_bar
+    
+    def set_telemetry_status(
+        self,
+        status: TelemetryStatus,
+        frame_count: int = 0,
+        result_path: str = None,
+    ):
+        """Update the telemetry status indicator."""
+        self._telemetry_status.set_status(status, frame_count, result_path)
+    
+    def set_telemetry_button(self, button, output_path: str):
+        """Set the telemetry button and update its path."""
+        self._telemetry_button = button
+        self._telemetry_button.update_path(output_path)
+        self._telemetry_button_container.content = ft.Container(
+            content=button,
+            padding=ft.padding.only(left=20, right=20, bottom=8),
+            bgcolor="#0f0f1a",
+        )
+        if self.page:
+            self._telemetry_button_container.update()

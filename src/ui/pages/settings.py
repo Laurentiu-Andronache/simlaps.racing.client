@@ -7,6 +7,8 @@ Simplified: No API key required (uses signed payloads).
 import flet as ft
 from typing import Optional, Callable
 
+from pathlib import Path
+
 from ...utils.config import AppConfig, DEFAULT_SERVER_URL
 
 
@@ -75,6 +77,23 @@ class SettingsPage(ft.Container):
             "",
             size=12,
             color="#888888",
+        )
+        
+        # Telemetry fields
+        self._telemetry_enabled_switch = ft.Switch(
+            value=config.telemetry_enabled,
+            active_color="#7c3aed",
+        )
+        
+        self._telemetry_output_path_field = ft.TextField(
+            value=config.telemetry_output_path,
+            label="Output Directory",
+            hint_text=r"C:\Users\...\Documents\SimLaps\Telemetry",
+            border_color="#3d3d5c",
+            focused_border_color="#7c3aed",
+            bgcolor="#1e1e2e",
+            color="#ffffff",
+            label_style=ft.TextStyle(color="#888888"),
         )
         
         self._connection_status = ft.Text(
@@ -176,6 +195,19 @@ class SettingsPage(ft.Container):
             ],
         )
         
+        # Telemetry settings section
+        telemetry_section = self._build_section(
+            "📊 Telemetry",
+            [
+                self._build_switch_row(
+                    "Enable Telemetry Capture",
+                    "Record high-frequency telemetry during sessions",
+                    self._telemetry_enabled_switch,
+                ),
+                self._telemetry_output_path_field,
+            ],
+        )
+        
         # Save button
         save_button = ft.ElevatedButton(
             "Save Settings",
@@ -207,6 +239,7 @@ class SettingsPage(ft.Container):
                                 server_section,
                                 behavior_section,
                                 discord_section,
+                                telemetry_section,
                                 ft.Container(height=16),
                                 ft.Row(
                                     controls=[save_button, reset_button],
@@ -334,6 +367,10 @@ class SettingsPage(ft.Container):
         self.config.discord_enabled = self._discord_enabled_switch.value
         self.config.discord_pb_only = self._discord_pb_only_switch.value
         
+        # Telemetry settings
+        self.config.telemetry_enabled = self._telemetry_enabled_switch.value
+        self.config.telemetry_output_path = self._telemetry_output_path_field.value or ""
+        
         if self.on_save:
             self.on_save(self.config)
         
@@ -356,12 +393,18 @@ class SettingsPage(ft.Container):
         self._discord_pb_only_switch.value = True
         self._discord_test_status.value = ""
         
+        # Reset Telemetry fields
+        self._telemetry_enabled_switch.value = True
+        self._telemetry_output_path_field.value = str(Path.home() / "Documents" / "SimLaps" / "Telemetry")
+        
         self._server_url_field.update()
         self._submit_invalid_switch.update()
         self._discord_webhook_field.update()
         self._discord_enabled_switch.update()
         self._discord_pb_only_switch.update()
         self._discord_test_status.update()
+        self._telemetry_enabled_switch.update()
+        self._telemetry_output_path_field.update()
     
     def update_config(self, config: AppConfig):
         """Update form with new config."""
@@ -373,5 +416,9 @@ class SettingsPage(ft.Container):
         self._discord_webhook_field.value = config.discord_webhook_url or ""
         self._discord_enabled_switch.value = config.discord_enabled
         self._discord_pb_only_switch.value = config.discord_pb_only
+        
+        # Update Telemetry fields
+        self._telemetry_enabled_switch.value = config.telemetry_enabled
+        self._telemetry_output_path_field.value = config.telemetry_output_path
         
         self.update()

@@ -231,9 +231,19 @@ def build_executable():
         "src",
         "src.version",
         "src.core",
+        "src.core.track_catalog",
+        "src.core.track_catalog:select_track_profile",
+        "src.core.track_catalog:build_track_profile",
+        "src.core.track_catalog:get_track_catalog",
+        "src.core.telemetry_capture",
+        "src.core.telemetry_capture:CaptureMetadata",
+        "src.core.telemetry_capture:FrameData",
+        "src.core.telemetry_decoder",
         "src.ui",
         "src.ui.app",
         "src.ui.pages",
+        "src.ui.pages.settings",
+        "src.ui.pages.telemetry",
         "src.ui.components",
         "src.utils",
     ]
@@ -254,6 +264,10 @@ def build_executable():
         "--collect-data", "flet",
         "--collect-data", "flet_runtime",
         "--collect-data", "flet_desktop",
+        "--collect-all", "src",
+        "--collect-all", "src.core",
+        "--collect-all", "src.ui",
+        "--collect-all", "src.utils",
     ])
     
     # Add the source directory to path so imports work

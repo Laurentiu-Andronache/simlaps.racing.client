@@ -70,6 +70,10 @@ class AppConfig:
     discord_webhook_url: Optional[str] = None
     discord_enabled: bool = False
     discord_pb_only: bool = True
+
+    # Telemetry
+    telemetry_enabled: bool = True
+    telemetry_output_path: str = field(default_factory=lambda: str(Path.home() / "Documents" / "SimLaps" / "Telemetry"))
     
     def to_dict(self) -> dict:
         """Convert config to dictionary."""
