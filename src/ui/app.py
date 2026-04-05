@@ -19,7 +19,8 @@ from .pages.history import HistoryPage, HistoryEntry
 from .components.lap_card import LapCardStatus
 from .components.status_bar import ConnectionStatus
 from .components.telemetry_status import TelemetryStatus, TelemetryButton
-from src.core.log_parser import LogParser, SessionData, LapData
+from src.core.log_parser import LogParser
+from src.models import SessionData, LapData
 from src.core.api_client import APIClient, SubmissionStatus
 from src.core.security import get_steam_user
 from src.core.discord_notifier import DiscordNotifier, LapData as DiscordLapData

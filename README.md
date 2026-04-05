@@ -140,6 +140,12 @@ npx prisma migrate dev --name add_used_nonce
 sim-laps-client/
 ├── src/
 │   ├── main.py              # Application entry point
+│   ├── models/              # Data models (split from log_parser.py)
+│   │   ├── __init__.py
+│   │   ├── lap.py           # LapData, SessionData, LapState, StintData
+│   │   ├── tyre_state.py    # Tyre compound tracking
+│   │   ├── context.py       # LogContext (persistent parsing state)
+│   │   └── constants.py     # Tuning constants and thresholds
 │   ├── ui/
 │   │   ├── app.py           # Main app controller
 │   │   ├── pages/
@@ -150,7 +156,7 @@ sim-laps-client/
 │   │       ├── lap_card.py  # Lap display component
 │   │       └── status_bar.py
 │   ├── core/
-│   │   ├── log_parser.py    # ACE log parsing
+│   │   ├── log_parser.py    # ACE log parsing (refactored, uses models/)
 │   │   ├── api_client.py    # Server communication
 │   │   ├── security.py      # Signing & game detection
 │   │   └── steam_auth.py    # Steam authentication (unused)
@@ -159,7 +165,7 @@ sim-laps-client/
 │       └── helpers.py       # Utility functions
 ├── assets/
 │   └── icon.ico             # Application icon
-├── build.py                 # Build script with secret injection
+├── build.py                 # Build script with .env bundling
 ├── requirements.txt
 ├── pyproject.toml
 └── README.md

@@ -7,7 +7,7 @@ from typing import Optional
 from dataclasses import dataclass
 from enum import Enum
 
-from ...core.log_parser import LapData, SessionData
+from ...models import LapData, SessionData
 from ...core.api_client import SubmissionStatus
 from ...utils.helpers import format_lap_time, format_sector_time, format_car_name, format_track_name
 

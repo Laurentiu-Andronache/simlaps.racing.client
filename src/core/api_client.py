@@ -10,7 +10,8 @@ from typing import Optional
 from dataclasses import dataclass
 from enum import Enum
 
-from .log_parser import SessionData, LapData, DebugLogger
+from ..models import SessionData, LapData
+from ..utils.debug_logger import DebugLogger
 from .security import sign_payload, is_game_running
 from ..version import VERSION, USER_AGENT
 

@@ -9,7 +9,9 @@ import hashlib
 import uuid
 import time
 import os
+import sys
 from typing import Optional
+from dotenv import load_dotenv
 
 # Try to import psutil, with fallback
 try:
@@ -20,11 +22,35 @@ except ImportError:
 
 
 # =============================================================================
-# APP SECRET
+# APP SECRET - Load from environment
 # =============================================================================
+# Load .env file if it exists (for development)
+# When running as PyInstaller executable, .env is in _MEIPASS directory
+if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+    # Running as compiled executable - .env is bundled in _MEIPASS
+    env_path = os.path.join(sys._MEIPASS, '.env')
+    if os.path.exists(env_path):
+        load_dotenv(env_path)
+    else:
+        # Fallback: try loading from executable directory
+        env_path = os.path.join(os.path.dirname(sys.executable), '.env')
+        if os.path.exists(env_path):
+            load_dotenv(env_path)
+else:
+    # Running as script - load from project root
+    load_dotenv()
+
 # Production secret for signing payloads
 # Matches CLIENT_APP_SECRET in server .env
-APP_SECRET = "REDACTED"
+# Load from environment variable, fallback to None if not set
+APP_SECRET = os.environ.get("APP_SECRET")
+
+if not APP_SECRET:
+    raise RuntimeError(
+        "APP_SECRET environment variable not set. "
+        "Please set APP_SECRET in your .env file or environment. "
+        "See .env.example for the required format."
+    )
 
 
 def get_app_secret() -> bytes:

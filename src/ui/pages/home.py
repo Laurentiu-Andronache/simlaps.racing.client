@@ -13,7 +13,7 @@ from collections import deque
 from ..components.lap_card import LapCard, LapCardData, LapCardStatus
 from ..components.status_bar import StatusBar, ConnectionStatus
 from ..components.telemetry_status import TelemetryStatusIndicator, TelemetryStatus
-from ...core.log_parser import SessionData, LapData
+from ...models import SessionData, LapData
 from ...core.api_client import SubmissionStatus
 from ...utils.config import AppConfig
 from ...version import GAME_DISPLAY_NAME
