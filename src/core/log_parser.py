@@ -35,6 +35,11 @@ from pathlib import Path
 # real violations are below ±3.5 m.
 PIT_TELEPORT_DISTANCE_M: float = 10.0
 
+# Minimum inside_distance for a track limit violation to invalidate a lap.
+# Values below this (brief momentary excursions) are tolerated by the game.
+# Analysis shows violations < 2m don't invalidate, >= 2.62m do.
+TRACK_LIMIT_INVALIDATION_THRESHOLD_M: float = 2.0
+
 # Maximum acceptable difference between (S1+S2+S3) and lap_time_ms.
 # Small deltas exist due to sub-millisecond boundary timing; anything larger
 # indicates sector/lap desync corruption.
@@ -1169,8 +1174,9 @@ class LogParser:
         inside_distance value (always 12.52 m in the analysed logs; real
         violations are below ±3.5 m).
 
-        Both direct 0→4 jumps and sequential 0→2→4 progressions are handled
-        by checking new_count == 4 without requiring a prior intermediate.
+        Brief momentary excursions (inside_distance < 2m) are tolerated by
+        the game and do not invalidate laps. Only sustained off-track
+        cuts (inside_distance >= 2m) are considered lap-invalidating.
         """
         if "Limits: car" not in line or "tyres out changed:" not in line:
             return
@@ -1191,6 +1197,15 @@ class LogParser:
             _debug.log(
                 f"[LIMITS] Pit-teleport artefact ignored "
                 f"(inside_dist={inside_dist} m)"
+            )
+            return
+
+        # Brief momentary excursions with small inside_distance are tolerated
+        # by the game and do not invalidate the lap.
+        if inside_dist < TRACK_LIMIT_INVALIDATION_THRESHOLD_M:
+            _debug.log(
+                f"[LIMITS] Brief excursion tolerated (inside_dist={inside_dist} m < "
+                f"{TRACK_LIMIT_INVALIDATION_THRESHOLD_M} m threshold)"
             )
             return
 
@@ -1297,6 +1312,14 @@ class LogParser:
                     "[VALIDITY] OUTLAP via physics_lap_num==1 fallback "
                     "(no Outplap split logged)"
                 )
+            # Clear any track limit violations that occurred during the outlap.
+            # Outlaps are not competitive timed laps, so violations don't count.
+            if ip.has_track_limit_violation:
+                _debug.log(
+                    "[VALIDITY] Clearing track limit violation from OUTLAP "
+                    "(outlap violations don't invalidate subsequent laps)"
+                )
+                ip.has_track_limit_violation = False
             return LapState.OUTLAP
 
         # ── 2. Track limit violation ───────────────────────────────────────────

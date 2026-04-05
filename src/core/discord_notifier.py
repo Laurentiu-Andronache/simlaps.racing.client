@@ -239,7 +239,9 @@ class DiscordNotifier:
         url = url.strip()
         
         # Basic Discord webhook URL pattern
-        return url.startswith("https://discord.com/api/webhooks/") and len(url) > 50
+        # Format: https://discord.com/api/webhooks/{id}/{token}
+        # Minimum valid URL has id and token after the prefix
+        return url.startswith("https://discord.com/api/webhooks/") and len(url) > len("https://discord.com/api/webhooks/") + 3
 
 
 def create_discord_notifier(webhook_url: str) -> Optional[DiscordNotifier]:

@@ -207,6 +207,10 @@ class PBCache:
     def is_loaded(self) -> bool:
         """Check if cache has been loaded."""
         return self._loaded
+
+    def get_steam_id(self) -> Optional[str]:
+        """Get the Steam ID associated with this cache."""
+        return self._steam_id
     
     def get_all_pbs(self) -> Dict[str, PersonalBest]:
         """

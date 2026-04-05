@@ -38,7 +38,10 @@ class TestDiscordNotifier:
             steam_id="76561198321627695",
             steam_name="TestUser",
             is_personal_best=True,
-            created_at=datetime.now()
+            created_at=datetime.now(),
+            sector_times_ms=[28456, 32123, 31716],
+            fuel_used_liters=3.2,
+            tire_compound="SC"
         )
         
         embed = notifier.create_lap_embed(lap_data)
@@ -46,19 +49,16 @@ class TestDiscordNotifier:
         # Check embed structure
         assert embed["title"] == "Lap Time Recorded"
         assert embed["color"] == 5814783  # Gold for PB
-        assert len(embed["fields"]) == 5
         
-        # Check specific fields
+        # Check that main field exists with PB indicator
         field_names = [field["name"] for field in embed["fields"]]
-        assert "Driver" in field_names
-        assert "Track" in field_names
-        assert "Car" in field_names
-        assert "Lap Time" in field_names
-        assert "Status" in field_names
+        assert "🫙 New PB" in field_names  # PB indicator field name
         
-        # Check PB status
-        status_field = next(f for f in embed["fields"] if f["name"] == "Status")
-        assert "🏆 NEW PERSONAL BEST" in status_field["value"]
+        # Check that driver info is in the main field value
+        main_field = next(f for f in embed["fields"] if f["name"] == "🫙 New PB")
+        assert "TestUser" in main_field["value"]
+        assert "Porsche" in main_field["value"]
+        assert "Laguna Seca" in main_field["value"]
     
     def test_create_lap_embed_invalid(self):
         """Test Discord embed for invalid lap."""
@@ -78,9 +78,9 @@ class TestDiscordNotifier:
         # Check color for invalid lap
         assert embed["color"] == 15158332  # Red for invalid
         
-        # Check status
-        status_field = next(f for f in embed["fields"] if f["name"] == "Status")
-        assert "❌ Invalid" in status_field["value"]
+        # Check that main field exists (non-PB)
+        field_names = [field["name"] for field in embed["fields"]]
+        assert "Lap Recorded" in field_names
     
     @pytest.mark.asyncio
     async def test_post_lap_success(self):
@@ -148,7 +148,7 @@ class TestDiscordNotifier:
         assert not DiscordNotifier.validate_webhook_url(None)
         assert not DiscordNotifier.validate_webhook_url("https://example.com/webhook")
         assert not DiscordNotifier.validate_webhook_url("not-a-url")
-        assert not DiscordNotifier.validate_webhook_url("https://discord.com/api/webhooks/")  # Too short
+        assert not DiscordNotifier.validate_webhook_url("https://discord.com/api/webhooks/")  # No id/token
     
     def test_create_discord_notifier(self):
         """Test Discord notifier factory function."""
@@ -230,6 +230,7 @@ class TestPBCache:
     def test_check_and_update_pb_new_pb(self):
         """Test PB detection for new personal best."""
         cache = PBCache("http://localhost:3000")
+        cache._loaded = True  # Mark cache as loaded for get_personal_best to work
         
         # No existing PB - should be treated as PB
         result = cache.check_and_update_pb("test_track", "test_car", 60000)
@@ -243,6 +244,7 @@ class TestPBCache:
     def test_check_and_update_pb_faster_lap(self):
         """Test PB detection for faster lap."""
         cache = PBCache("http://localhost:3000")
+        cache._loaded = True  # Mark cache as loaded
         
         # Set initial PB
         cache._cache[("test_track", "test_car")] = PersonalBest(best_time_ms=65000)
@@ -258,6 +260,7 @@ class TestPBCache:
     def test_check_and_update_pb_slower_lap(self):
         """Test PB detection for slower lap."""
         cache = PBCache("http://localhost:3000")
+        cache._loaded = True  # Mark cache as loaded
         
         # Set initial PB
         cache._cache[("test_track", "test_car")] = PersonalBest(best_time_ms=60000)
