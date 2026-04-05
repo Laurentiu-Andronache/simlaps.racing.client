@@ -394,7 +394,7 @@ class SettingsPage(ft.Container):
         self._discord_test_status.value = ""
         
         # Reset Telemetry fields
-        self._telemetry_enabled_switch.value = True
+        self._telemetry_enabled_switch.value = False
         self._telemetry_output_path_field.value = str(Path.home() / "Documents" / "SimLaps" / "Telemetry")
         
         self._server_url_field.update()
