@@ -72,7 +72,7 @@ class AppConfig:
     discord_pb_only: bool = True
 
     # Telemetry
-    telemetry_enabled: bool = True
+    telemetry_enabled: bool = False
     telemetry_output_path: str = field(default_factory=lambda: str(Path.home() / "Documents" / "SimLaps" / "Telemetry"))
     
     def to_dict(self) -> dict:
