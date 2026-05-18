@@ -47,7 +47,7 @@ from version import VERSION
 # Configuration
 APP_NAME = "SimLapsClient"
 APP_VERSION = VERSION
-ENTRY_POINT = "main.py"  # Moved to root level
+ENTRY_POINT = "src/main.py"  # Correct path to main script
 ICON_PATH = "assets/icon.ico"
 DIST_DIR = "dist"
 BUILD_DIR = "build"
@@ -214,6 +214,14 @@ def build_executable():
     if os.path.exists(icon_png_path):
         cmd.extend(["--add-data", f"{icon_png_path};assets"])
     
+    # Include .env file for runtime secret loading
+    if os.path.exists(".env"):
+        cmd.extend(["--add-data", ".env;."])
+        print("  Including .env file in build")
+    else:
+        print("  WARNING: .env file not found - build may fail at runtime")
+        print("  Create .env file with APP_SECRET before building")
+    
     # Add hidden imports for Flet and psutil
     hidden_imports = [
         "flet",
@@ -234,7 +242,6 @@ def build_executable():
         "src.core.track_catalog",
         "src.core.track_catalog:select_track_profile",
         "src.core.track_catalog:build_track_profile",
-        "src.core.track_catalog:get_track_catalog",
         "src.core.telemetry_capture",
         "src.core.telemetry_capture:CaptureMetadata",
         "src.core.telemetry_capture:FrameData",
@@ -391,10 +398,15 @@ def main():
     if not check_dependencies():
         return 1
     
-    # Secret management is now handled directly in security.py
-    # We no longer inject secrets at build time to simplify the process
-    # and avoid "secret mismatch" errors due to build artifacts.
-    print("Using hardcoded secret in src/core/security.py")
+    # Check that .env file exists
+    if not os.path.exists(".env"):
+        print("\nERROR: .env file not found!")
+        print("Please create .env from .env.example:")
+        print("  copy .env.example .env")
+        print("\nThe .env file must contain APP_SECRET for signing lap submissions.")
+        return 1
+    
+    print("Using APP_SECRET from .env file")
     
     # Clean previous build
     clean()
@@ -418,7 +430,7 @@ def main():
     print(f"\nExecutable: {DIST_DIR}/{APP_NAME}.exe")
     if not args.no_obfuscate:
         print("Source code obfuscated with PyArmor")
-    print("Server secret is now hardcoded in src/core/security.py")
+    print("Server secret loaded from .env file (bundled in executable)")
     
     return 0
 

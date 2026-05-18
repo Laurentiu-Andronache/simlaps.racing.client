@@ -12,7 +12,7 @@ from typing import Optional
 
 
 # Default configuration values
-DEFAULT_LOG_PATH = str(Path.home() / "Saved Games" / "ACE" / "log.txt")
+DEFAULT_LOG_PATH = str(Path.home() / "Saved Games" / "ACE" / "Logs")
 DEFAULT_SERVER_URL = "https://simlaps.racing"
 APP_NAME = "SimLapsClient"
 
@@ -37,11 +37,6 @@ def get_config_path() -> Path:
 @dataclass
 class AppConfig:
     """Application configuration settings."""
-    
-    # Authentication
-    steam_id: Optional[str] = None
-    steam_name: Optional[str] = None
-    api_key: Optional[str] = None
     
     # Paths
     log_path: str = field(default_factory=lambda: DEFAULT_LOG_PATH)
@@ -74,6 +69,12 @@ class AppConfig:
     # Telemetry
     telemetry_enabled: bool = False
     telemetry_output_path: str = field(default_factory=lambda: str(Path.home() / "Documents" / "SimLaps" / "Telemetry"))
+    # When False (default), suppress on-disk debug artefacts produced by the
+    # telemetry capture: ``telemetry_diagnostics_*.log``, ``capture_*.jsonl``,
+    # and ``raw_dump_*.jsonl``. The summary HTML / AI prompt / analyzer
+    # outputs are unaffected. Toggle this on only when reverse-engineering
+    # SHM layouts or chasing a capture-loop bug.
+    telemetry_debug_logs: bool = False
     
     def to_dict(self) -> dict:
         """Convert config to dictionary."""
@@ -81,16 +82,16 @@ class AppConfig:
     
     @classmethod
     def from_dict(cls, data: dict) -> "AppConfig":
-        """Create config from dictionary."""
+        """Create config from dictionary.
+        
+        Note: Legacy auth fields (steam_id, steam_name, api_key) are automatically
+        ignored when loading from old config files due to field filtering.
+        """
         # Filter to only valid fields
         valid_fields = {f.name for f in cls.__dataclass_fields__.values()}
         filtered = {k: v for k, v in data.items() if k in valid_fields}
         return cls(**filtered)
     
-    def is_authenticated(self) -> bool:
-        """Check if user is authenticated."""
-        return bool(self.steam_id and self.api_key)
-
 
 class ConfigManager:
     """
@@ -133,6 +134,12 @@ class ConfigManager:
                 self._config = AppConfig()
         else:
             self._config = AppConfig()
+        
+        # Migrate old ACE log path (log.txt → Logs directory)
+        old_log_path = str(Path.home() / "Saved Games" / "ACE" / "log.txt")
+        if self._config.log_path == old_log_path:
+            self._config.log_path = DEFAULT_LOG_PATH
+            self.save()
         
         self._loaded = True
         return self._config
@@ -199,50 +206,6 @@ class ConfigManager:
         self.save()
         return self._config
     
-    def clear_auth(self) -> None:
-        """Clear authentication data."""
-        config = self.get()
-        config.steam_id = None
-        config.steam_name = None
-        config.api_key = None
-        self.save()
-    
-    def set_auth(
-        self,
-        steam_id: str,
-        api_key: str,
-        steam_name: Optional[str] = None,
-    ) -> None:
-        """
-        Set authentication data.
-        
-        Args:
-            steam_id: Steam ID64
-            api_key: API key for server
-            steam_name: Optional Steam display name
-        """
-        config = self.get()
-        config.steam_id = steam_id
-        config.api_key = api_key
-        config.steam_name = steam_name
-        self.save()
-    
-    def get_log_path(self) -> Path:
-        """Get the log file path as Path object."""
-        return Path(self.get().log_path)
-    
-    def set_log_path(self, path: str) -> None:
-        """Set the log file path."""
-        self.update(log_path=path)
-    
-    def get_server_url(self) -> str:
-        """Get the server URL."""
-        return self.get().server_url
-    
-    def set_server_url(self, url: str) -> None:
-        """Set the server URL."""
-        self.update(server_url=url.rstrip("/"))
-    
     def set_discord_config(
         self,
         webhook_url: Optional[str] = None,
@@ -267,15 +230,10 @@ class ConfigManager:
         if pb_only is not None:
             updates["discord_pb_only"] = pb_only
         if post_invalid is not None:
-            updates["discord_post_invalid"] = post_invalid
+            updates["submit_invalid_laps"] = post_invalid
         
         if updates:
             self.update(**updates)
-    
-    def is_discord_configured(self) -> bool:
-        """Check if Discord is properly configured."""
-        config = self.get()
-        return bool(config.discord_webhook_url and config.discord_enabled)
 
 
 # Global config manager instance
@@ -288,13 +246,3 @@ def get_config_manager() -> ConfigManager:
     if _config_manager is None:
         _config_manager = ConfigManager()
     return _config_manager
-
-
-def get_config() -> AppConfig:
-    """Get the current configuration."""
-    return get_config_manager().get()
-
-
-def save_config() -> bool:
-    """Save the current configuration."""
-    return get_config_manager().save()

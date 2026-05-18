@@ -1,13 +1,18 @@
 # SimLaps Telemetry Client
 
-A desktop application that monitors Assetto Corsa Evo (ACE) game logs in real-time and automatically submits lap times to the SimLaps server.
+A desktop application that monitors Assetto Corsa Evo (ACE) game logs and telemetry in real-time and automatically submits lap times to the SimLaps server.
 
 ## Features
 
 - **Zero-Friction Setup**: No login required - just run and drive
-- **Real-time Log Monitoring**: Automatically detects completed laps from ACE log files
+- **Dual Detection**: Combines log parsing and telemetry capture for reliable lap detection
+- **Game-Reported Laps**: Uses authoritative lap boundaries from ACE when available
+- **Telemetry Fallback**: Analyzes physics data to detect laps when game boundaries unavailable
 - **Anti-Cheat Protection**: Only submits when game is running, cryptographically signed payloads
 - **Auto-Submit**: Automatically upload valid lap times to SimLaps
+- **Discord Integration**: Optional notifications for lap submissions
+- **Personal Best Cache**: Tracks and displays your best times
+- **Track Catalog**: Built-in track profiles for accurate analysis
 - **Modern UI**: Clean, dark-themed interface built with Flet
 - **Lap History**: Track all your recorded laps locally
 - **Portable**: Single executable, no installation needed
@@ -30,6 +35,7 @@ The client implements multiple anti-cheat measures:
 - Windows 10/11
 - Assetto Corsa Evo installed
 - Internet connection
+- Python 3.10+ (for running from source)
 
 ## Installation
 
@@ -79,6 +85,7 @@ Access Settings to customize:
 - **Log File Path**: Location of your ACE log file (default: `Saved Games\ACE\log.txt`)
 - **Server URL**: SimLaps server address
 - **Auto-submit**: Enable/disable automatic lap submission
+- **Discord Webhook**: Optional Discord notifications for lap submissions
 - **Minimize to Tray**: Keep running in background
 
 ## Building from Source
@@ -140,6 +147,23 @@ npx prisma migrate dev --name add_used_nonce
 sim-laps-client/
 ├── src/
 │   ├── main.py              # Application entry point
+│   ├── version.py           # Version information
+│   ├── models/              # Data models
+│   │   ├── __init__.py
+│   │   ├── lap.py           # LapData, SessionData, LapState, StintData
+│   │   ├── tyre_state.py    # Tyre compound tracking
+│   │   ├── context.py       # LogContext (persistent parsing state)
+│   │   └── constants.py     # Tuning constants and thresholds
+│   ├── core/
+│   │   ├── log_parser.py    # ACE log parsing
+│   │   ├── telemetry_capture.py  # Shared memory telemetry capture
+│   │   ├── telemetry_decoder.py   # Raw telemetry decoding
+│   │   ├── telemetry_analyzer.py  # Lap detection from telemetry
+│   │   ├── track_catalog.py  # Track profiles and corner definitions
+│   │   ├── api_client.py    # Server communication
+│   │   ├── security.py      # Signing & game detection
+│   │   ├── discord_notifier.py  # Discord notifications
+│   │   └── pb_cache.py      # Personal Best cache
 │   ├── ui/
 │   │   ├── app.py           # Main app controller
 │   │   ├── pages/
@@ -148,32 +172,48 @@ sim-laps-client/
 │   │   │   └── history.py   # Lap history page
 │   │   └── components/
 │   │       ├── lap_card.py  # Lap display component
-│   │       └── status_bar.py
-│   ├── core/
-│   │   ├── log_parser.py    # ACE log parsing
-│   │   ├── api_client.py    # Server communication
-│   │   ├── security.py      # Signing & game detection
-│   │   └── steam_auth.py    # Steam authentication (unused)
+│   │       ├── status_bar.py
+│   │       └── telemetry_status.py
 │   └── utils/
 │       ├── config.py        # Settings management
-│       └── helpers.py       # Utility functions
+│       └── structured_logger.py # Structured logging
+├── tests/
+│   ├── fixtures/           # Test data files
+│   ├── test_api_client.py
+│   ├── test_discord_integration.py
+│   ├── test_log_parser_real_data.py
+│   ├── test_log_parser_tyre_compounds.py
+│   ├── test_security.py
+│   ├── test_telemetry_analyzer_real_data.py
+│   └── test_telemetry_decoder_real_data.py
 ├── assets/
 │   └── icon.ico             # Application icon
-├── build.py                 # Build script with secret injection
+├── build.py                 # Build script with .env bundling
 ├── requirements.txt
+├── requirements-dev.txt
 ├── pyproject.toml
 └── README.md
 ```
 
 ## How It Works
 
+### Dual Detection Approach
+
+The client uses two complementary methods for lap detection:
+
+1. **Log Parsing (Primary)**: Reads ACE log files for game-reported lap completions
+2. **Telemetry Capture (Fallback)**: Analyzes shared memory physics data when log parsing fails
+
 ### Data Flow
 
 ```
 ACE Game → Log File → SimLaps Client → Server
-                           ↓
-                    Sign payload with
-                    embedded secret
+           ↓            ↓
+       Shared Memory   Parse logs for
+       (Physics Only)  lap boundaries
+                      ↓
+              Sign payload with
+              embedded secret
 ```
 
 ### Data Extracted from Logs
@@ -188,6 +228,16 @@ ACE Game → Log File → SimLaps Client → Server
 | Tyre Compound | `setCompound Tyre: {n} compound name: {name}` |
 | Game Version | `Build release {version}` |
 | Invalid Laps | `PENALTY_ADDED_KEY` |
+| Lap Boundaries | Game-reported lap completion events |
+
+### Telemetry Data
+
+- **Multi-Region Capture**: Captures physics, graphics, and static shared memory regions
+- **Decode Pipeline**: Decodes physics (speed, position, fuel), graphics (normalized car position), and static (session metadata) from shared memory
+- **Lap Detection**: Uses normalized car position from graphics region when available, with fallback to velocity integration
+- **Track Catalog**: Built-in profiles for 20+ tracks with corner definitions
+- **Min Lap Time**: Configurable per-track to filter spurious detections
+- **Output Formats**: Generates HTML telemetry reports, AI coaching prompts, and JSONL exports
 
 ### API Submission Format
 
@@ -247,8 +297,21 @@ Settings are stored at:
 ### Running Tests
 
 ```bash
+# Using project venv Python (recommended)
+venv-sim-laps-client\Scripts\python.exe -m pytest tests/
+
+# Or using system pytest
 pytest tests/
 ```
+
+### Test Coverage
+
+- Log parser tests with real game log data
+- Telemetry decoder tests with real telemetry dumps
+- Telemetry analyzer tests with real physics data
+- API client integration tests
+- Discord integration tests
+- Security and signing tests
 
 ### Code Style
 
@@ -257,6 +320,25 @@ The project follows PEP 8 guidelines. Format with:
 pip install black
 black src/
 ```
+
+### Version Management
+
+The client version has a single source of truth: `src/version.py`.
+
+- Update `VERSION_MAJOR`, `VERSION_MINOR`, and `VERSION_PATCH` in `src/version.py`.
+- Packaging metadata in `pyproject.toml` is populated automatically via:
+  - `[project] dynamic = ["version"]`
+  - `[tool.setuptools.dynamic] version = {attr = "src.version.VERSION"}`
+- Runtime aliases also resolve from the same source (`src.__version__` -> `src.version.VERSION`).
+
+## Version
+
+- Added telemetry capture and analysis
+- Added game-reported lap boundary support
+- Added track catalog with 20+ track profiles
+- Added Discord notification support
+- Added Personal Best cache
+- Physics-only telemetry capture (graphics/static not supported)
 
 ## License
 

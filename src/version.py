@@ -12,7 +12,7 @@ GAME_DISPLAY_NAME = "AC EVO"
 
 # Version components
 VERSION_MAJOR = 1
-VERSION_MINOR = 2
+VERSION_MINOR = 3
 VERSION_PATCH = 0
 
 # Full version string

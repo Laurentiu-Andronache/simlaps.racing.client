@@ -3,11 +3,11 @@ Lap Card Component for displaying individual lap times.
 """
 
 import flet as ft
-from typing import Optional
+from typing import Callable, Optional
 from dataclasses import dataclass
 from enum import Enum
 
-from ...core.log_parser import LapData, SessionData
+from ...models import LapData, SessionData
 from ...core.api_client import SubmissionStatus
 from ...utils.helpers import format_lap_time, format_sector_time, format_car_name, format_track_name
 
@@ -41,7 +41,7 @@ class LapCard(ft.Container):
     def __init__(
         self,
         data: LapCardData,
-        on_retry: Optional[callable] = None,
+        on_retry: Optional[Callable[["LapCard"], None]] = None,
     ):
         self.data = data
         self.on_retry = on_retry
@@ -52,7 +52,7 @@ class LapCard(ft.Container):
             margin=ft.margin.only(bottom=8),
             border_radius=12,
             bgcolor=self._get_bgcolor(),
-            border=ft.border.all(1, self._get_border_color()),
+            border=ft.Border.all(1, self._get_border_color()),
             animate=ft.Animation(200, ft.AnimationCurve.EASE_OUT),
         )
     
@@ -177,7 +177,7 @@ class LapCard(ft.Container):
                     ),
                     ft.TextButton(
                         "Retry",
-                        on_click=lambda _: self.on_retry(self.data) if self.on_retry else None,
+                        on_click=lambda _: self.on_retry(self) if self.on_retry else None,
                         style=ft.ButtonStyle(color="#ff6b6b"),
                     ),
                 ],
@@ -217,6 +217,6 @@ class LapCard(ft.Container):
         self.data.error_message = error_message
         self.content = self._build_content()
         self.bgcolor = self._get_bgcolor()
-        self.border = ft.border.all(1, self._get_border_color())
+        self.border = ft.Border.all(1, self._get_border_color())
         if self.page:
             self.update()

@@ -97,9 +97,10 @@ class HistoryPage(ft.Container):
         valid = sum(1 for e in self._entries if e.was_valid)
         
         # Debug logging
-        print(f"[DEBUG] History stats - Total: {total}, Submitted: {submitted}, Valid: {valid}")
+        from ...utils.structured_logger import log_debug, Component
+        log_debug(Component.HISTORY, "History stats", total=total, submitted=submitted, valid=valid)
         for i, entry in enumerate(self._entries):
-            print(f"[DEBUG] Entry {i}: submitted={entry.was_submitted}, valid={entry.was_valid}")
+            log_debug(Component.HISTORY, f"Entry {i}", submitted=entry.was_submitted, valid=entry.was_valid)
         
         return ft.Container(
             content=ft.Row(
@@ -115,7 +116,7 @@ class HistoryPage(ft.Container):
             padding=16,
             bgcolor="#1e1e2e",
             border_radius=12,
-            border=ft.border.all(1, "#3d3d5c"),
+            border=ft.Border.all(1, "#3d3d5c"),
         )
     
     def _build_stat(self, label: str, value: str, icon) -> ft.Column:
@@ -146,7 +147,18 @@ class HistoryPage(ft.Container):
             dt = datetime.fromisoformat(entry.timestamp)
             time_str = dt.strftime("%H:%M")
             date_str = dt.strftime("%b %d")
-        except:
+        except (TypeError, ValueError):
+            time_str = "--:--"
+            date_str = "---"
+        except Exception as ex:
+            from ...utils.structured_logger import log_exception, Component
+
+            log_exception(
+                Component.HISTORY,
+                "Unexpected error parsing history timestamp",
+                ex,
+                timestamp=entry.timestamp,
+            )
             time_str = "--:--"
             date_str = "---"
         
@@ -203,7 +215,7 @@ class HistoryPage(ft.Container):
             padding=12,
             bgcolor="#1e1e2e",
             border_radius=8,
-            border=ft.border.all(1, "#2d2d4a"),
+            border=ft.Border.all(1, "#2d2d4a"),
         )
     
     def _update_list_view(self):
@@ -243,8 +255,12 @@ class HistoryPage(ft.Container):
         self._entries.append(entry)
         self._update_list_view()
         self.content = self._build_content()
-        if self.page:
-            self.update()
+        try:
+            if self.page:
+                self.update()
+        except RuntimeError:
+            # Control not added to page yet, skip update
+            pass
     
     def set_entries(self, entries: List[HistoryEntry]):
         """Set all history entries."""
@@ -258,5 +274,9 @@ class HistoryPage(ft.Container):
         self._entries.clear()
         self._update_list_view()
         self.content = self._build_content()
-        if self.page:
-            self.update()
+        try:
+            if self.page:
+                self.update()
+        except RuntimeError:
+            # Control not added to page yet, skip update
+            pass

@@ -4,12 +4,22 @@ Security module for SimLaps Client.
 Handles payload signing, game process verification, and anti-cheat measures.
 """
 
+import enum
 import hmac
 import hashlib
 import uuid
 import time
 import os
+import sys
 from typing import Optional
+from dotenv import load_dotenv
+
+
+class GameProcessStatus(enum.Enum):
+    """Game process detection status."""
+    RUNNING = "running"
+    NOT_RUNNING = "not_running"
+    UNKNOWN = "unknown"
 
 # Try to import psutil, with fallback
 try:
@@ -20,11 +30,35 @@ except ImportError:
 
 
 # =============================================================================
-# APP SECRET
+# APP SECRET - Load from environment
 # =============================================================================
+# Load .env file if it exists (for development)
+# When running as PyInstaller executable, .env is in _MEIPASS directory
+if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+    # Running as compiled executable - .env is bundled in _MEIPASS
+    env_path = os.path.join(sys._MEIPASS, '.env')
+    if os.path.exists(env_path):
+        load_dotenv(env_path)
+    else:
+        # Fallback: try loading from executable directory
+        env_path = os.path.join(os.path.dirname(sys.executable), '.env')
+        if os.path.exists(env_path):
+            load_dotenv(env_path)
+else:
+    # Running as script - load from project root
+    load_dotenv()
+
 # Production secret for signing payloads
 # Matches CLIENT_APP_SECRET in server .env
-APP_SECRET = "REDACTED"
+# Load from environment variable, fallback to None if not set
+APP_SECRET = os.environ.get("APP_SECRET")
+
+if not APP_SECRET:
+    raise RuntimeError(
+        "APP_SECRET environment variable not set. "
+        "Please set APP_SECRET in your .env file or environment. "
+        "See .env.example for the required format."
+    )
 
 
 def get_app_secret() -> bytes:
@@ -46,33 +80,35 @@ GAME_PROCESS_NAMES = [
 ]
 
 
-def is_game_running() -> bool:
+def is_game_running() -> GameProcessStatus:
     """
     Check if Assetto Corsa Evo is currently running.
     
     This prevents log file manipulation when the game isn't running.
     
     Returns:
-        True if ACE process is detected, False otherwise
+        GameProcessStatus.RUNNING if ACE process is detected
+        GameProcessStatus.NOT_RUNNING if process not found
+        GameProcessStatus.UNKNOWN if detection failed (psutil unavailable or error)
     """
     if not PSUTIL_AVAILABLE:
-        # If psutil not available, assume game is running (less secure)
-        return True
+        # If psutil not available, detection is uncertain
+        return GameProcessStatus.UNKNOWN
     
     try:
         for proc in psutil.process_iter(['name']):
             try:
                 proc_name = proc.info.get('name', '')
                 if proc_name and proc_name in GAME_PROCESS_NAMES:
-                    return True
+                    return GameProcessStatus.RUNNING
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 # Process disappeared or we can't access it
                 continue
     except Exception:
-        # On any error, fail open (assume game running)
-        return True
+        # On any error, detection is uncertain
+        return GameProcessStatus.UNKNOWN
     
-    return False
+    return GameProcessStatus.NOT_RUNNING
 
 
 def get_game_process_info() -> Optional[dict]:
@@ -314,12 +350,12 @@ def get_security_status() -> dict:
     Returns:
         Dict with security-related status information
     """
-    game_running = is_game_running()
-    game_info = get_game_process_info() if game_running else None
+    game_status = is_game_running()
+    game_info = get_game_process_info() if game_status == GameProcessStatus.RUNNING else None
     
     return {
-        'game_running': game_running,
+        'game_running': game_status.value if isinstance(game_status, GameProcessStatus) else game_status,
         'game_process': game_info,
         'psutil_available': PSUTIL_AVAILABLE,
-        'secret_configured': not _ENCODED_SECRET.startswith("PLACEHOLDER"),
+        'secret_configured': bool(APP_SECRET),
     }

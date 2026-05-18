@@ -13,10 +13,13 @@ from collections import deque
 from ..components.lap_card import LapCard, LapCardData, LapCardStatus
 from ..components.status_bar import StatusBar, ConnectionStatus
 from ..components.telemetry_status import TelemetryStatusIndicator, TelemetryStatus
-from ...core.log_parser import SessionData, LapData
+from ...models import SessionData, LapData
 from ...core.api_client import SubmissionStatus
 from ...utils.config import AppConfig
 from ...version import GAME_DISPLAY_NAME
+
+
+UPDATE_DOWNLOAD_URL = "https://simlaps.racing/download"
 
 
 def get_icon_path() -> Optional[str]:
@@ -56,11 +59,13 @@ class HomePage(ft.Column):
         on_settings_click: Optional[Callable] = None,
         on_history_click: Optional[Callable] = None,
         on_pb_cache_click: Optional[Callable] = None,
+        on_retry_lap: Optional[Callable[[LapCard], None]] = None,
     ):
         self.config = config
         self.on_settings_click = on_settings_click
         self.on_history_click = on_history_click
         self.on_pb_cache_click = on_pb_cache_click
+        self.on_retry_lap = on_retry_lap
         
         # Game state
         self._game_running = False
@@ -153,7 +158,7 @@ class HomePage(ft.Column):
             self._game_status_container.padding = 16
             self._game_status_container.bgcolor = "#1e1e2e"
             self._game_status_container.border_radius = 12
-            self._game_status_container.border = ft.border.all(1, "#51cf66")
+            self._game_status_container.border = ft.Border.all(1, "#51cf66")
         else:
             # Monitoring - show detected user if available
             if self._detected_steam_id:
@@ -187,7 +192,7 @@ class HomePage(ft.Column):
                 self._game_status_container.padding = 16
                 self._game_status_container.bgcolor = "#1e1e2e"
                 self._game_status_container.border_radius = 12
-                self._game_status_container.border = ft.border.all(1, "#ffd43b")
+                self._game_status_container.border = ft.Border.all(1, "#ffd43b")
             else:
                 # No user info yet - show waiting state
                 self._game_status_container.content = ft.Column(
@@ -205,7 +210,7 @@ class HomePage(ft.Column):
                     spacing=8,
                 )
                 self._game_status_container.padding = 24
-                self._game_status_container.border = ft.border.all(1, "#3d3d5c")
+                self._game_status_container.border = ft.Border.all(1, "#3d3d5c")
             self._game_status_container.bgcolor = "#1e1e2e"
             self._game_status_container.border_radius = 12
             self._game_status_container.alignment = ft.Alignment(0, 0)
@@ -255,15 +260,21 @@ class HomePage(ft.Column):
             bgcolor="#0f0f1a",
         )
         
-        # Update notification banner (simplified - text only)
+        # Update notification banner
         self._update_banner = ft.Container(
             content=ft.Row([
                 ft.Icon(ft.Icons.NEW_RELEASES, color="#ffffff", size=20),
                 ft.Column([
                     ft.Text("Update Available", size=14, weight=ft.FontWeight.W_600, color="#ffffff"),
                     ft.Text("Get the latest version at:", size=12, color="#ffffff"),
-                    ft.Text("https://www.simlaps.racing/downloads/SimLapsClient.exe", size=12, color="#a5b4fc", selectable=True),
+                    ft.Text(UPDATE_DOWNLOAD_URL, size=12, color="#a5b4fc", selectable=True),
                 ], spacing=2, expand=True),
+                ft.TextButton(
+                    "Download",
+                    icon=ft.Icons.OPEN_IN_NEW,
+                    on_click=self._open_update_url,
+                    style=ft.ButtonStyle(color="#ffffff"),
+                ),
             ], alignment=ft.MainAxisAlignment.START),
             padding=ft.padding.symmetric(horizontal=16, vertical=12),
             bgcolor="#7c3aed",
@@ -381,10 +392,10 @@ class HomePage(ft.Column):
         if self.page:
             self.page.run_task(check)
 
-    def _open_update_url(self):
+    def _open_update_url(self, _=None):
         """Open browser to download update."""
         if self.page:
-            self.page.launch_url("https://simlaps.racing/download")
+            self.page.launch_url(UPDATE_DOWNLOAD_URL)
     
     def _handle_settings_click(self, e):
         """Handle Settings button click."""
@@ -421,16 +432,15 @@ class HomePage(ft.Column):
     
     def _handle_logs_click(self, e):
         """Handle Logs button click."""
-        print(f"[HOME] Logs button clicked!")
+        from ...utils.structured_logger import log_info, log_exception, Component
+        
+        log_info(Component.HOME, "Logs button clicked")
         try:
             from ..components.debug_logs import show_debug_logs
-            print(f"[HOME] Import successful, showing debug logs...")
             show_debug_logs(self.page)
-            print(f"[HOME] Debug logs dialog should be visible")
+            log_info(Component.HOME, "Debug logs dialog shown")
         except Exception as ex:
-            print(f"[HOME] Error showing debug logs: {ex}")
-            import traceback
-            traceback.print_exc()
+            log_exception(Component.HOME, "Error showing debug logs", ex)
     
     def update_config(self, config: AppConfig):
         """Update with new config and refresh UI."""
@@ -504,9 +514,13 @@ class HomePage(ft.Column):
         """Update a lap card's status."""
         card.update_status(status, error_message)
     
-    def _on_retry_lap(self, card_data: LapCardData):
+    def _on_retry_lap(self, card: LapCard):
         """Handle retry button click on failed lap."""
-        pass
+        if not card.data.lap.is_valid and not self.config.submit_invalid_laps:
+            return
+
+        if self.on_retry_lap:
+            self.on_retry_lap(card)
     
     def clear_laps(self):
         """Clear all lap cards."""
@@ -531,12 +545,23 @@ class HomePage(ft.Column):
     
     def set_telemetry_button(self, button, output_path: str):
         """Set the telemetry button and update its path."""
+        print(f"[HOME] set_telemetry_button called: button={button}, output_path={output_path}")
+        if button is not None:
+            print(f"[HOME] Button on_click before setting: {button.on_click}")
+        
         self._telemetry_button = button
-        self._telemetry_button.update_path(output_path)
-        self._telemetry_button_container.content = ft.Container(
-            content=button,
-            padding=ft.padding.only(left=20, right=20, bottom=8),
-            bgcolor="#0f0f1a",
-        )
-        if self.page:
-            self._telemetry_button_container.update()
+        if button is None:
+            self._telemetry_button_container.content = None
+        else:
+            self._telemetry_button.update_path(output_path)
+            print(f"[HOME] Button on_click after update_path: {button.on_click}")
+            self._telemetry_button_container.content = ft.Container(
+                content=button,
+                padding=ft.padding.only(left=20, right=20, bottom=8),
+                bgcolor="#0f0f1a",
+            )
+        try:
+            if self.page:
+                self._telemetry_button_container.update()
+        except RuntimeError:
+            pass
