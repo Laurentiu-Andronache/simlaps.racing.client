@@ -1,6 +1,7 @@
 Telemetry coaching is running in DIAGNOSTIC mode.
 
 Track: Unknown Track
+Car: Unknown
 Laps available: 2
 Analysis confidence: medium
 Authoritative progress coverage: 100%
@@ -10,7 +11,6 @@ Detailed corner coaching has been suppressed because the lap alignment is not tr
 
 Reasons:
 - Physics frame plausibility coverage is only 0%; derived metrics are degraded.
-- Using game-reported lap boundaries with acceptable progress coverage.
 - No trustworthy canonical corners were available for comparison.
 
 Use the session only for diagnostics until graphics-based progress coverage is reliable.

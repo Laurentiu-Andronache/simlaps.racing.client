@@ -14,7 +14,8 @@ import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 
-from src.core.security import is_game_running
+from src.core.security import is_game_running, GameProcessStatus
+from src.models import SharedSessionManager
 from src.utils.structured_logger import log_debug, log_info, log_warning, log_error, log_exception, Component
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Callable, Tuple, TextIO
@@ -110,13 +111,14 @@ class RegionReader:
         self._diag_file = diag_file
 
     def _log(self, msg: str):
-        """Log to both console and diagnostic file."""
-        print(msg)
+        """Log to both console and diagnostic file via structured logger."""
+        log_debug(Component.TELEMETRY, msg)
         if self._diag_file:
             try:
                 self._diag_file.write(f"{datetime.now().isoformat()} {msg}\n")
                 self._diag_file.flush()
-            except Exception:
+            except (OSError, IOError):
+                # Expected: file closed during shutdown
                 pass
 
     def open(self) -> bool:
@@ -127,7 +129,13 @@ class RegionReader:
         # Get current Windows session ID for diagnostics
         try:
             import subprocess
-            session_result = subprocess.run(['query', 'session'], capture_output=True, text=True, timeout=1)
+            session_result = subprocess.run(
+                ['query', 'session'],
+                capture_output=True,
+                text=True,
+                timeout=1,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
             current_session = session_result.stdout
             self._log(f"[TELEMETRY] Current Windows sessions:\n{current_session}")
         except Exception as e:
@@ -234,6 +242,7 @@ class TelemetryCapture:
         hz: float = 20.0,
         output_dir: Optional[str] = None,
         debug_logs: bool = False,
+        session_manager: Optional[SharedSessionManager] = None,
     ):
         # ``debug_logs`` gates three on-disk artefacts that are only useful
         # for reverse-engineering / capture-loop debugging:
@@ -260,9 +269,9 @@ class TelemetryCapture:
         self._all_disconnected_since: Optional[float] = None
         self._output_prefix: Optional[str] = None
         self._idle_since: Optional[float] = None
-        self._lap_boundaries: List[Tuple[int, Optional[float]]] = []  # (frame_idx, lap_time_ms)
-        self._lap_fuel_used: List[Optional[float]] = []  # Fuel consumed per lap (same index as boundaries)
+        self._lap_boundaries: List[Tuple[int, Optional[float], Optional[int]]] = []  # (frame_idx, lap_time_ms, lap_number)
         self._diag_file: Optional[TextIO] = None
+        self._session_manager = session_manager or SharedSessionManager()
 
     def is_capturing(self) -> bool:
         """Check if currently capturing."""
@@ -288,48 +297,30 @@ class TelemetryCapture:
         """Get number of captured frames."""
         return len(self._frames)
 
-    def record_lap_boundary(self, lap_time_ms: Optional[float] = None) -> Optional[float]:
-        """Record the current frame index as a lap boundary and calculate fuel used.
+    def record_lap_boundary(
+        self,
+        lap_time_ms: Optional[float] = None,
+        lap_number: Optional[int] = None,
+    ) -> None:
+        """Record the current frame index as a lap boundary.
 
         Called by the app when the game reports a lap completion so the
         analyzer can use authoritative lap boundaries instead of guessing
-        from normalizedCarPosition.
+        from normalizedCarPosition.  Fuel is owned exclusively by the log
+        parser (which has spike detection); telemetry capture does not
+        duplicate that calculation.
 
         Args:
             lap_time_ms: The lap time in milliseconds from the game log
-            
-        Returns:
-            Fuel consumed during this lap (liters), or None if unavailable
+            lap_number: The game-reported completed lap number
         """
         frame_idx = max(0, len(self._frames) - 1)
-        
-        # Calculate fuel consumption for this lap
-        fuel_used = None
-        if len(self._frames) > 0 and len(self._lap_boundaries) > 0:
-            # Get previous lap boundary frame index
-            prev_frame_idx = self._lap_boundaries[-1][0]
-            
-            # Get fuel at start and end of lap
-            if prev_frame_idx < len(self._frames) and frame_idx < len(self._frames):
-                start_frame = self._frames[prev_frame_idx]
-                end_frame = self._frames[frame_idx]
-                
-                fuel_start = start_frame.physics.get("fuel") if start_frame.physics else None
-                fuel_end = end_frame.physics.get("fuel") if end_frame.physics else None
-                
-                if fuel_start is not None and fuel_end is not None and fuel_start > fuel_end:
-                    fuel_used = round(fuel_start - fuel_end, 3)
-        
-        self._lap_boundaries.append((frame_idx, lap_time_ms))
-        self._lap_fuel_used.append(fuel_used)
-        
-        log_info(Component.TELEMETRY, "Lap boundary recorded", 
-                frame=frame_idx, lap_time_ms=lap_time_ms, fuel_used=fuel_used)
-        
-        return fuel_used
+        self._lap_boundaries.append((frame_idx, lap_time_ms, lap_number))
+        log_info(Component.TELEMETRY, "Lap boundary recorded",
+                 frame=frame_idx, lap_time_ms=lap_time_ms, lap_number=lap_number)
 
-    def get_lap_boundaries(self) -> List[Tuple[int, Optional[float]]]:
-        """Return the list of game-reported lap boundary (frame_idx, lap_time_ms)."""
+    def get_lap_boundaries(self) -> List[Tuple[int, Optional[float], Optional[int]]]:
+        """Return game-reported lap boundaries (frame_idx, lap_time_ms, lap_number)."""
         return self._lap_boundaries.copy()
 
     def save_raw_dump(self, output_path: str) -> bool:
@@ -358,10 +349,10 @@ class TelemetryCapture:
                     }
                     f.write(json.dumps(dump_entry) + "\n")
 
-            print(f"[TELEMETRY] Saved raw dump to {output_path} ({len(self._frames)} frames)")
+            log_debug(Component.TELEMETRY, "Saved raw dump", path=output_path, frames=len(self._frames))
             return True
         except Exception as e:
-            print(f"[TELEMETRY] Error saving raw dump: {e}")
+            log_exception(Component.TELEMETRY, "Error saving raw dump", e)
             return False
 
     def _build_compat_meta_record(self) -> Dict[str, Any]:
@@ -467,9 +458,9 @@ class TelemetryCapture:
             if reader.open():
                 readers[key] = reader
                 self._region_paths[key] = reader._path_used or ""
-                print(f"[TELEMETRY] Connected to {key} region: {region_name}")
+                log_debug(Component.TELEMETRY, "Connected to region", key=key, region=region_name)
             else:
-                print(f"[TELEMETRY] {key} region not found: {region_name}")
+                log_debug(Component.TELEMETRY, "Region not found", key=key, region=region_name)
         return readers
 
     def _reconnect_missing(self, readers: Dict[str, RegionReader]):
@@ -481,7 +472,7 @@ class TelemetryCapture:
             if reader.open():
                 readers[key] = reader
                 self._region_paths[key] = reader._path_used or ""
-                print(f"[TELEMETRY] Reconnected to {key} region: {region_name}")
+                log_debug(Component.TELEMETRY, "Reconnected to region", key=key, region=region_name)
 
     def _capture_frame(self, frame_num: int) -> Optional[FrameData]:
         """Capture a single frame from shared memory."""
@@ -504,11 +495,11 @@ class TelemetryCapture:
                 raw = reader.read_raw()
                 if len(raw) != reader.size:
                     # Incomplete read - might be corrupted
-                    print(f"[TELEMETRY] Incomplete read from {key}: got {len(raw)} bytes, expected {reader.size}")
+                    log_debug(Component.TELEMETRY, "Incomplete read", key=key, got=len(raw), expected=reader.size)
                     disconnected.append(key)
                     continue
             except Exception as e:
-                print(f"[TELEMETRY] Error reading {key}: {e}")
+                log_debug(Component.TELEMETRY, "Error reading region", key=key, error=str(e))
                 disconnected.append(key)
                 continue
 
@@ -523,7 +514,7 @@ class TelemetryCapture:
                 elif key == "static":
                     frame["static"] = decode_static(raw)
             except Exception as e:
-                print(f"[TELEMETRY] Error decoding {key}: {e}")
+                log_debug(Component.TELEMETRY, "Error decoding region", key=key, error=str(e))
                 # Don't disconnect for decode errors - might be temporary corruption
                 frame[key] = {"error": str(e)}
 
@@ -538,7 +529,19 @@ class TelemetryCapture:
         if frame_num == 0:
             data = frame.get("physics", {})
             if data and not data.get("error"):
-                print(f"[TELEMETRY] First frame data: physics region valid")
+                log_debug(Component.TELEMETRY, "First frame data: physics region valid")
+
+        graphics_data = frame.get("graphics") or {}
+        if isinstance(graphics_data, dict) and not graphics_data.get("error"):
+            self._session_manager.update_from_graphics_shm(graphics_data)
+
+        static_data = frame.get("static") or {}
+        if isinstance(static_data, dict) and not static_data.get("error"):
+            self._session_manager.update_from_static_shm(static_data)
+
+        physics_data = frame.get("physics") or {}
+        if isinstance(physics_data, dict) and not physics_data.get("error"):
+            self._session_manager.update_from_physics_shm(physics_data)
         
         return FrameData(**frame)
 
@@ -560,9 +563,9 @@ class TelemetryCapture:
                 os.makedirs(self._output_dir, exist_ok=True)
                 diag_path = os.path.join(self._output_dir, f"telemetry_diagnostics_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
                 self._diag_file = open(diag_path, "w", encoding="utf-8")
-                print(f"[TELEMETRY] Diagnostic log: {diag_path}")
+                log_info(Component.TELEMETRY, "Diagnostic log opened", path=diag_path)
             except Exception as e:
-                print(f"[TELEMETRY] Could not open diagnostic log: {e}")
+                log_error(Component.TELEMETRY, "Could not open diagnostic log", error=str(e))
         else:
             self._diag_file = None
         
@@ -578,7 +581,6 @@ class TelemetryCapture:
         self._running = True
         self._frames = []
         self._lap_boundaries = []
-        self._lap_fuel_used = []
         self._metadata = None
         self._session_start_time = datetime.now(timezone.utc)
         self._output_prefix = self._make_output_prefix()
@@ -598,7 +600,7 @@ class TelemetryCapture:
             e = task.exception()
             if e is not None:
                 import traceback
-                print(f"[TELEMETRY] TASK EXCEPTION: {e}")
+                log_error(Component.TELEMETRY, "Capture task exception", error=str(e))
                 traceback.print_exception(type(e), e, e.__traceback__)
                 self._stop_reason = f"task_exception: {e}"
                 self._running = False
@@ -612,9 +614,8 @@ class TelemetryCapture:
         try:
             await self._capture_loop()
         except Exception as e:
-            import traceback
-            print(f"[TELEMETRY] UNHANDLED CAPTURE EXCEPTION: {e}")
-            traceback.print_exc()
+            log_error(Component.TELEMETRY, "Unhandled capture exception", error=str(e))
+            log_debug(Component.TELEMETRY, "Traceback", traceback=traceback.format_exc())
             self._stop_reason = f"unhandled_exception: {e}"
             self._running = False
             self._close_readers()
@@ -629,7 +630,7 @@ class TelemetryCapture:
                 raw_dump_path = os.path.join(self._output_dir, f"crash_dump_{prefix}.jsonl")
                 self.export_to_jsonl(compat_dump_path)
                 self.save_raw_dump(raw_dump_path)
-                print(f"[TELEMETRY] Emergency dump saved to {raw_dump_path}")
+                log_info(Component.TELEMETRY, "Emergency dump saved", path=raw_dump_path)
 
     async def _capture_loop(self):
         """Main capture loop with continuous retry for game startup."""
@@ -653,7 +654,7 @@ class TelemetryCapture:
 
                     # Log when we first connect to the game
                     if not had_readers and self._readers and not first_connection_logged:
-                        print(f"[TELEMETRY] Connected to game! Capturing {len(self._readers)} region(s)")
+                        log_info(Component.TELEMETRY, "Connected to game", regions=len(self._readers))
                         first_connection_logged = True
 
                         # Create metadata now that we have a connection
@@ -678,7 +679,7 @@ class TelemetryCapture:
                 if self._last_valid_frame_time is not None:
                     time_since_last_frame = now_mono - self._last_valid_frame_time
                     if time_since_last_frame > self.HEARTBEAT_TIMEOUT_SECONDS:
-                        print(f"[TELEMETRY] Heartbeat timeout: no valid data for {time_since_last_frame:.1f}s")
+                        log_warning(Component.TELEMETRY, "Heartbeat timeout", timeout=f"{time_since_last_frame:.1f}s")
                         self._stop_reason = f"heartbeat_timeout ({time_since_last_frame:.1f}s)"
                         self._running = False
                         break
@@ -690,7 +691,7 @@ class TelemetryCapture:
                         # All regions disconnected - check how long
                         if hasattr(self, '_all_disconnected_since'):
                             if now_mono - self._all_disconnected_since > self.DISCONNECT_TIMEOUT_SECONDS:
-                                print(f"[TELEMETRY] Disconnect timeout: all regions disconnected for {self.DISCONNECT_TIMEOUT_SECONDS:.1f}s")
+                                log_warning(Component.TELEMETRY, "Disconnect timeout", timeout=f"{self.DISCONNECT_TIMEOUT_SECONDS:.1f}s")
                                 self._stop_reason = f"disconnect_timeout ({self.DISCONNECT_TIMEOUT_SECONDS:.1f}s)"
                                 self._running = False
                                 break
@@ -699,9 +700,9 @@ class TelemetryCapture:
                     else:
                         self._all_disconnected_since = None
 
-                # Check if game process is still running
-                if not is_game_running():
-                    print("[TELEMETRY] Game process no longer running - stopping capture")
+                # Check if game process is still running (treat UNKNOWN as NOT_RUNNING for safety)
+                if is_game_running() != GameProcessStatus.RUNNING:
+                    log_warning(Component.TELEMETRY, "Game process no longer running or detection uncertain - stopping capture")
                     self._stop_reason = "game_not_running"
                     self._running = False
                     break
@@ -726,7 +727,7 @@ class TelemetryCapture:
                             if self._idle_since is None:
                                 self._idle_since = now_mono
                             elif now_mono - self._idle_since > self.IDLE_TIMEOUT_SECONDS:
-                                print(f"[TELEMETRY] Idle timeout: speed near 0 for {self.IDLE_TIMEOUT_SECONDS:.1f}s - likely exited race")
+                                log_warning(Component.TELEMETRY, "Idle timeout", timeout=f"{self.IDLE_TIMEOUT_SECONDS:.1f}s")
                                 self._stop_reason = f"idle_timeout ({self.IDLE_TIMEOUT_SECONDS:.1f}s)"
                                 self._running = False
                                 break
@@ -751,13 +752,13 @@ class TelemetryCapture:
                     next_deadline = time.perf_counter()
         except Exception as e:
             import traceback
-            print(f"[TELEMETRY] Capture loop error: {e}")
+            log_error(Component.TELEMETRY, "Capture loop error", error=str(e))
             traceback.print_exc()
             self._stop_reason = f"capture_error: {e}"
             self._running = False
 
         # Loop exited - perform cleanup
-        print(f"[TELEMETRY] Capture loop ended. Reason: {self._stop_reason or 'manual_stop'}")
+        log_info(Component.TELEMETRY, "Capture loop ended", reason=self._stop_reason or 'manual_stop')
         self._running = False
 
         self._close_readers()
@@ -787,7 +788,7 @@ class TelemetryCapture:
                 if asyncio.iscoroutine(result):
                     asyncio.create_task(result)
             except Exception as e:
-                print(f"[TELEMETRY] Error in stop callback: {e}")
+                log_error(Component.TELEMETRY, "Error in stop callback", error=str(e))
 
     async def stop_capture(self, reason: str = "manual") -> List[FrameData]:
         """Stop capturing and return captured frames.
@@ -810,7 +811,7 @@ class TelemetryCapture:
             try:
                 await asyncio.wait_for(self._task, timeout=1.0)
             except asyncio.TimeoutError:
-                print("[TELEMETRY] Capture loop task did not finish in time, cancelling...")
+                log_debug(Component.TELEMETRY, "Capture loop task did not finish in time, cancelling")
                 self._task.cancel()
                 try:
                     await self._task
@@ -852,10 +853,10 @@ class TelemetryCapture:
                     frame_dict = self._build_compat_frame_record(frame)
                     f.write(json.dumps(frame_dict) + "\n")
 
-            print(f"[TELEMETRY] Exported {len(self._frames)} frames to {path}")
+            log_debug(Component.TELEMETRY, "Exported frames", path=path, frames=len(self._frames))
             return True
         except Exception as e:
-            print(f"[TELEMETRY] Export failed: {e}")
+            log_error(Component.TELEMETRY, "Export failed", error=str(e))
             return False
 
     def clear(self):

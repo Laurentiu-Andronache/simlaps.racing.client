@@ -14,7 +14,8 @@ import os
 os.environ["APP_SECRET"] = "0000000000000000000000000000000000000000000000000000000000000000"
 
 from src.core.api_client import APIClient, SubmissionStatus, SubmissionResult
-from src.models import SessionData, LapData, LapState
+from src.core.security import GameProcessStatus
+from src.models import SessionData, LapData, LapState, SharedSessionManager
 
 
 class TestAPIClientInit:
@@ -95,7 +96,7 @@ class TestSubmitLap:
     @patch('httpx.AsyncClient.post')
     async def test_submit_lap_success(self, mock_post, mock_game_running, sample_session, sample_lap):
         """Test successful lap submission."""
-        mock_game_running.return_value = True
+        mock_game_running.return_value = GameProcessStatus.RUNNING
         mock_response = MagicMock()
         mock_response.status_code = 201
         mock_response.json.return_value = {"id": "lap-123", "status": "ok"}
@@ -106,12 +107,162 @@ class TestSubmitLap:
         
         assert result.status == SubmissionStatus.SUCCESS
         assert result.lap_id == "lap-123"
+
+    @pytest.mark.asyncio
+    @patch('src.core.api_client.is_game_running')
+    @patch('httpx.AsyncClient.post')
+    async def test_submit_lap_uses_shared_session_payload_data(
+        self,
+        mock_post,
+        mock_game_running,
+        sample_session,
+        sample_lap,
+    ):
+        """Shared session values should fill payload fields when lap/session data is missing."""
+        mock_game_running.return_value = GameProcessStatus.RUNNING
+        mock_response = MagicMock()
+        mock_response.status_code = 201
+        mock_response.json.return_value = {"id": "lap-456", "status": "ok"}
+        mock_post.return_value = mock_response
+
+        sample_session.track = "Unknown"
+        sample_session.car = "Unknown"
+        sample_session.game_version = "Unknown"
+        sample_session.session_type = "Unknown"
+        sample_session.player_id = None
+        sample_lap.sector1_ms = 0
+        sample_lap.sector2_ms = None
+        sample_lap.sector3_ms = -1
+        sample_lap.fuel_used = None
+
+        manager = SharedSessionManager()
+        manager.update_player_identification_from_logs(
+            {
+                "steam_id": "76561198000000001",
+                "car_model": "ferrari_296_gt3",
+            }
+        )
+        manager.update_session_metadata_from_static_shm(
+            {
+                "track": "monza",
+                "session": "RACE",
+                "ac_evo_version": "1.2.3",
+            }
+        )
+        manager.update_lap_timing_from_graphics_shm(sample_lap.lap_number, {"last_laptime_ms": 123456})
+        manager.update_sector_splits_from_logs(
+            sample_lap.lap_number,
+            {
+                "sector1_ms": 40000,
+                "sector2_ms": 41000,
+                "sector3_ms": 42456,
+            },
+        )
+        # fuel_consumed_lap is the correct per-lap fuel field; fuel_liter_per_km is a
+        # rate (L/km) and must never be submitted as fuelUsed.
+        manager.update_fuel_from_graphics_shm({
+            "fuel_liter_per_lap": 2.7,  # per-lap consumption
+            "fuel_liter_per_km": 0.04   # rate only
+        })
+
+        client = APIClient(session_manager=manager)
+        result = await client.submit_lap(sample_session, sample_lap)
+
+        assert result.status == SubmissionStatus.SUCCESS
+        payload = mock_post.call_args.kwargs["json"]
+        assert payload["userId"] == "76561198000000001"
+        assert payload["trackId"] == "monza"
+        assert payload["carId"] == "ferrari_296_gt3"
+        assert payload["time"] == 123456
+        assert payload["sessionType"] == "RACE"
+        assert payload["gameVersion"] == "1.2.3"
+        assert payload["sector1"] == 40000
+        assert payload["sector2"] == 41000
+        assert payload["sector3"] == 42456
+        # SHM fuel_consumed_lap should be submitted (authoritative source)
+        assert payload["fuelUsed"] == 2.7
+        # The per-km rate must NOT appear as fuelUsed
+        assert payload.get("fuelUsed") != 0.04
+
+    @pytest.mark.asyncio
+    @patch('src.core.api_client.is_game_running')
+    @patch('httpx.AsyncClient.post')
+    async def test_submit_lap_uses_logs_fuel_when_shm_fuel_none(
+        self,
+        mock_post,
+        mock_game_running,
+        sample_session,
+        sample_lap,
+    ):
+        """SHM fuel is authoritative, but logs fuel is used as fallback when SHM is None."""
+        mock_game_running.return_value = GameProcessStatus.RUNNING
+        mock_response = MagicMock()
+        mock_response.status_code = 201
+        mock_response.json.return_value = {"id": "test-lap-123"}
+        mock_post.return_value = mock_response
+
+        sample_session.track = "Unknown"
+        sample_session.car = "Unknown"
+        sample_session.game_version = "Unknown"
+        sample_session.session_type = "Unknown"
+        sample_session.player_id = None
+        sample_lap.sector1_ms = 0
+        sample_lap.sector2_ms = None
+        sample_lap.sector3_ms = -1
+        sample_lap.fuel_used = 3.5  # logs have fuel data
+
+        manager = SharedSessionManager()
+        manager.update_player_identification_from_logs(
+            {
+                "steam_id": "76561198000000001",
+                "car_model": "ferrari_296_gt3",
+            }
+        )
+        manager.update_session_metadata_from_static_shm(
+            {
+                "track": "monza",
+                "session": "RACE",
+                "ac_evo_version": "1.2.3",
+            }
+        )
+        manager.update_lap_timing_from_graphics_shm(sample_lap.lap_number, {"last_laptime_ms": 123456})
+        # SHM fuel not available (None)
+        manager.update_fuel_from_graphics_shm({
+            "fuel_liter_per_km": 0.04   # rate only, no per-lap data
+        })
+
+        client = APIClient(session_manager=manager)
+        result = await client.submit_lap(sample_session, sample_lap)
+
+        assert result.status == SubmissionStatus.SUCCESS
+        payload = mock_post.call_args.kwargs["json"]
+        # Logs fuel should be used as fallback when SHM fuel is None
+        assert payload["fuelUsed"] == 3.5
+
+    @pytest.mark.asyncio
+    @patch('src.core.api_client.is_game_running')
+    async def test_submit_lap_respects_shared_session_lap_validity(
+        self,
+        mock_game_running,
+        sample_session,
+        sample_lap,
+    ):
+        """Shared lap validity should block submission when marked invalid."""
+        mock_game_running.return_value = GameProcessStatus.RUNNING
+
+        manager = SharedSessionManager()
+        manager.update_lap_validity_from_graphics_shm(sample_lap.lap_number, True)
+
+        client = APIClient(session_manager=manager)
+        result = await client.submit_lap(sample_session, sample_lap, submit_invalid=False)
+
+        assert result.status == SubmissionStatus.INVALID_LAP
     
     @pytest.mark.asyncio
     @patch('src.core.api_client.is_game_running')
     async def test_submit_lap_game_not_running(self, mock_game_running, sample_session, sample_lap):
         """Test submission rejected when game not running."""
-        mock_game_running.return_value = False
+        mock_game_running.return_value = GameProcessStatus.NOT_RUNNING
         
         client = APIClient()
         result = await client.submit_lap(sample_session, sample_lap)
@@ -120,9 +271,21 @@ class TestSubmitLap:
     
     @pytest.mark.asyncio
     @patch('src.core.api_client.is_game_running')
+    async def test_submit_lap_game_detection_unknown(self, mock_game_running, sample_session, sample_lap):
+        """Test submission rejected when game detection is uncertain (fail-closed)."""
+        mock_game_running.return_value = GameProcessStatus.UNKNOWN
+        
+        client = APIClient()
+        result = await client.submit_lap(sample_session, sample_lap)
+        
+        assert result.status == SubmissionStatus.GAME_NOT_RUNNING
+        assert "Game must be running" in result.message
+    
+    @pytest.mark.asyncio
+    @patch('src.core.api_client.is_game_running')
     async def test_submit_lap_invalid_lap(self, mock_game_running, sample_session, sample_lap):
         """Test invalid lap rejection."""
-        mock_game_running.return_value = True
+        mock_game_running.return_value = GameProcessStatus.RUNNING
         sample_lap.is_valid = False
         
         client = APIClient()
@@ -134,7 +297,7 @@ class TestSubmitLap:
     @patch('src.core.api_client.is_game_running')
     async def test_submit_lap_no_user_id(self, mock_game_running, sample_session, sample_lap):
         """Test rejection when no user ID available."""
-        mock_game_running.return_value = True
+        mock_game_running.return_value = GameProcessStatus.RUNNING
         sample_session.player_id = None
         
         client = APIClient()
@@ -351,7 +514,7 @@ class TestSubmitLapErrorResponses:
     @patch('httpx.AsyncClient.post')
     async def test_submit_lap_401_error(self, mock_post, mock_game_running, sample_session, sample_lap):
         """Test 401 signature error handling."""
-        mock_game_running.return_value = True
+        mock_game_running.return_value = GameProcessStatus.RUNNING
         mock_response = MagicMock()
         mock_response.status_code = 401
         mock_response.content = b'{}'
@@ -368,7 +531,7 @@ class TestSubmitLapErrorResponses:
     @patch('httpx.AsyncClient.post')
     async def test_submit_lap_429_rate_limited(self, mock_post, mock_game_running, sample_session, sample_lap):
         """Test 429 rate limit handling."""
-        mock_game_running.return_value = True
+        mock_game_running.return_value = GameProcessStatus.RUNNING
         mock_response = MagicMock()
         mock_response.status_code = 429
         mock_post.return_value = mock_response
@@ -383,7 +546,7 @@ class TestSubmitLapErrorResponses:
     @patch('httpx.AsyncClient.post')
     async def test_submit_lap_500_error(self, mock_post, mock_game_running, sample_session, sample_lap):
         """Test 500 server error handling."""
-        mock_game_running.return_value = True
+        mock_game_running.return_value = GameProcessStatus.RUNNING
         mock_response = MagicMock()
         mock_response.status_code = 500
         mock_post.return_value = mock_response
@@ -399,7 +562,7 @@ class TestSubmitLapErrorResponses:
     async def test_submit_lap_network_error(self, mock_post, mock_game_running, sample_session, sample_lap):
         """Test network error handling."""
         import httpx
-        mock_game_running.return_value = True
+        mock_game_running.return_value = GameProcessStatus.RUNNING
         mock_post.side_effect = httpx.NetworkError("Connection failed")
         
         client = APIClient()
@@ -413,7 +576,7 @@ class TestSubmitLapErrorResponses:
     async def test_submit_lap_timeout(self, mock_post, mock_game_running, sample_session, sample_lap):
         """Test timeout handling."""
         import httpx
-        mock_game_running.return_value = True
+        mock_game_running.return_value = GameProcessStatus.RUNNING
         mock_post.side_effect = httpx.TimeoutException("Request timed out")
         
         client = APIClient()
@@ -425,7 +588,7 @@ class TestSubmitLapErrorResponses:
     @patch('src.core.api_client.is_game_running')
     async def test_submit_lap_invalid_time(self, mock_game_running, sample_session, sample_lap):
         """Test lap with invalid time (<= 0)."""
-        mock_game_running.return_value = True
+        mock_game_running.return_value = GameProcessStatus.RUNNING
         sample_lap.lap_time_ms = 0
         
         client = APIClient()
@@ -438,7 +601,7 @@ class TestSubmitLapErrorResponses:
     @patch('httpx.AsyncClient.post')
     async def test_submit_lap_with_fuel(self, mock_post, mock_game_running, sample_session, sample_lap):
         """Test lap submission with fuel data."""
-        mock_game_running.return_value = True
+        mock_game_running.return_value = GameProcessStatus.RUNNING
         sample_lap.fuel_used = 2.5
         
         mock_response = MagicMock()
@@ -456,7 +619,7 @@ class TestSubmitLapErrorResponses:
     @patch('httpx.AsyncClient.post')
     async def test_submit_lap_with_setup_notes(self, mock_post, mock_game_running, sample_session, sample_lap):
         """Test lap submission with setup notes."""
-        mock_game_running.return_value = True
+        mock_game_running.return_value = GameProcessStatus.RUNNING
         sample_session.setup_notes = "Test setup notes"
         
         mock_response = MagicMock()
@@ -474,7 +637,7 @@ class TestSubmitLapErrorResponses:
     @patch('httpx.AsyncClient.post')
     async def test_submit_lap_409_replay(self, mock_post, mock_game_running, sample_session, sample_lap):
         """Test 409 replay attack detection."""
-        mock_game_running.return_value = True
+        mock_game_running.return_value = GameProcessStatus.RUNNING
         mock_response = MagicMock()
         mock_response.status_code = 409
         mock_response.json.return_value = {"error": "Replay attack detected"}
@@ -490,7 +653,7 @@ class TestSubmitLapErrorResponses:
     @patch('httpx.AsyncClient.post')
     async def test_submit_lap_409_duplicate(self, mock_post, mock_game_running, sample_session, sample_lap):
         """Test 409 duplicate lap."""
-        mock_game_running.return_value = True
+        mock_game_running.return_value = GameProcessStatus.RUNNING
         mock_response = MagicMock()
         mock_response.status_code = 409
         mock_response.json.return_value = {"error": "Duplicate lap"}
@@ -507,7 +670,7 @@ class TestSubmitLapErrorResponses:
     @patch('httpx.AsyncClient.post')
     async def test_submit_lap_422_plausibility(self, mock_post, mock_game_running, sample_session, sample_lap):
         """Test 422 plausibility check failure."""
-        mock_game_running.return_value = True
+        mock_game_running.return_value = GameProcessStatus.RUNNING
         mock_response = MagicMock()
         mock_response.status_code = 422
         mock_response.json.return_value = {"error": "Impossible lap time"}
@@ -523,7 +686,7 @@ class TestSubmitLapErrorResponses:
     @patch('httpx.AsyncClient.post')
     async def test_submit_lap_400_validation(self, mock_post, mock_game_running, sample_session, sample_lap):
         """Test 400 validation error."""
-        mock_game_running.return_value = True
+        mock_game_running.return_value = GameProcessStatus.RUNNING
         mock_response = MagicMock()
         mock_response.status_code = 400
         mock_response.json.return_value = {"error": "Invalid track ID"}
@@ -540,7 +703,7 @@ class TestSubmitLapErrorResponses:
     @patch('httpx.AsyncClient.post')
     async def test_submit_lap_403_generic(self, mock_post, mock_game_running, sample_session, sample_lap):
         """Test generic 4xx error."""
-        mock_game_running.return_value = True
+        mock_game_running.return_value = GameProcessStatus.RUNNING
         mock_response = MagicMock()
         mock_response.status_code = 403
         mock_response.json.return_value = {"error": "Forbidden"}
@@ -558,7 +721,7 @@ class TestSubmitLapErrorResponses:
     @patch('httpx.AsyncClient.post')
     async def test_submit_lap_with_invalid_fuel(self, mock_post, mock_game_running, sample_session, sample_lap):
         """Test lap with invalid fuel value."""
-        mock_game_running.return_value = True
+        mock_game_running.return_value = GameProcessStatus.RUNNING
         sample_lap.fuel_used = "invalid"
         
         mock_response = MagicMock()
@@ -576,7 +739,7 @@ class TestSubmitLapErrorResponses:
     @patch('httpx.AsyncClient.post')
     async def test_submit_lap_with_zero_sectors(self, mock_post, mock_game_running, sample_session, sample_lap):
         """Test lap with zero sector times (should be filtered)."""
-        mock_game_running.return_value = True
+        mock_game_running.return_value = GameProcessStatus.RUNNING
         sample_lap.sector1_ms = 0
         sample_lap.sector2_ms = -1
         
@@ -594,7 +757,7 @@ class TestSubmitLapErrorResponses:
     @patch('src.core.api_client.is_game_running')
     async def test_submit_lap_runtime_error(self, mock_game_running, sample_session, sample_lap):
         """Test runtime error handling."""
-        mock_game_running.return_value = True
+        mock_game_running.return_value = GameProcessStatus.RUNNING
         
         client = APIClient()
         

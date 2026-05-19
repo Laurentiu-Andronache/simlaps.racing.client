@@ -21,6 +21,7 @@ from ..models import (
     StintData,
     LapData,
     SessionData,
+    SharedSessionManager,
     TyreState,
     LogContext,
     # Constants
@@ -35,10 +36,7 @@ from ..models import (
     PRACTICE_LIKE,
     RACE_LIKE,
 )
-from ..utils.debug_logger import DebugLogger
-
-# Global debug logger instance
-_debug = DebugLogger()
+from ..utils.structured_logger import log_debug, Component
 
 
 # ─── Callback type aliases ────────────────────────────────────────────────────
@@ -84,6 +82,7 @@ class LogParser:
         on_game_version: Optional[GameVersionCallback] = None,
         on_session_end: Optional[SessionEndCallback] = None,
         on_session_restart: Optional[SessionRestartCallback] = None,
+        session_manager: Optional[SharedSessionManager] = None,
     ) -> None:
         _path = Path(log_path) if log_path else self.DEFAULT_LOG_DIR
         if _path.is_dir() or (not _path.suffix and not _path.is_file()):
@@ -100,6 +99,11 @@ class LogParser:
         self.on_game_version = on_game_version
         self.on_session_end = on_session_end
         self.on_session_restart = on_session_restart
+        self._session_manager = session_manager or SharedSessionManager()
+        
+        # Track last emitted game status to prevent duplicate events
+        self._last_emitted_game_status: Optional[bool] = None
+        self._session_active_from_logs: bool = False
 
         self.sessions: list[SessionData] = []
         self.current_session: Optional[SessionData] = None
@@ -269,11 +273,49 @@ class LogParser:
             return None
         return line[1:end]
 
+    @staticmethod
+    def _normalize_car_uuid(car_uuid: Optional[str]) -> str:
+        return (car_uuid or "").replace("-", "").lower()
+
     def _is_player_car(self, car_uuid: str) -> bool:
+        normalized = self._normalize_car_uuid(car_uuid)
         return (
-            car_uuid == self.context.car_uuid
-            or car_uuid in self.context.player_car_uuids
+            normalized == self._normalize_car_uuid(self.context.car_uuid)
+            or normalized in {
+                self._normalize_car_uuid(uuid)
+                for uuid in self.context.player_car_uuids
+            }
         )
+
+    def _line_mentions_player_car(self, line: str) -> bool:
+        if not self.context.car_uuid and not self.context.player_car_uuids:
+            return False
+        normalized_line = self._normalize_car_uuid(line)
+        if self.context.car_uuid and self._normalize_car_uuid(self.context.car_uuid) in normalized_line:
+            return True
+        return any(
+            self._normalize_car_uuid(uuid) in normalized_line
+            for uuid in self.context.player_car_uuids
+        )
+
+    def _update_session_activity_from_line(self, line: str) -> None:
+        """Track whether the latest parsed log state still looks drivable."""
+        if "Game Started!" in line or "has started the race!" in line:
+            self._session_active_from_logs = True
+            return
+
+        if "request made GameModeRequestExit" in line:
+            self._session_active_from_logs = False
+            return
+
+        if "END_SESSION car" in line and self._line_mentions_player_car(line):
+            self._session_active_from_logs = False
+            return
+
+        if "onSetPlayerCurrentCarCommand: remove car" in line:
+            m = self._pats["remove_car"].search(line)
+            if m and self._is_player_car(m.group(1)):
+                self._session_active_from_logs = False
 
     def _is_steam_id(self, pid: str) -> bool:
         return len(pid) == 17 and pid.startswith("7656")
@@ -314,21 +356,22 @@ class LogParser:
                 f.write("\n".join(self.log_buffer))
             return True
         except (OSError, IOError) as exc:
-            _debug.log(f"[ERROR] export_logs_to_file: {exc}")
+            log_debug(Component.LOG_PARSER, f"[ERROR] export_logs_to_file: {exc}")
             return False
 
     # ── Async emitters ────────────────────────────────────────────────────────
 
     async def _emit_status(self, status: str) -> None:
-        _debug.log(f"[STATUS] {status}")
+        log_debug(Component.LOG_PARSER, f"[STATUS] {status}")
         if self.on_status_change:
             try:
                 await self.on_status_change(status)
             except (RuntimeError, asyncio.CancelledError) as exc:
-                _debug.log(f"[ERROR] on_status_change: {exc}")
+                log_debug(Component.LOG_PARSER, f"[ERROR] on_status_change: {exc}")
 
     async def _emit_lap(self, session: SessionData, lap: LapData) -> None:
-        _debug.log(
+        self._session_manager.update_lap_from_logs(lap, session_data=session)
+        log_debug(Component.LOG_PARSER, 
             f"[EMIT_LAP] #{lap.lap_number} {lap.lap_time_str} "
             f"state={lap.lap_state.value}"
         )
@@ -336,23 +379,57 @@ class LogParser:
             try:
                 await self.on_lap_complete(session, lap)
             except (RuntimeError, asyncio.CancelledError) as exc:
-                _debug.log(f"[ERROR] on_lap_complete: {exc}")
+                log_debug(Component.LOG_PARSER, f"[ERROR] on_lap_complete: {exc}")
 
-    async def _emit_game_status(self, is_running: bool) -> None:
-        _debug.log(f"[GAME_STATUS] is_running={is_running}")
+    def _sync_shared_session(self, session: Optional[SessionData]) -> None:
+        if session is None:
+            return
+        self._session_manager.update_from_logs(
+            SessionData(
+                session_id=session.session_id,
+                game_version=session.game_version,
+                session_type=session.session_type,
+                car=session.car,
+                track=session.track,
+                weather=session.weather,
+                player_name=session.player_name,
+                player_id=session.player_id,
+                car_uuid=session.car_uuid,
+                tyre_compound=session.tyre_compound,
+                initial_fuel=session.initial_fuel,
+                fuel_used_session=session.fuel_used_session,
+                fuel_reliable=session.fuel_reliable,
+                setup_notes=session.setup_notes,
+                start_time=session.start_time,
+                laps=[],
+                stints=[],
+            )
+        )
+
+    async def _emit_game_status(self, is_running: bool, trigger: str = "unknown") -> None:
+        """Emit game status change, logging if duplicate or state change."""
+        if self._last_emitted_game_status == is_running:
+            log_debug(Component.LOG_PARSER, f"[GAME_STATUS] DUPLICATE EVENT (ignored): is_running={is_running}, trigger={trigger}, last={self._last_emitted_game_status}")
+            print(f"[LOG_PARSER] Duplicate game status {is_running} from {trigger}, ignoring")
+            return
+        
+        log_debug(Component.LOG_PARSER, f"[GAME_STATUS] STATE CHANGE: is_running={is_running}, trigger={trigger}, last={self._last_emitted_game_status}")
+        print(f"[LOG_PARSER] Game status change: {is_running} (trigger: {trigger}, was: {self._last_emitted_game_status})")
+        self._last_emitted_game_status = is_running
+        
         if self.on_game_status_change:
             try:
                 await self.on_game_status_change(is_running)
             except (RuntimeError, asyncio.CancelledError) as exc:
-                _debug.log(f"[ERROR] on_game_status_change: {exc}")
+                log_debug(Component.LOG_PARSER, f"[ERROR] on_game_status_change: {exc}")
 
     async def _emit_session_end(self) -> None:
-        _debug.log("[SESSION_END] car removed from session")
+        log_debug(Component.LOG_PARSER, "[SESSION_END] car removed from session")
         if self.on_session_end:
             try:
                 await self.on_session_end()
             except (RuntimeError, asyncio.CancelledError) as exc:
-                _debug.log(f"[ERROR] on_session_end: {exc}")
+                log_debug(Component.LOG_PARSER, f"[ERROR] on_session_end: {exc}")
 
     async def _emit_session_restart(self) -> None:
         """Player clicked Restart Session in the pause menu.
@@ -361,10 +438,13 @@ class LogParser:
         line follows — so downstream consumers (e.g. telemetry capture) must
         be told explicitly to clear any in-flight buffer and start fresh.
         """
-        _debug.log("[SESSION_RESTART] user requested restart")
+        log_debug(Component.LOG_PARSER, "[SESSION_RESTART] user requested restart")
         # Reset parser-side per-session state so stale flags from the old run
         # (penalty, track-limit, sector splits, physics_lap_num, etc.) don't
         # leak into the first lap of the restarted session.
+        # Also reset the dedup guard so the upcoming game-status True event is
+        # not silently dropped (restart does not emit a fresh "Game Started!").
+        self._last_emitted_game_status = None
         self._reset_in_progress()
         if self.current_session:
             self._finalise_current_session()
@@ -372,17 +452,17 @@ class LogParser:
             try:
                 await self.on_session_restart()
             except (RuntimeError, asyncio.CancelledError) as exc:
-                _debug.log(f"[ERROR] on_session_restart: {exc}")
+                log_debug(Component.LOG_PARSER, f"[ERROR] on_session_restart: {exc}")
 
     async def _emit_user_detected(
         self, steam_id: str, player_name: Optional[str]
     ) -> None:
-        _debug.log(f"[USER] steam_id={steam_id} name={player_name}")
+        log_debug(Component.LOG_PARSER, f"[USER] steam_id={steam_id} name={player_name}")
         if self.on_user_detected:
             try:
                 await self.on_user_detected(steam_id, player_name)
             except (RuntimeError, asyncio.CancelledError) as exc:
-                _debug.log(f"[ERROR] on_user_detected: {exc}")
+                log_debug(Component.LOG_PARSER, f"[ERROR] on_user_detected: {exc}")
 
     # ── Stint management ──────────────────────────────────────────────────────
 
@@ -398,12 +478,12 @@ class LogParser:
                 tyre_compound=compound,
             )
             self.current_session.stints.append(self._current_stint)
-            _debug.log(f"[STINT] Stint 1 started on {compound}")
+            log_debug(Component.LOG_PARSER, f"[STINT] Stint 1 started on {compound}")
             return self._current_stint
 
         # Compound changed → new stint (tyre change at pit stop)
         if compound != self._current_stint.tyre_compound:
-            _debug.log(
+            log_debug(Component.LOG_PARSER, 
                 f"[STINT] Compound changed {self._current_stint.tyre_compound!r} "
                 f"→ {compound!r}: starting stint "
                 f"{self._current_stint.stint_number + 1}"
@@ -477,7 +557,7 @@ class LogParser:
             else:
                 self._start_new_session("UNKNOWN", line)
 
-            _debug.log(
+            log_debug(Component.LOG_PARSER, 
                 f"[CONNECT] pid={pid} car={car} uuid={car_uuid} "
                 f"hybrid={self.context.car_is_hybrid}"
             )
@@ -524,7 +604,7 @@ class LogParser:
                 car_uuid = parts[i + 1].strip()
                 if self._is_player_car(car_uuid):
                     self._last_car_uuid = car_uuid
-                    _debug.log(f"[CAR_TELEPORT] Player car detected: {car_uuid}")
+                    log_debug(Component.LOG_PARSER, f"[CAR_TELEPORT] Player car detected: {car_uuid}")
                 break
 
     def _handle_compound(self, line: str) -> None:
@@ -537,7 +617,7 @@ class LogParser:
                 compound_name = m.group(1).strip()  # Use full name directly
                 # Set all 4 tires to the same compound, replacing any existing values
                 self.context.tyre.set_all(compound_name)
-                _debug.log(
+                log_debug(Component.LOG_PARSER, 
                     f"[COMPOUND] All tires → {compound_name} "
                     f"(resolved: {self.context.tyre.compound_name})"
                 )
@@ -566,7 +646,7 @@ class LogParser:
 
         self.context.tyre.set(pos, compound_name)
 
-        _debug.log(
+        log_debug(Component.LOG_PARSER, 
             f"[COMPOUND] Tyre {pos} → {code} "
             f"(resolved: {self.context.tyre.compound_name})"
         )
@@ -579,7 +659,7 @@ class LogParser:
             if m and self._last_car_uuid and self._is_player_car(self._last_car_uuid):
                 compound_name = m.group(1).strip()
                 self.context.tyre.set_all(compound_name)
-                _debug.log(
+                log_debug(Component.LOG_PARSER, 
                     f"[COMPOUND] All tires -> {compound_name} "
                     f"(resolved: {self.context.tyre.compound_name})"
                 )
@@ -604,7 +684,7 @@ class LogParser:
                 and pos in self._pending_compound_updates
             ):
                 self._pending_compound_confirmed.add(pos)
-                _debug.log(f"[COMPOUND] Player-confirmed tyre {pos} at {line_ts}")
+                log_debug(Component.LOG_PARSER, f"[COMPOUND] Player-confirmed tyre {pos} at {line_ts}")
             return
 
         m = self._pats["set_compound_old"].search(line)
@@ -623,7 +703,7 @@ class LogParser:
 
         if not line_ts:
             self.context.tyre.set(pos, compound_name)
-            _debug.log(
+            log_debug(Component.LOG_PARSER, 
                 f"[COMPOUND] Tyre {pos} -> {code} "
                 f"(resolved: {self.context.tyre.compound_name})"
             )
@@ -631,7 +711,7 @@ class LogParser:
 
         self._pending_compound_ts = line_ts
         self._pending_compound_updates[pos] = compound_name
-        _debug.log(
+        log_debug(Component.LOG_PARSER, 
             f"[COMPOUND] Pending tyre {pos} -> {code} at {line_ts} "
             f"(positions={sorted(self._pending_compound_updates)})"
         )
@@ -654,7 +734,7 @@ class LogParser:
         if confirmed:
             for pos, compound in confirmed.items():
                 self.context.tyre.set(pos, compound)
-            _debug.log(
+            log_debug(Component.LOG_PARSER, 
                 f"[COMPOUND] Applied player-confirmed positions "
                 f"{sorted(confirmed)} -> {self.context.tyre.compound_name}"
             )
@@ -662,12 +742,12 @@ class LogParser:
             self.context.tyre.reset()
             for pos, compound in pending.items():
                 self.context.tyre.set(pos, compound)
-            _debug.log(
+            log_debug(Component.LOG_PARSER, 
                 f"[COMPOUND] Applied pre-lap full set at {self._pending_compound_ts} "
                 f"-> {self.context.tyre.compound_name}"
             )
         else:
-            _debug.log(
+            log_debug(Component.LOG_PARSER, 
                 f"[COMPOUND] Ignored unscoped batch at {self._pending_compound_ts} "
                 f"(positions={sorted(pending)} confirmed={sorted(self._pending_compound_confirmed)})"
             )
@@ -715,7 +795,7 @@ class LogParser:
         if self.current_session:
             self.current_session.setup_notes = self._serialize_setup_notes()
 
-        _debug.log(f"[SETUP] {key}={value!r}")
+        log_debug(Component.LOG_PARSER, f"[SETUP] {key}={value!r}")
 
     def _handle_session_start(self, line: str) -> bool:
         """Parse 'Game Started!' and initialise a fresh SessionData.
@@ -731,6 +811,7 @@ class LogParser:
 
         if self.current_session:
             self._finalise_current_session()
+        self._session_active_from_logs = True
 
         raw_type, raw_track_desc, raw_car, raw_weather = (
             m.group(1), m.group(2), m.group(3).strip(), m.group(4).strip()
@@ -767,12 +848,14 @@ class LogParser:
         # Apply any setup values that were captured before this session started
         if self.context.setup_values:
             self.current_session.setup_notes = self._serialize_setup_notes()
-            _debug.log(f"[SESSION] Applied {len(self.context.setup_values)} setup values to new session")
+            log_debug(Component.LOG_PARSER, f"[SESSION] Applied {len(self.context.setup_values)} setup values to new session")
         
         self._reset_in_progress()
         self._finalise_stints()
 
-        _debug.log(
+        self._sync_shared_session(self.current_session)
+
+        log_debug(Component.LOG_PARSER, 
             f"[SESSION] New: type={session_type} track={track} "
             f"car={raw_car} hybrid={self.context.car_is_hybrid}"
         )
@@ -787,7 +870,7 @@ class LogParser:
             m = self._pats["fuel_filled"].search(line)
             if m and self.current_session and self._is_player_car(m.group(1)):
                 self.current_session.initial_fuel = float(m.group(2))
-                _debug.log(f"[FUEL] Initial fill: {m.group(2)} L")
+                log_debug(Component.LOG_PARSER, f"[FUEL] Initial fill: {m.group(2)} L")
             return
 
         # ── Per-lap energy-source event ────────────────────────────────────────
@@ -807,7 +890,7 @@ class LogParser:
         # Negative delta = tank fill / init event (race start).
         if fuel_delta < 0:
             self.context.fuel_init_correction = abs(fuel_delta)
-            _debug.log(
+            log_debug(Component.LOG_PARSER, 
                 f"[FUEL] Init correction stored: {self.context.fuel_init_correction} L"
             )
             return
@@ -824,7 +907,7 @@ class LogParser:
         net_fuel = fuel_delta
         if self.context.fuel_init_correction > 0.0:
             net_fuel = max(0.0, fuel_delta - self.context.fuel_init_correction)
-            _debug.log(
+            log_debug(Component.LOG_PARSER, 
                 f"[FUEL] Init correction applied: raw={fuel_delta:.3f} → "
                 f"net={net_fuel:.3f} L"
             )
@@ -835,20 +918,20 @@ class LogParser:
         if net_fuel > HYBRID_FUEL_THRESHOLD_L:
             self.context.fuel_spike_count += 1
             self._ip.fuel_reliable = False
-            _debug.log(
+            log_debug(Component.LOG_PARSER, 
                 f"[FUEL] Spike #{self.context.fuel_spike_count}: {net_fuel:.2f} L "
                 f"(> {HYBRID_FUEL_THRESHOLD_L} L)"
             )
             # Poison the whole session only after enough repeated spikes.
             if self.context.fuel_spike_count >= HYBRID_SPIKE_SESSION_THRESHOLD:
                 self.current_session.fuel_reliable = False
-                _debug.log(
+                log_debug(Component.LOG_PARSER, 
                     "[FUEL] Session fuel marked unreliable "
                     f"({self.context.fuel_spike_count} spikes)"
                 )
 
         self._ip.fuel_used = net_fuel
-        _debug.log(
+        log_debug(Component.LOG_PARSER, 
             f"[FUEL] Lap fuel: {net_fuel:.3f} L  "
             f"dist: {lap_hundredm}×100 m  "
             f"reliable={self._ip.fuel_reliable}"
@@ -881,7 +964,7 @@ class LogParser:
             return
 
         if inside_dist > PIT_TELEPORT_DISTANCE_M:
-            _debug.log(
+            log_debug(Component.LOG_PARSER, 
                 f"[LIMITS] Pit-teleport artefact ignored "
                 f"(inside_dist={inside_dist} m)"
             )
@@ -890,14 +973,14 @@ class LogParser:
         # Brief momentary excursions with small inside_distance are tolerated
         # by the game and do not invalidate the lap.
         if inside_dist < TRACK_LIMIT_INVALIDATION_THRESHOLD_M:
-            _debug.log(
+            log_debug(Component.LOG_PARSER, 
                 f"[LIMITS] Brief excursion tolerated (inside_dist={inside_dist} m < "
                 f"{TRACK_LIMIT_INVALIDATION_THRESHOLD_M} m threshold)"
             )
             return
 
         self._ip.has_track_limit_violation = True
-        _debug.log(f"[LIMITS] Violation! inside_dist={inside_dist} m")
+        log_debug(Component.LOG_PARSER, f"[LIMITS] Violation! inside_dist={inside_dist} m")
 
     def _handle_splits_race(self, line: str) -> None:
         if "Split completed for car" not in line:
@@ -915,7 +998,7 @@ class LogParser:
             return
 
         self._ip.splits[split_idx] = time_ms
-        _debug.log(f"[SPLIT_RACE] S{split_idx + 1}: {time_ms} ms")
+        log_debug(Component.LOG_PARSER, f"[SPLIT_RACE] S{split_idx + 1}: {time_ms} ms")
 
     def _handle_splits_practice(self, line: str) -> None:
         if "On Split start" not in line:
@@ -932,7 +1015,7 @@ class LogParser:
 
         split_idx, split_ms = int(m.group(1)), int(m.group(2))
         self._ip.splits[split_idx] = split_ms
-        _debug.log(f"[SPLIT_PRACTICE] S{split_idx + 1}: {split_ms} ms")
+        log_debug(Component.LOG_PARSER, f"[SPLIT_PRACTICE] S{split_idx + 1}: {split_ms} ms")
 
     def _handle_split_end(self, line: str) -> None:
         if "On Split end with all splits" in line:
@@ -957,14 +1040,14 @@ class LogParser:
                 and self.current_session.session_type in PRACTICE_LIKE
             ):
                 self._ip.is_outlap = True
-                _debug.log("[OUTLAP] Outplap split detected")
+                log_debug(Component.LOG_PARSER, "[OUTLAP] Outplap split detected")
             else:
-                _debug.log(
+                log_debug(Component.LOG_PARSER, 
                     "[OUTLAP] Outplap split ignored in race-like session "
                     "(grid-countdown broadcast, not a player outlap marker)"
                 )
         elif "Couldn't create lap from opensplits" in line:
-            _debug.log("[OUTLAP] Couldn't create lap — resetting in-progress")
+            log_debug(Component.LOG_PARSER, "[OUTLAP] Couldn't create lap — resetting in-progress")
             self._reset_in_progress()
 
     def _handle_physics_lap(self, line: str) -> None:
@@ -977,12 +1060,12 @@ class LogParser:
     def _handle_penalty(self, line: str) -> None:
         if self._pats["penalty"].search(line):
             self._ip.has_penalty = True
-            _debug.log("[VALIDITY] Penalty detected")
+            log_debug(Component.LOG_PARSER, "[VALIDITY] Penalty detected")
 
     def _handle_unexpected_split(self, line: str) -> None:
         if "Unexpected On Split" in line:
             self._ip.has_unexpected_split = True
-            _debug.log("[VALIDITY] Unexpected On Split")
+            log_debug(Component.LOG_PARSER, "[VALIDITY] Unexpected On Split")
 
     # ── Lap state determination ───────────────────────────────────────────────
 
@@ -1011,14 +1094,14 @@ class LogParser:
         )
         if ip.is_outlap or is_practice_outlap:
             if is_practice_outlap and not ip.is_outlap:
-                _debug.log(
+                log_debug(Component.LOG_PARSER, 
                     "[VALIDITY] OUTLAP via physics_lap_num==1 fallback "
                     "(no Outplap split logged)"
                 )
             # Clear any track limit violations that occurred during the outlap.
             # Outlaps are not competitive timed laps, so violations don't count.
             if ip.has_track_limit_violation:
-                _debug.log(
+                log_debug(Component.LOG_PARSER, 
                     "[VALIDITY] Clearing track limit violation from OUTLAP "
                     "(outlap violations don't invalidate subsequent laps)"
                 )
@@ -1041,7 +1124,7 @@ class LogParser:
         # Keys must be contiguous from 0 (e.g. [0,1] or [0,1,2]) and we
         # require at least two sectors to avoid validating partial laps.
         if len(split_keys) < 2:
-            _debug.log(
+            log_debug(Component.LOG_PARSER, 
                 f"[VALIDITY] INVALID_SPLIT: keys={split_keys} "
                 "expected at least [0,1]"
             )
@@ -1049,7 +1132,7 @@ class LogParser:
 
         expected_keys = list(range(split_keys[-1] + 1))
         if split_keys != expected_keys:
-            _debug.log(
+            log_debug(Component.LOG_PARSER, 
                 f"[VALIDITY] INVALID_SPLIT: keys={split_keys} "
                 f"expected {expected_keys}"
             )
@@ -1064,18 +1147,18 @@ class LogParser:
                 session_type in PRACTICE_LIKE
                 and abs(sum(split_times) - lap_time_ms) <= SECTOR_SUM_TOLERANCE_MS
             ):
-                _debug.log(
+                log_debug(Component.LOG_PARSER, 
                     "[VALIDITY] split-end missing but sectors are "
                     "complete/consistent in practice-like mode"
                 )
             else:
-                _debug.log("[VALIDITY] INVALID_SPLIT: no split-end confirmation")
+                log_debug(Component.LOG_PARSER, "[VALIDITY] INVALID_SPLIT: no split-end confirmation")
                 return LapState.INVALID_SPLIT
 
         # ── 7. Sector consistency guard ────────────────────────────────────────
         sector_sum = sum(split_times)
         if abs(sector_sum - lap_time_ms) > SECTOR_SUM_TOLERANCE_MS:
-            _debug.log(
+            log_debug(Component.LOG_PARSER, 
                 f"[VALIDITY] INVALID_SECTORS: sum={sector_sum} "
                 f"lap={lap_time_ms} "
                 f"delta={abs(sector_sum - lap_time_ms)} ms"
@@ -1123,7 +1206,7 @@ class LogParser:
             if overshoot > SECTOR_SUM_TOLERANCE_MS:
                 s1_calc = lap_time_ms - s2 - s3
                 if s1_calc > 0:
-                    _debug.log(
+                    log_debug(Component.LOG_PARSER, 
                         f"[SECTORS] S1 corrupted (raw={s1} ms, "
                         f"sum={sector_sum} > lap={lap_time_ms} by {overshoot} ms)"
                         f" → back-calculated: {s1_calc} ms"
@@ -1132,7 +1215,7 @@ class LogParser:
                     if split_keys and split_keys[0] == 0:
                         split_times[0] = s1
                 else:
-                    _debug.log(
+                    log_debug(Component.LOG_PARSER, 
                         f"[SECTORS] S1 overshoot detected (raw={s1}, "
                         f"sum={sector_sum} > lap={lap_time_ms}) but "
                         f"back-calc non-positive ({s1_calc}); leaving as-is"
@@ -1196,7 +1279,7 @@ class LogParser:
             distance_hundredm=ip.distance_hundredm,
         )
 
-        _debug.log(
+        log_debug(Component.LOG_PARSER, 
             f"[LAP] #{lap_number} phys={physics_lap_number} "
             f"{time_str}  state={lap_state.value}  "
             f"compound={compound}  fuel={fuel_used}  "
@@ -1212,7 +1295,7 @@ class LogParser:
         self._pending_lap = completed_lap
         if prior_pending is not None:
             self.current_session.laps.append(prior_pending)
-            _debug.log(
+            log_debug(Component.LOG_PARSER, 
                 f"[LAP] flushed pending #{prior_pending.lap_number} via "
                 f"heuristic (no authoritative validity seen)"
             )
@@ -1258,6 +1341,9 @@ class LogParser:
             return None
 
         game_valid = m.group(2) == "true"
+        # The Relevant onSplit message carries the authoritative game lap number.
+        # Correct any physics-derived lap_number (which can be off-by-one) here.
+        pending.lap_number = int(m.group(3))
         prev_state = pending.lap_state
         prev_valid = pending.is_valid
 
@@ -1268,7 +1354,7 @@ class LogParser:
             pending.lap_state = LapState.PUSH
             pending.lap_type = LapState.PUSH.value
             pending.is_valid = True
-            _debug.log(
+            log_debug(Component.LOG_PARSER, 
                 f"[VALIDITY] Game says valid — upgrading "
                 f"#{pending.lap_number} {prev_state.value} → PUSH"
             )
@@ -1276,14 +1362,14 @@ class LogParser:
             pending.lap_state = LapState.INVALID_GAME
             pending.lap_type = LapState.INVALID_GAME.value
             pending.is_valid = False
-            _debug.log(
+            log_debug(Component.LOG_PARSER, 
                 f"[VALIDITY] Game says invalid — demoting "
                 f"#{pending.lap_number} PUSH → INVALID_GAME"
             )
 
         self.current_session.laps.append(pending)
         self._pending_lap = None
-        _debug.log(
+        log_debug(Component.LOG_PARSER, 
             f"[LAP] flushed pending #{pending.lap_number} via authoritative "
             f"flag (game_valid={game_valid})"
         )
@@ -1301,7 +1387,7 @@ class LogParser:
             return None
         self._pending_lap = None
         self.current_session.laps.append(pending)
-        _debug.log(
+        log_debug(Component.LOG_PARSER, 
             f"[LAP] flushed pending #{pending.lap_number} on session/EOF "
             f"(heuristic state)"
         )
@@ -1350,7 +1436,7 @@ class LogParser:
         )
 
         self.current_session.laps.append(aborted)
-        _debug.log(
+        log_debug(Component.LOG_PARSER, 
             f"[LAP] ABORTED #{lap_number}  sectors={sorted(ip.splits.keys())}  "
             f"dist={ip.distance_hundredm}"
         )
@@ -1375,7 +1461,8 @@ class LogParser:
         )
         self._reset_in_progress()
         self._finalise_stints()
-        _debug.log(f"[SESSION] Fallback session created: type={session_type}")
+        self._sync_shared_session(self.current_session)
+        log_debug(Component.LOG_PARSER, f"[SESSION] Fallback session created: type={session_type}")
 
     def _finalise_current_session(self) -> None:
         if not self.current_session:
@@ -1392,9 +1479,11 @@ class LogParser:
         # Emit aborted lap if the session ends mid-lap
         self._maybe_emit_aborted_lap()
         self._finalise_stints()
+        self._session_manager.update_from_logs(self.current_session)
         if self.current_session.laps:
             self.sessions.append(self.current_session)
         self.current_session = None
+        self._session_active_from_logs = False
         self._reset_in_progress()
 
     # ── Master line processor ─────────────────────────────────────────────────
@@ -1415,6 +1504,7 @@ class LogParser:
 
         self._add_to_log_buffer(line)
         self._last_activity_ts = time.time()
+        self._update_session_activity_from_line(line)
 
         # ── Metadata (order-independent, always evaluated) ────────────────────
         self._handle_version(line)
@@ -1432,7 +1522,7 @@ class LogParser:
 
         if "END_SESSION car" in line and self.context.car_uuid:
             if self.context.car_uuid in line:
-                _debug.log("[SESSION] END_SESSION for player car — finalising")
+                log_debug(Component.LOG_PARSER, "[SESSION] END_SESSION for player car — finalising")
 
         # ── Setup values (captured regardless of session state) ─────────────────
         self._handle_setup_group(line)
@@ -1490,8 +1580,8 @@ class LogParser:
         Reads existing content first to build context (historical laps are
         NOT emitted), then streams new lines as they arrive.
         """
-        _debug.start()
-        _debug.log(f"follow() starting — log path: {self.log_path}")
+        log_debug(Component.LOG_PARSER, "Debug logging initialized")
+        log_debug(Component.LOG_PARSER, f"follow() starting — log path: {self.log_path}")
         self._running = True
 
         while self._running:
@@ -1526,9 +1616,9 @@ class LogParser:
                         if lap:
                             historical_laps += 1
                     except (RuntimeError, ValueError, TypeError) as exc:
-                        _debug.log(f"[ERROR] Historical parse: {exc}")
+                        log_debug(Component.LOG_PARSER, f"[ERROR] Historical parse: {exc}")
 
-                _debug.log(
+                log_debug(Component.LOG_PARSER, 
                     f"Historical pass: {historical_laps} lap(s). "
                     f"Session: {self.current_session is not None}"
                 )
@@ -1538,7 +1628,7 @@ class LogParser:
                     self.current_session.laps.clear()
                     self.current_session.stints.clear()
                     self._finalise_stints()
-                    _debug.log(
+                    log_debug(Component.LOG_PARSER, 
                         f"Context: track={self.current_session.track} "
                         f"car={self.current_session.car}"
                     )
@@ -1552,6 +1642,8 @@ class LogParser:
                             self.current_session.player_id,
                             self.current_session.player_name,
                         )
+                    if self._session_active_from_logs:
+                        await self._emit_game_status(True, trigger="historical active session")
                 else:
                     await self._emit_status("Ready — waiting for session …")
 
@@ -1559,10 +1651,10 @@ class LogParser:
                     try:
                         await self.on_game_version(self.context.game_version)
                     except (RuntimeError, asyncio.CancelledError) as exc:
-                        _debug.log(f"[ERROR] on_game_version: {exc}")
+                        log_debug(Component.LOG_PARSER, f"[ERROR] on_game_version: {exc}")
 
                 # ── Live tail ──────────────────────────────────────────────────────
-                _debug.log("Entering live tail loop …")
+                log_debug(Component.LOG_PARSER, "Entering live tail loop …")
                 while self._running:
                     line_start_pos = fh.tell()
                     line = fh.readline()
@@ -1576,10 +1668,14 @@ class LogParser:
 
                     if line:
                         if "Game Started!" in line:
-                            await self._emit_game_status(True)
+                            await self._emit_game_status(True, trigger="Game Started!")
                         if "has started the race!" in line:
-                            if self.context.car_uuid and self.context.car_uuid in line:
-                                await self._emit_game_status(True)
+                            if self._line_mentions_player_car(line):
+                                await self._emit_game_status(True, trigger="has started the race!")
+                                # After session restart, car detection may not re-fire.
+                                # Ensure we have a session so lap completion callbacks work.
+                                if not self.current_session:
+                                    self._start_new_session("RACE", line)
                         # AC Evo: pause-menu "Restart Session" emits this line
                         # but does NOT emit a fresh "Game Started!", so we
                         # have to drive the buffer reset ourselves.
@@ -1588,25 +1684,22 @@ class LogParser:
                         # AC Evo: pause-menu "Exit to Menu" — different from
                         # restart, the user is leaving the session entirely.
                         elif "request made GameModeRequestExit" in line:
-                            await self._emit_game_status(False)
+                            await self._emit_game_status(False, trigger="GameModeRequestExit")
                         if "END_SESSION car" in line:
-                            if self.context.car_uuid and self.context.car_uuid in line:
-                                await self._emit_game_status(False)
-                            elif self.current_session is not None:
-                                # Fallback: on some attach/resume paths the player car UUID
-                                # may not match exactly at session end. If we have an active
-                                # session context, treat END_SESSION as session stop.
-                                await self._emit_game_status(False)
+                            if self._line_mentions_player_car(line):
+                                await self._emit_game_status(False, trigger="END_SESSION matched")
+                            else:
+                                log_debug(Component.LOG_PARSER, "[SESSION_END] ignoring END_SESSION for non-player car")
                         if "onSetPlayerCurrentCarCommand: remove car" in line:
                             m = self._pats["remove_car"].search(line)
                             if m and self._is_player_car(m.group(1)):
-                                _debug.log(f"[SESSION_END] remove car detected: {m.group(1)}")
+                                log_debug(Component.LOG_PARSER, f"[SESSION_END] remove car detected: {m.group(1)}")
                                 await self._emit_session_end()
 
                         try:
                             completed = self._process_line(line)
                         except (RuntimeError, ValueError, TypeError) as exc:
-                            _debug.log(f"[ERROR] Live process_line: {exc}")
+                            log_debug(Component.LOG_PARSER, f"[ERROR] Live process_line: {exc}")
                             continue
 
                         if completed:
@@ -1616,7 +1709,7 @@ class LogParser:
                             try:
                                 await self._emit_lap(session, completed)
                             except (RuntimeError, asyncio.CancelledError) as exc:
-                                _debug.log(f"[ERROR] emit_lap: {exc}")
+                                log_debug(Component.LOG_PARSER, f"[ERROR] emit_lap: {exc}")
                         continue
 
                     # No new data — check for a newer log file (new game session)
@@ -1624,7 +1717,7 @@ class LogParser:
                         _latest = self._find_latest_log(self._log_dir)
                         if _latest is not None and _latest != self.log_path:
                             self._flush_pending_compound_batch()
-                            _debug.log(f"[NEW_LOG] Switching to {_latest.name}")
+                            log_debug(Component.LOG_PARSER, f"[NEW_LOG] Switching to {_latest.name}")
                             self.context = LogContext()
                             self.current_session = None
                             self._emit_callbacks = True
@@ -1641,7 +1734,7 @@ class LogParser:
 
                     if current_size is not None and current_size < fh.tell():
                         self._flush_pending_compound_batch()
-                        _debug.log("[TRUNCATE] Log file reset — restarting context")
+                        log_debug(Component.LOG_PARSER, "[TRUNCATE] Log file reset — restarting context")
                         self.context = LogContext()
                         self.current_session = None
                         self._emit_callbacks = True
@@ -1653,8 +1746,7 @@ class LogParser:
             if not _restart:
                 break
 
-        _debug.log("follow() exiting")
-        _debug.close()
+        log_debug(Component.LOG_PARSER, "follow() exiting")
 
     def stop(self) -> None:
         self._running = False

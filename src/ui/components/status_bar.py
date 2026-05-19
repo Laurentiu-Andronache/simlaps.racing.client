@@ -29,7 +29,7 @@ class StatusBar(ft.Container):
             content=self._build_content(),
             padding=ft.padding.symmetric(horizontal=16, vertical=12),
             bgcolor="#1a1a2e",
-            border=ft.border.only(top=ft.BorderSide(1, "#2d2d4a")),
+            border=ft.Border.only(top=ft.BorderSide(1, "#2d2d4a")),
         )
     
     def _get_status_color(self) -> str:
@@ -116,19 +116,3 @@ class StatusBar(ft.Container):
         
         self.content = self._build_content()
         self.update()
-    
-    def set_connected(self, message: str = "Connected"):
-        """Set status to connected."""
-        self.set_status(ConnectionStatus.CONNECTED, message)
-    
-    def set_disconnected(self, message: str = "Not connected"):
-        """Set status to disconnected."""
-        self.set_status(ConnectionStatus.DISCONNECTED, message)
-    
-    def set_connecting(self, message: str = "Connecting..."):
-        """Set status to connecting."""
-        self.set_status(ConnectionStatus.CONNECTING, message)
-    
-    def set_error(self, message: str = "Error"):
-        """Set status to error."""
-        self.set_status(ConnectionStatus.ERROR, message)

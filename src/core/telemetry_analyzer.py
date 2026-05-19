@@ -15,14 +15,15 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from src.core.telemetry_capture import CaptureMetadata, FrameData
 from src.core.track_catalog import select_track_profile
+from src.models import SharedSessionManager
 from src.utils.structured_logger import log_debug, log_info, log_warning, log_error, log_exception, Component
 
 
 @dataclass
 class AnalysisResult:
     """Result of telemetry analysis."""
-    html_path: str
-    ai_prompt_path: str
+    html_path: Optional[str]
+    ai_prompt_path: Optional[str]
     laps_detected: int
     best_lap_time: float
     track_name: Optional[str]
@@ -104,7 +105,20 @@ def _fraction(points: List[Dict], predicate) -> float:
 # Quality-gate thresholds for the analyzer. Documented here so the single
 # source of truth lives next to the decision helper below.
 _AUTHORITATIVE_PROGRESS_THRESHOLD = 0.60
+_PLAUSIBLE_FRAME_THRESHOLD = 0.66
 _HIGH_PLAUSIBLE_FALLBACK = 0.95
+
+# Fixed lap_progress measurement window for corner segment times.
+# Anchored on the track-profile centre so every lap is measured over
+# the identical track section, eliminating line-dependent crossing jitter.
+#
+# Sanity check (5.8km track, 0.04 total progress window = 232m):
+#   90 km/h -> 9.3s  (~93 frames @ 10Hz)
+#   200 km/h -> 4.2s (~42 frames @ 10Hz)
+#   300 km/h -> 2.8s (~28 frames @ 10Hz)
+# All well above the 2-3s minimum needed for stable timing.
+_CORNER_MEASUREMENT_WINDOW_BEFORE = 0.015
+_CORNER_MEASUREMENT_WINDOW_AFTER = 0.025
 
 
 def _decide_analysis_mode(
@@ -119,7 +133,7 @@ def _decide_analysis_mode(
     dead-reckoning ``normalized_car_position``. That signal is still
     accurate enough for lap-over-lap coaching when physics frames are
     consistently plausible across the whole capture (>= 95% coverage with
-    ``frame_quality`` >= 0.67).
+    ``frame_quality`` >= 0.66).
 
     Returns ``(mode, has_authoritative, has_high_plausible)`` — the two
     booleans are exposed so callers can choose tailored status messages
@@ -141,6 +155,42 @@ def _confidence_label(score: float) -> str:
     if score >= 0.5:
         return "medium"
     return "low"
+
+
+def _median(values: List[float]) -> Optional[float]:
+    clean = sorted(v for v in values if isinstance(v, (int, float)) and math.isfinite(v))
+    if not clean:
+        return None
+    mid = len(clean) // 2
+    if len(clean) % 2:
+        return float(clean[mid])
+    return float((clean[mid - 1] + clean[mid]) / 2.0)
+
+
+def _profile_corner_sanity_notes(laps: List[Dict]) -> List[str]:
+    """Catch obviously shifted track-profile windows before coaching."""
+    by_name: Dict[str, List[float]] = defaultdict(list)
+    for lap in laps:
+        for corner in lap.get("corners", []):
+            name = (corner.get("name") or "").lower()
+            apex = corner.get("apex_speed")
+            if isinstance(apex, (int, float)) and math.isfinite(apex):
+                by_name[name].append(float(apex))
+
+    notes: List[str] = []
+    for name, speeds in by_name.items():
+        median_apex = _median(speeds)
+        if median_apex is None:
+            continue
+        if "rettifilo" in name and median_apex > 190:
+            notes.append(
+                f"Track profile sanity check failed: {name} median apex is {median_apex:.0f} km/h, which is too fast for the first chicane."
+            )
+        if "curva grande" in name and median_apex < 120:
+            notes.append(
+                f"Track profile sanity check failed: {name} median apex is {median_apex:.0f} km/h, which is too slow for Curva Grande."
+            )
+    return notes
 
 
 def _interpolate_value(left: Dict, right: Dict, field: str, ratio: float) -> Optional[float]:
@@ -305,6 +355,11 @@ def _detect_profiled_corners_canonical(
                 entry_idx = idx
                 break
 
+        # Ensure entry is distinct from apex — if they collided, back
+        # entry up to the window start so we get a real speed delta.
+        if entry_idx >= apex_idx and apex_idx > 0:
+            entry_idx = 0
+
         exit_idx = len(window) - 1
         for idx in range(apex_idx + 1, len(window)):
             gas = _optional_float(window[idx].get("gas_percent", window[idx].get("gas"))) or 0.0
@@ -313,6 +368,9 @@ def _detect_profiled_corners_canonical(
                 break
 
         if exit_idx <= apex_idx:
+            exit_idx = min(len(window) - 1, apex_idx + 1)
+        # Ensure exit is distinct from apex
+        if exit_idx == apex_idx and exit_idx < len(window) - 1:
             exit_idx = min(len(window) - 1, apex_idx + 1)
 
         entry = window[entry_idx]
@@ -325,6 +383,22 @@ def _detect_profiled_corners_canonical(
             + (0.4 if authoritative_progress else 0.1),
             3,
         )
+
+        # Measure segment time over a fixed lap_progress window so every lap
+        # is evaluated on the identical track section.
+        m_start, m_end = _corner_measurement_window(spec)
+        measurement = [
+            pt for pt in canonical_track
+            if m_start <= pt.get("lap_progress", -1.0) < m_end
+        ]
+        if len(measurement) >= 2:
+            segment_time_s = max(
+                0.0,
+                (_optional_float(measurement[-1].get("time_s")) or 0.0)
+                - (_optional_float(measurement[0].get("time_s")) or 0.0),
+            )
+        else:
+            segment_time_s = 0.0
 
         result.append({
             "id": spec["id"],
@@ -339,7 +413,7 @@ def _detect_profiled_corners_canonical(
             "apex_x": _optional_float(apex.get("x")) or 0.0,
             "apex_z": _optional_float(apex.get("z")) or 0.0,
             "lap_pos": apex.get("lap_progress", spec["start"]),
-            "segment_time_s": max(0.0, (_optional_float(exit_pt.get("time_s")) or 0.0) - (_optional_float(entry.get("time_s")) or 0.0)),
+            "segment_time_s": segment_time_s,
             "confidence": confidence,
             "confidence_label": _confidence_label(confidence),
             "entry_state": extract_car_state(entry),
@@ -381,7 +455,7 @@ def build_track(frames: List[FrameData], hz: float = 1.0, start_idx: int = 0) ->
             has_graphics = bool(gr)
             has_auth_progress = gr.get("has_authoritative_progress", False) if gr else False
             norm_pos = gr.get("normalized_car_position") if gr else None
-            print(f"[ANALYZER] Frame {i} graphics check: has_graphics={has_graphics}, has_auth_progress={has_auth_progress}, norm_pos={norm_pos}")
+            log_debug(Component.ANALYZER, "Frame graphics check", frame=i, has_graphics=has_graphics, has_auth_progress=has_auth_progress, norm_pos=norm_pos)
 
         speed = _optional_float(ph.get("speed_kmh"))
         if speed is None:
@@ -409,7 +483,7 @@ def build_track(frames: List[FrameData], hz: float = 1.0, start_idx: int = 0) ->
             graphics_norm_pos = _optional_float(gr.get("normalized_car_position"))
             # Debug: Log graphics position on first frame
             if i == start_idx and graphics_norm_pos is not None:
-                print(f"[ANALYZER] First frame graphics normalized_position: {graphics_norm_pos}")
+                log_debug(Component.ANALYZER, "First frame graphics normalized_position", norm_pos=graphics_norm_pos)
 
         physics_norm_pos = _optional_float(
             ph.get("normalized_spline_position")
@@ -579,6 +653,14 @@ def build_track(frames: List[FrameData], hz: float = 1.0, start_idx: int = 0) ->
             "steering_percent": _optional_float(gr.get("steering_percent")),
             "turbo_boost": _optional_float(gr.get("turbo_boost")),
             "turbo_boost_perc": _optional_float(gr.get("turbo_boost_perc")),
+            # Electronics / aids from Graphics SHM SMEvoElectronics (None if buffer too small)
+            "tc_level": gr.get("electronics_tc_level"),
+            "abs_level": gr.get("electronics_abs_level"),
+            "engine_map_level": gr.get("electronics_engine_map"),
+            "diff_power_level": gr.get("electronics_diff_power"),
+            "diff_coast_level": gr.get("electronics_diff_coast"),
+            "electronics_perf_mode": gr.get("electronics_perf_mode"),
+            "electronics_pitlimiter_on": gr.get("electronics_pitlimiter_on"),
         })
     return track
 
@@ -660,14 +742,14 @@ def detect_laps(track: List[Dict], hz: float = 1.0, allow_position_fallback: boo
     """Detect lap boundaries."""
     norm_result = _detect_laps_by_norm_pos(track, hz=hz)
     if norm_result:
-        print("[ANALYZER] Lap detection: using normalized car position")
+        log_debug(Component.ANALYZER, "Lap detection: using normalized car position")
         return norm_result
 
     if not allow_position_fallback:
-        print("[ANALYZER] Lap detection: normalized progress unavailable")
+        log_debug(Component.ANALYZER, "Lap detection: normalized progress unavailable")
         return []
 
-    print("[ANALYZER] Lap detection: using dead-reckoning position")
+    log_debug(Component.ANALYZER, "Lap detection: using dead-reckoning position")
     return _detect_laps_by_position(track, hz=hz)
 
 
@@ -823,7 +905,7 @@ def detect_corners(track: List[Dict], lap_start_frame: int, lap_end_frame: int, 
     return result
 
 
-def detect_profiled_corners(track: List[Dict], lap_start_frame: int, lap_end_frame: int, profile: Dict[str, Any]) -> List[Dict]:
+def detect_profiled_corners(track: List[Dict], lap_start_frame: int, lap_end_frame: int, profile: Dict[str, Any], hz: float = 10.0) -> List[Dict]:
     """Detect corners using predefined track profile windows."""
     seg = [dict(pt) for pt in track if lap_start_frame <= pt["frame"] < lap_end_frame]
     if not seg:
@@ -843,6 +925,24 @@ def detect_profiled_corners(track: List[Dict], lap_start_frame: int, lap_end_fra
         apex = min(window, key=lambda pt: pt["speed"])
         entry = window[0]
         exit_pt = window[-1]
+
+        # Measure segment time over a fixed lap_progress window so every lap
+        # is evaluated on the identical track section.
+        m_start, m_end = _corner_measurement_window(spec)
+        if has_norm_pos:
+            measurement = [pt for pt in seg if m_start <= pt["lap_pos"] < m_end]
+            if len(measurement) >= 2:
+                segment_time_s = (measurement[-1]["frame"] - measurement[0]["frame"]) / hz
+                confidence = 0.5
+            else:
+                segment_time_s = None
+                confidence = 0.3
+            confidence_label = _confidence_label(confidence)
+        else:
+            segment_time_s = None
+            confidence = 0.0
+            confidence_label = "low"
+
         result.append({
             "id": spec["id"],
             "name": spec["name"],
@@ -856,6 +956,9 @@ def detect_profiled_corners(track: List[Dict], lap_start_frame: int, lap_end_fra
             "apex_x": apex["x"],
             "apex_z": apex["z"],
             "lap_pos": apex["lap_pos"],
+            "segment_time_s": segment_time_s,
+            "confidence": confidence,
+            "confidence_label": confidence_label,
             "entry_state": extract_car_state(entry),
             "apex_state": extract_car_state(apex),
             "exit_state": extract_car_state(exit_pt),
@@ -885,6 +988,15 @@ def match_corners(ref_corners: List[Dict], lap_corners: List[Dict], tol: float =
                 last_idx = i
         matched[ref_corner["id"]] = best
     return matched
+
+
+def _corner_measurement_window(spec: Dict[str, Any]) -> Tuple[float, float]:
+    """Return a fixed lap_progress range centred on the corner profile."""
+    center = (spec["start"] + spec["end"]) / 2.0
+    return (
+        center - _CORNER_MEASUREMENT_WINDOW_BEFORE,
+        center + _CORNER_MEASUREMENT_WINDOW_AFTER,
+    )
 
 
 def corner_segment_time(corner: Dict, hz: float) -> float:
@@ -1013,13 +1125,19 @@ def format_car_state(state: Optional[Dict]) -> str:
         f"Sus(F/R):{front_sus:.3f}/{rear_sus:.3f} "
         f"BrakeT(F/R):{front_bt:.0f}/{rear_bt:.0f} "
         f"TyreT:{avg_temp:.0f}C({temp_range}) "
-        f"P:{avg_pressure:.1f}"
+        f"P:{avg_pressure:.1f}psi"
         f"{brake_bias_str}{gear_str}{brake_torque_str}{drs_str}{precision_str}"
     )
 
 
 def balance_hint(state: Optional[Dict]) -> str:
-    """Rough balance hint (understeer/oversteer/neutral) from per-point telemetry."""
+    """Rough balance hint (understeer/oversteer/neutral) from per-point telemetry.
+
+    Derived from front-vs-rear wheel slip ratio, steering angle, and yaw rate:
+    - understeer: front slip > rear slip * 1.15 with meaningful steering but low yaw
+    - oversteer: rear slip > front slip * 1.15 with significant yaw rate
+    - neutral: neither condition met
+    """
     if not state:
         return "unknown"
     slips = [float(state.get(f"slip_{x}", 0) or 0) for x in ["fl", "fr", "rl", "rr"]]
@@ -1381,13 +1499,58 @@ def analyze_tyre_grip_degradation(laps: List[Dict]) -> Dict:
     }
 
 
+def analyze_electronics_per_lap(laps: List[Dict]) -> List[Dict]:
+    """Per-lap snapshot of electronic aid settings (TC, ABS, engine map, diff).
+
+    Uses the first track-point of each lap as the representative settings
+    snapshot and detects whether any key setting was changed by the final
+    track-point (mid-lap adjustment).
+    """
+    result: List[Dict] = []
+    for lap in laps:
+        track = lap.get("track") or []
+        if not track:
+            continue
+        first = track[0]
+        last = track[-1]
+
+        def _val(pt: Dict, key: str):
+            v = pt.get(key)
+            return int(v) if v is not None else None
+
+        def _changed(key: str) -> bool:
+            f = first.get(key)
+            ll = last.get(key)
+            return f is not None and ll is not None and f != ll
+
+        result.append({
+            "lap_num": lap["lap_num"],
+            "tc_level": _val(first, "tc_level"),
+            "abs_level": _val(first, "abs_level"),
+            "engine_map": _val(first, "engine_map_level"),
+            "diff_power": _val(first, "diff_power_level"),
+            "diff_coast": _val(first, "diff_coast_level"),
+            "perf_mode": _val(first, "electronics_perf_mode"),
+            "tc_changed": _changed("tc_level"),
+            "abs_changed": _changed("abs_level"),
+            "engine_map_changed": _changed("engine_map_level"),
+        })
+    return result
+
+
 
 class TelemetryAnalyzer:
     """Analyzes telemetry data and generates reports."""
 
-    def __init__(self, output_dir: str, track_catalog: dict = None):
+    def __init__(
+        self,
+        output_dir: str,
+        track_catalog: dict = None,
+        session_manager: Optional[SharedSessionManager] = None,
+    ):
         self._output_dir = output_dir
         self._track_catalog = track_catalog
+        self._session_manager = session_manager or SharedSessionManager()
 
     async def analyze(
         self,
@@ -1396,20 +1559,20 @@ class TelemetryAnalyzer:
         metadata: Optional[CaptureMetadata] = None,
         track_name: Optional[str] = None,
         output_prefix: Optional[str] = None,
-        game_lap_boundaries: Optional[List] = None,  # Can be List[int] or List[Tuple[int, Optional[float]]]
+        game_lap_boundaries: Optional[List] = None,  # Can be List[int] or List[Tuple[int, Optional[float], Optional[int]]]
     ) -> AnalysisResult:
         """Run full analysis pipeline and generate outputs."""
-        log_info(Component.ANALYZER, "Starting analysis", frames=len(frames), hz=hz, track=track_name)
+        log_info(Component.ANALYZER, "Starting analysis", frames=len(frames), hz=hz, track=track_name, prefix=output_prefix)
 
         if len(frames) < 20:
-            log_warning(Component.ANALYZER, "Analysis skipped: insufficient frames", frames=len(frames))
+            log_warning(Component.ANALYZER, "Analysis skipped: insufficient frames", frames=len(frames), prefix=output_prefix)
             return await self._generate_empty_result(output_prefix)
 
         track_key, track_profile = _select_track_profile_for_analysis(track_name)
         if track_profile:
-            print(f"[ANALYZER] Track profile: {track_profile['display_name']}")
+            log_info(Component.ANALYZER, "Track profile selected", profile=track_profile['display_name'])
         else:
-            print("[ANALYZER] Track profile: none - using auto corner detection")
+            log_debug(Component.ANALYZER, "Track profile: none - using auto corner detection")
 
         drive_start = 0
         for i, f in enumerate(frames):
@@ -1425,11 +1588,14 @@ class TelemetryAnalyzer:
 
         track = build_track(frames, hz=hz, start_idx=drive_start)
         if not track:
-            print("[ANALYZER] No plausible telemetry frames after quality filtering")
+            log_warning(Component.ANALYZER, "No plausible telemetry frames after quality filtering")
             return await self._generate_empty_result(output_prefix)
 
         authoritative_progress_ratio = _fraction(track, lambda pt: pt.get("has_authoritative_progress") and pt.get("norm_pos") is not None)
-        plausible_frame_ratio = _fraction(track, lambda pt: (pt.get("frame_quality") or 0.0) >= 0.67)
+        plausible_frame_ratio = _fraction(
+            track,
+            lambda pt: (pt.get("frame_quality") or 0.0) >= _PLAUSIBLE_FRAME_THRESHOLD,
+        )
         analysis_confidence_score = round(authoritative_progress_ratio * 0.7 + plausible_frame_ratio * 0.3, 3)
         analysis_confidence = _confidence_label(analysis_confidence_score)
 
@@ -1472,20 +1638,42 @@ class TelemetryAnalyzer:
         # 3rd: Telemetry-based detection (position crossing as fallback)
         lap_bounds = None
         lap_times_ms = None
+        lap_numbers = None
         prefer_game_lap_times = False
 
         # 1st priority: Game log boundaries (most definitive)
         if game_lap_boundaries and len(game_lap_boundaries) >= 1:
             # Extract frame indices and lap times from tuples
-            if isinstance(game_lap_boundaries[0], tuple):
+            if isinstance(game_lap_boundaries[0], (tuple, list)):
+                initial_completed_laps = 0
+                try:
+                    initial_completed_laps = int(track[0].get("completed_laps") or 0)
+                except (TypeError, ValueError):
+                    initial_completed_laps = 0
+
                 sorted_markers = sorted(
-                    ((int(b[0]), b[1]) for b in game_lap_boundaries),
+                    (
+                        (
+                            int(b[0]),
+                            b[1] if len(b) > 1 else None,
+                            int(b[2]) if len(b) > 2 and b[2] is not None else None,
+                        )
+                        for b in game_lap_boundaries
+                    ),
                     key=lambda item: item[0],
                 )
                 start_frame = track[0]["frame"] if track else 0
                 lap_bounds = [start_frame] + [marker[0] for marker in sorted_markers]
                 lap_times_ms = [marker[1] for marker in sorted_markers]
+                lap_numbers = [
+                    marker[2] if marker[2] is not None else initial_completed_laps + idx + 1
+                    for idx, marker in enumerate(sorted_markers)
+                ]
                 prefer_game_lap_times = True
+                if initial_completed_laps > 0 and (not lap_numbers or lap_numbers[0] > 1):
+                    analysis_notes.append(
+                        f"Capture started after {initial_completed_laps} completed game lap(s); earlier laps are omitted from telemetry."
+                    )
             else:
                 lap_bounds = game_lap_boundaries
             log_info(Component.ANALYZER, "Lap detection successful", method="authoritative game log boundaries", laps=len(lap_bounds))
@@ -1516,6 +1704,7 @@ class TelemetryAnalyzer:
         laps = []
         for i in range(len(lap_bounds) - 1):
             s, e = lap_bounds[i], lap_bounds[i + 1]
+            game_lap_num = lap_numbers[i] if lap_numbers and i < len(lap_numbers) else i + 1
             lap_track = [pt for pt in track if s <= pt["frame"] < e]
             if len(lap_track) < 20:
                 continue
@@ -1524,7 +1713,10 @@ class TelemetryAnalyzer:
                 lap_track,
                 lambda pt: pt.get("has_authoritative_progress") and pt.get("norm_pos") is not None,
             )
-            lap_plausible_ratio = _fraction(lap_track, lambda pt: (pt.get("frame_quality") or 0.0) >= 0.67)
+            lap_plausible_ratio = _fraction(
+                lap_track,
+                lambda pt: (pt.get("frame_quality") or 0.0) >= _PLAUSIBLE_FRAME_THRESHOLD,
+            )
             lap_quality_score = round(lap_progress_ratio * 0.7 + lap_plausible_ratio * 0.3, 3)
             canonical_lap = _build_canonical_lap(lap_track, lap_start_frame=s, hz=hz, bins=200)
             uses_canonical_progress = canonical_lap is not None
@@ -1538,7 +1730,7 @@ class TelemetryAnalyzer:
                 )
             elif track_profile and track_profile.get("corners"):
                 # Use profile-based corner detection even without canonical progress
-                corners = detect_profiled_corners(track, s, e, track_profile)
+                corners = detect_profiled_corners(track, s, e, track_profile, hz=hz)
             else:
                 corners = detect_corners(track, s, e, hz=hz)
 
@@ -1567,7 +1759,8 @@ class TelemetryAnalyzer:
                         fuel_used = round(fuel_start - fuel_end, 3)
             
             laps.append({
-                "lap_num": i + 1,
+                "lap_num": game_lap_num,
+                "capture_lap_index": i + 1,
                 "start_frame": s,
                 "end_frame": e,
                 "lap_time_s": lap_time,
@@ -1585,11 +1778,47 @@ class TelemetryAnalyzer:
                 "uses_canonical_progress": uses_canonical_progress,
             })
             fuel_str = f"  fuel {fuel_used:.3f}L" if fuel_used is not None else ""
-            print(f"[ANALYZER] Lap {i + 1}: {lap_time:.0f}s  max {max(pt['speed'] for pt in lap_track):.0f} km/h  {len(corners)} corners{fuel_str}")
+            log_debug(Component.ANALYZER, "Lap summary", lap_num=game_lap_num, lap_time=f"{lap_time:.0f}s", max_speed=f"{max(pt['speed'] for pt in lap_track):.0f} km/h", corners=len(corners), fuel=fuel_str)
 
         if not laps:
             log_warning(Component.ANALYZER, "Analysis complete: no valid laps found")
             return await self._generate_empty_result(output_prefix)
+
+        # Prefer authoritative lap data already merged into the shared session
+        # state (e.g. log parser + graphics SHM) when available.
+        shared_lap_times = self._session_manager.get_all_lap_times()
+        shared_lap_validity = self._session_manager.get_all_lap_validity()
+        if shared_lap_times and laps:
+            try:
+                max_shared_lap = max(int(k) for k in shared_lap_times.keys())
+                max_analyzed_lap = max(int(lap["lap_num"]) for lap in laps)
+                min_analyzed_lap = min(int(lap["lap_num"]) for lap in laps)
+                if min_analyzed_lap > 1:
+                    analysis_notes.append(
+                        f"Telemetry starts at game lap {min_analyzed_lap}; earlier logged laps are not included."
+                    )
+                if max_shared_lap > max_analyzed_lap:
+                    analysis_mode = "diagnostic"
+                    analysis_notes.append(
+                        f"Log/shared session reaches lap {max_shared_lap}, but telemetry only reaches lap {max_analyzed_lap}; detailed coaching suppressed."
+                    )
+            except (TypeError, ValueError):
+                pass
+        for lap in laps:
+            shared_time_ms = shared_lap_times.get(lap["lap_num"])
+            if isinstance(shared_time_ms, (int, float)) and shared_time_ms > 0:
+                shared_lap_time_s = float(shared_time_ms) / 1000.0
+                lap["lap_time_s"] = shared_lap_time_s
+                lap["lap_time_str"] = f"{int(shared_lap_time_s // 60)}:{shared_lap_time_s % 60:05.2f}"
+
+            shared_validity = shared_lap_validity.get(lap["lap_num"])
+            if isinstance(shared_validity, bool):
+                lap["is_valid"] = shared_validity
+
+        profile_sanity_notes = _profile_corner_sanity_notes(laps)
+        if profile_sanity_notes:
+            analysis_mode = "diagnostic"
+            analysis_notes.extend(profile_sanity_notes)
 
         best_lap = min(laps, key=lambda lap: lap["lap_time_s"])
         laps_with_corners = [lap for lap in laps if lap.get("corners")]
@@ -1637,6 +1866,7 @@ class TelemetryAnalyzer:
             "config_key": track_profile["config_key"] if track_profile else None,
             "config_name": track_profile["config_name"] if track_profile else None,
             "track_label": track_profile["display_name"] if track_profile else track_name,
+            "car": self._session_manager.get_car(),
             "laps": laps,
             "best_lap_num": best_lap["lap_num"],
             "reference_lap_num": ref_lap["lap_num"],
@@ -1655,8 +1885,16 @@ class TelemetryAnalyzer:
             "plausible_frame_ratio": plausible_frame_ratio,
         }
 
+        telemetry_summary = {
+            "max_speed": max((lap.get("max_speed") or 0.0) for lap in laps),
+            "stint_number": 1,
+        }
+        self._session_manager.update_from_telemetry(telemetry_summary)
+
+        log_info(Component.ANALYZER, "Generating outputs", prefix=output_prefix)
         html_path = await self._generate_html(data, output_prefix)
         ai_prompt_path = await self._generate_ai_prompt(data, output_prefix)
+        log_info(Component.ANALYZER, "Outputs generated", html=html_path, ai_prompt=ai_prompt_path)
 
         return AnalysisResult(
             html_path=html_path,
@@ -1667,22 +1905,11 @@ class TelemetryAnalyzer:
         )
 
     async def _generate_empty_result(self, output_prefix: Optional[str] = None) -> AnalysisResult:
-        """Generate result for empty/invalid data."""
-        prefix = output_prefix or datetime.now().strftime("%m-%d-%H-%M-%S")
-        html_path = os.path.join(self._output_dir, f"telemetry_{prefix}.html")
-        ai_prompt_path = os.path.join(self._output_dir, f"telemetry_{prefix}_ai_prompt.txt")
-
-        os.makedirs(self._output_dir, exist_ok=True)
-
-        with open(html_path, "w", encoding="utf-8") as f:
-            f.write("<html><body><h1>No telemetry data</h1><p>Not enough data to analyze.</p></body></html>")
-
-        with open(ai_prompt_path, "w", encoding="utf-8") as f:
-            f.write("No telemetry data available for analysis.\n")
-
+        """Generate result for empty/invalid data without creating files."""
+        log_info(Component.ANALYZER, "Skipping output: insufficient or invalid telemetry data", prefix=output_prefix)
         return AnalysisResult(
-            html_path=html_path,
-            ai_prompt_path=ai_prompt_path,
+            html_path=None,
+            ai_prompt_path=None,
             laps_detected=0,
             best_lap_time=0.0,
             track_name=None,
@@ -1789,7 +2016,7 @@ class TelemetryAnalyzer:
         with open(html_path, "w", encoding="utf-8") as f:
             f.write(html_content)
 
-        print(f"[ANALYZER] Generated HTML report: {html_path}")
+        log_debug(Component.ANALYZER, "Generated HTML report", path=html_path)
         return html_path
 
     @staticmethod
@@ -1820,13 +2047,17 @@ class TelemetryAnalyzer:
   .stat { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px 16px; min-width: 130px; }
   .stat .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
   .stat .value { font-size: 22px; font-weight: 700; margin-top: 2px; }
+  .notice { display: none; border: 1px solid rgba(249,115,22,0.55); background: rgba(249,115,22,0.10); border-radius: 8px; padding: 12px 14px; margin-bottom: 16px; color: #fed7aa; line-height: 1.45; }
+  .notice strong { color: #ffedd5; }
+  .notice ul { margin: 8px 0 0 18px; }
   .lap-filters { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; align-items: center; }
   .lap-btn { background: var(--border); border: 1px solid transparent; border-radius: 6px; padding: 5px 13px; cursor: pointer; font-size: 12px; font-weight: 600; color: var(--muted); transition: all 0.15s; }
   .lap-btn.active { border-color: currentColor; color: var(--text); }
   .lap-btn:hover { background: #2a2d3a; }
   canvas { max-width: 100%; }
   .track-wrap { position: relative; }
-  #track-canvas { border-radius: 6px; }
+  #track-canvas { border-radius: 6px; cursor: crosshair; }
+  #map-tooltip { position: absolute; background: rgba(13,15,20,0.95); border: 1px solid #3a3d4a; color: #e0e2ea; padding: 4px 10px; border-radius: 5px; font-size: 12px; font-weight: 600; pointer-events: none; display: none; white-space: nowrap; z-index: 10; }
   .corner-table { width: 100%; border-collapse: collapse; font-size: 13px; }
   .corner-table th { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; }
   .corner-table td { padding: 6px 10px; border-bottom: 1px solid #1e2028; }
@@ -1850,6 +2081,7 @@ class TelemetryAnalyzer:
 <div class="container">
   <!-- Summary stats -->
   <div class="stat-row" id="stats-row"></div>
+  <div class="notice" id="analysis-notice"></div>
 
   <!-- Track map + speed chart -->
   <div class="grid-2">
@@ -1866,6 +2098,7 @@ class TelemetryAnalyzer:
       </div>
       <div class="track-wrap">
         <canvas id="track-canvas"></canvas>
+        <div id="map-tooltip"></div>
       </div>
       <div style="margin-top:8px; display:flex; gap:6px; align-items:center; font-size:11px; color:var(--muted)">
         <span>Low</span>
@@ -1981,6 +2214,18 @@ function renderStats() {
     { label: 'Corners / Lap', value: DATA.ref_corners.length },
   ];
   row.innerHTML = stats.map(s => `<div class="stat"><div class="label">${s.label}</div><div class="value">${s.value}</div></div>`).join('');
+  const notice = document.getElementById('analysis-notice');
+  const notes = DATA.analysis_notes || [];
+  if (notice && (DATA.analysis_mode !== 'full' || notes.length)) {
+    const escaped = notes.map(note => String(note).replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch])));
+    const title = DATA.analysis_mode !== 'full'
+      ? '<strong>Diagnostic mode:</strong> Detailed coaching is suppressed because this capture is not fully trustworthy.'
+      : '<strong>Analysis notes:</strong>';
+    notice.innerHTML = title + (escaped.length ? `<ul>${escaped.map(note => `<li>${note}</li>`).join('')}</ul>` : '');
+    notice.style.display = 'block';
+  } else if (notice) {
+    notice.style.display = 'none';
+  }
   const prefix = DATA.track_label || DATA.track_name || '';
   document.getElementById('session-info').textContent = `${prefix ? prefix + '  |  ' : ''}${DATA.laps.length} laps detected  -  best ${bestLap.lap_time_str}`;
 }
@@ -2016,11 +2261,14 @@ function drawTrackMap() {
     ctx.strokeStyle = mode === 'speed' ? speedColor(frac) : mode === 'brake' ? brakeColor(vals[i]) : gasColor(vals[i]);
     ctx.moveTo(cx(p0.x), cz(p0.z)); ctx.lineTo(cx(p1.x), cz(p1.z)); ctx.stroke();
   }
-  lap.corners.forEach(c => {
+  window._cornerHits = [];
+  lap.corners.forEach((c, idx) => {
     const p = pts.find(pt => pt.frame === c.apex_frame) || pts[0];
-    ctx.beginPath(); ctx.arc(cx(p.x), cz(p.z), 6, 0, Math.PI * 2); ctx.fillStyle = '#fff'; ctx.fill();
+    const px = cx(p.x), pz = cz(p.z);
+    ctx.beginPath(); ctx.arc(px, pz, 6, 0, Math.PI * 2); ctx.fillStyle = '#fff'; ctx.fill();
     ctx.fillStyle = '#000'; ctx.font = 'bold 9px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText(c.id, cx(p.x), cz(p.z));
+    ctx.fillText(idx + 1, px, pz);
+    window._cornerHits.push({ px, pz, num: idx + 1, name: c.name || null });
   });
   const start = pts[0];
   ctx.beginPath(); ctx.arc(cx(start.x), cz(start.z), 8, 0, Math.PI * 2); ctx.fillStyle = '#fff'; ctx.fill();
@@ -2205,6 +2453,24 @@ window.addEventListener('DOMContentLoaded', () => {
   makeLapFilters('inputs-lap-filters', rebuildAll);
   makeLapFilters('dynamics-lap-filters', rebuildAll);
   drawTrackMap(); buildSpeedChart(); buildCornerChart(); buildCornerTable(); buildInputsChart(); buildDynamicsChart();
+  const mapCanvas = document.getElementById('track-canvas');
+  const mapTip = document.getElementById('map-tooltip');
+  mapCanvas.addEventListener('mousemove', e => {
+    const rect = mapCanvas.getBoundingClientRect();
+    const scaleX = mapCanvas.width / rect.width, scaleY = mapCanvas.height / rect.height;
+    const mx = (e.clientX - rect.left) * scaleX, my = (e.clientY - rect.top) * scaleY;
+    const hits = window._cornerHits || [];
+    let found = null;
+    for (const h of hits) { if (Math.hypot(mx - h.px, my - h.pz) < 10) { found = h; break; } }
+    if (found) {
+      mapTip.textContent = found.name ? `C${found.num}: ${found.name}` : `Corner ${found.num}`;
+      const wrapRect = mapCanvas.parentElement.getBoundingClientRect();
+      mapTip.style.left = (e.clientX - wrapRect.left + 14) + 'px';
+      mapTip.style.top  = (e.clientY - wrapRect.top  - 10) + 'px';
+      mapTip.style.display = 'block';
+    } else { mapTip.style.display = 'none'; }
+  });
+  mapCanvas.addEventListener('mouseleave', () => { mapTip.style.display = 'none'; });
 });
 </script>
 </body>
@@ -2241,12 +2507,16 @@ window.addEventListener('DOMContentLoaded', () => {
         reference_lap = next((lap for lap in laps if lap["lap_num"] == reference_lap_num), best_lap)
         comparison_lap = next((lap for lap in laps if lap["lap_num"] == comparison_lap_num), best_lap)
 
+        # ── Car name from shared session data
+        car_model: str = data.get("car") or "Unknown Car"
+
         lines: List[str] = []
 
         if analysis_mode != "full" or not ref_corners:
             lines.append("Telemetry coaching is running in DIAGNOSTIC mode.")
             lines.append("")
             lines.append(f"Track: {track_label}")
+            lines.append(f"Car: {car_model}")
             lines.append(f"Laps available: {len(laps)}")
             lines.append(f"Analysis confidence: {analysis_confidence}")
             lines.append(f"Authoritative progress coverage: {authoritative_progress_ratio:.0%}")
@@ -2265,19 +2535,51 @@ window.addEventListener('DOMContentLoaded', () => {
                 f.write("\n".join(lines) + "\n")
             return ai_prompt_path
 
+        # ── Car name from shared session data
+        car_model: str = data.get("car") or "Unknown Car"
+        car_known = car_model != "Unknown Car"
+
         # ── Preamble / persona
-        lines.append(f"Expert race engineer: Analyze {track_label} Assetto Corsa Evo telemetry.")
-        lines.append("Provide concise, actionable coaching + setup recommendations based on the data.")
-        lines.append("Focus on: tire pressures, alignment, ARBs/springs, dampers, brake bias, aero.")
+        lines.append(
+            f"You are an expert Assetto Corsa Evo race engineer. "
+            f"Analyse telemetry for the {car_model} at {track_label}."
+        )
+        lines.append(
+            "Your entire response must be CONCISE. "
+            "Use bullet points. No padding, no repetition. "
+            "Every claim must reference a specific number from the telemetry data below."
+        )
+        if car_known:
+            lines.append(
+                f"If you have knowledge of the {car_model} setup parameters in AC Evo, "
+                f"use it. Otherwise limit setup advice to parameters confirmed by the telemetry "
+                f"signals (brake bias, tyre pressure, balance)."
+            )
+        else:
+            lines.append(
+                "Car identity was not captured from shared memory. "
+                "Do NOT guess the car or fabricate setup parameters. "
+                "Limit advice to driving technique and parameters visible in the data "
+                "(brake bias, tyre pressure, balance hints)."
+            )
         lines.append("")
 
         # ── Session context
         lines.append("SESSION CONTEXT:")
         lines.append(f"- Track:          {track_label}")
+        if car_known:
+            lines.append(f"- Car:            {car_model}")
+        else:
+            lines.append(f"- Car:            Unknown (not captured from SHM)")
         lines.append(f"- Analysis mode:  {analysis_mode}")
         lines.append(f"- Confidence:     {analysis_confidence}")
         lines.append(f"- Reference lap:  #{reference_lap_num}")
         lines.append(f"- Compare lap:    #{comparison_lap_num}")
+        if analysis_notes:
+            lines.append("")
+            lines.append("ANALYSIS NOTES:")
+            for note in analysis_notes:
+                lines.append(f"- {note}")
         lines.append("")
 
         # ── Session overview
@@ -2336,6 +2638,58 @@ window.addEventListener('DOMContentLoaded', () => {
             )
         lines.append("")
 
+        # ── Electronics / aids summary
+        elec_per_lap = analyze_electronics_per_lap(laps)
+        has_elec_data = any(
+            e["tc_level"] is not None or e["abs_level"] is not None
+            for e in elec_per_lap
+        )
+        if has_elec_data:
+            lines.append("CAR ELECTRONICS / AIDS (start-of-lap SHM snapshot):")
+            lines.append("(TC/ABS: 0=off, higher=more aggressive; EngMap=engine power mode;")
+            lines.append(" DiffP=differential lock % under power; DiffC=differential lock % on coast)")
+            lines.append("")
+            adjustments: List[str] = []
+            diff_looks_invalid = False
+            for e in elec_per_lap:
+                tc_str = str(e["tc_level"]) if e["tc_level"] is not None else "?"
+                abs_str = str(e["abs_level"]) if e["abs_level"] is not None else "?"
+                map_str = str(e["engine_map"]) if e["engine_map"] is not None else "?"
+                # Validate diff values: negative lock % is physically nonsensical
+                dp_raw = e["diff_power"]
+                dc_raw = e["diff_coast"]
+                if dp_raw is not None and dp_raw < 0:
+                    dp_str = "N/A"
+                    diff_looks_invalid = True
+                else:
+                    dp_str = str(dp_raw) if dp_raw is not None else "?"
+                if dc_raw is not None and dc_raw < 0:
+                    dc_str = "N/A"
+                    diff_looks_invalid = True
+                else:
+                    dc_str = str(dc_raw) if dc_raw is not None else "?"
+                lines.append(
+                    f"  Lap {e['lap_num']}: TC={tc_str}  ABS={abs_str}  "
+                    f"EngMap={map_str}  DiffP={dp_str}  DiffC={dc_str}"
+                )
+                changes: List[str] = []
+                if e["tc_changed"]:
+                    changes.append("TC")
+                if e["abs_changed"]:
+                    changes.append("ABS")
+                if e["engine_map_changed"]:
+                    changes.append("EngMap")
+                if changes:
+                    adjustments.append(f"Lap {e['lap_num']}: {', '.join(changes)} adjusted mid-lap")
+            if diff_looks_invalid:
+                lines.append("  >> Note: DiffP/DiffC values appear uninitialized (negative). Ignore diff setup advice.")
+            if adjustments:
+                lines.append("")
+                lines.append("  Mid-lap adjustments detected:")
+                for adj in adjustments:
+                    lines.append(f"  -> {adj}")
+            lines.append("")
+
         # ── Corner-by-corner analysis
         lap_corner_map: Dict[int, Dict[int, Dict]] = {
             lap["lap_num"]: {c["id"]: c for c in lap["corners"]}
@@ -2344,6 +2698,21 @@ window.addEventListener('DOMContentLoaded', () => {
 
         lines.append("CORNER-BY-CORNER ANALYSIS:")
         lines.append("(entry/apex/exit speeds in km/h; comparison model = reference lap vs comparison lap)")
+        # ── Confidence-contradiction note: when session says high but all corners are low,
+        # explain to the LLM that corner-level confidence is limited by sampling density.
+        _all_corner_labels = []
+        for spec in ref_corners:
+            cid = spec["id"]
+            rc = lap_corner_map.get(reference_lap_num, {}).get(cid)
+            cc = lap_corner_map.get(comparison_lap_num, {}).get(cid)
+            if rc:
+                _all_corner_labels.append(rc.get("confidence_label", "low"))
+            if cc:
+                _all_corner_labels.append(cc.get("confidence_label", "low"))
+        if analysis_confidence == "high" and _all_corner_labels and all(lbl == "low" for lbl in _all_corner_labels):
+            lines.append("NOTE: Session-level confidence is high (good progress/physics coverage) but")
+            lines.append("      per-corner confidence is low because the track-profile windows are small.")
+            lines.append("      Treat corner speed deltas as directional only, not exact comparisons.")
         lines.append("")
 
         for spec in ref_corners:
@@ -2415,7 +2784,15 @@ window.addEventListener('DOMContentLoaded', () => {
                 corner_segment_time(comparison_corner, hz) -
                 corner_segment_time(reference_corner, hz)
             )
-            lines.append(f"  Segment delta (compare - ref): {seg_delta:+.2f}s")
+            is_low_conf = (
+                reference_corner.get("confidence_label") == "low" or
+                comparison_corner.get("confidence_label") == "low"
+            )
+            if is_low_conf and abs(seg_delta) > 3.0:
+                lines.append(f"  Segment delta (compare - ref): {seg_delta:+.2f}s  >> SUSPECT")
+                lines.append("    (LOW-confidence corner with >3.0s delta — do not treat as actionable time loss)")
+            else:
+                lines.append(f"  Segment delta (compare - ref): {seg_delta:+.2f}s")
             lines.append(
                 f"  Confidence: ref={reference_corner.get('confidence_label', 'low')}  "
                 f"compare={comparison_corner.get('confidence_label', 'low')}"
@@ -2465,6 +2842,38 @@ window.addEventListener('DOMContentLoaded', () => {
         lines.append(" gas_on = seconds after apex; trail_brake% = % of entry-to-apex with brake applied;")
         lines.append(" coast = frames near apex with neither gas nor brake; peak_brake_g = peak decel G)")
         lines.append("")
+        # Compute coverage stats for brake_onset and gas_on so we can warn the LLM
+        _total_phase_rows = 0
+        _brake_onset_na_count = 0
+        _gas_on_zero_count = 0
+        for spec in ref_corners:
+            cid = spec["id"]
+            for lap in laps:
+                corner = lap_corner_map[lap["lap_num"]].get(cid)
+                if not corner:
+                    continue
+                phases = analyze_corner_phases(
+                    lap["track"], corner, lap["start_frame"], hz
+                )
+                if phases:
+                    _total_phase_rows += 1
+                    if phases["brake_onset_dt"] is None:
+                        _brake_onset_na_count += 1
+                    if phases["gas_on_dt"] == 0.0:
+                        _gas_on_zero_count += 1
+        if _total_phase_rows > 0:
+            _brake_na_pct = (_brake_onset_na_count / _total_phase_rows) * 100
+            _gas_zero_pct = (_gas_on_zero_count / _total_phase_rows) * 100
+            if _brake_na_pct > 50 or _gas_zero_pct > 50:
+                lines.append("DATA QUALITY NOTE:")
+                if _brake_na_pct > 50:
+                    lines.append(f"  brake_onset is N/A for {_brake_na_pct:.0f}% of corners — the approach zone may")
+                    lines.append("  not capture enough frames before entry, or braking threshold was not crossed.")
+                if _gas_zero_pct > 50:
+                    lines.append(f"  gas_on reports 0.00s for {_gas_zero_pct:.0f}% of corners — this usually means")
+                    lines.append("  the driver was already on throttle at the apex frame, not that pickup is instant.")
+                lines.append("  Treat these metrics as directional only, not absolute timing.")
+                lines.append("")
 
         for spec in ref_corners:
             cid = spec["id"]
@@ -2658,19 +3067,46 @@ window.addEventListener('DOMContentLoaded', () => {
                 lines.append(f"    >> {flag}")
             lines.append("")
 
-        # ── Time-loss ranking
+        # ── Time-loss ranking (cap implausible deltas that are capture artifacts)
+        _MAX_PLAUSIBLE_SEGMENT_DELTA = 10.0  # seconds; anything larger is almost certainly corrupt
+        _SUSPECT_SEGMENT_DELTA = 3.0  # seconds; LOW-confidence corners above this are suspect
         lines.append("TIME LOSS RANKING (worst -> best, by segment time delta):")
+        lines.append(
+            f"  (Deltas capped at ±{_MAX_PLAUSIBLE_SEGMENT_DELTA:.0f}s; "
+            f"LOW-confidence deltas > ±{_SUSPECT_SEGMENT_DELTA:.0f}s flagged as suspect.)"
+        )
         ranked = []
+        corrupt_corners: List[str] = []
+        suspect_corners: List[str] = []
         for spec in ref_corners:
             cid = spec["id"]
             ref_corner = lap_corner_map.get(reference_lap_num, {}).get(cid)
             cmp_corner = lap_corner_map.get(comparison_lap_num, {}).get(cid)
             if ref_corner and cmp_corner:
                 delta = corner_segment_time(cmp_corner, hz) - corner_segment_time(ref_corner, hz)
+                is_low_conf = (
+                    ref_corner.get("confidence_label") == "low" or
+                    cmp_corner.get("confidence_label") == "low"
+                )
+                if is_low_conf and abs(delta) > _SUSPECT_SEGMENT_DELTA:
+                    suspect_corners.append(spec.get("name") or f"Corner {cid}")
+                    delta = max(-_SUSPECT_SEGMENT_DELTA, min(_SUSPECT_SEGMENT_DELTA, delta))
+                elif abs(delta) > _MAX_PLAUSIBLE_SEGMENT_DELTA:
+                    corrupt_corners.append(spec.get("name") or f"Corner {cid}")
+                    delta = max(-_MAX_PLAUSIBLE_SEGMENT_DELTA, min(_MAX_PLAUSIBLE_SEGMENT_DELTA, delta))
                 ranked.append((delta, spec.get("name") or f"Corner {cid}", cid))
         ranked.sort(reverse=True)
         for delta, name, cid in ranked:
             lines.append(f"  {name:<30} {delta:+.2f}s")
+        if suspect_corners:
+            lines.append(
+                f"  >> NOTE: {', '.join(suspect_corners)} had suspect deltas "
+                f"(>±{_SUSPECT_SEGMENT_DELTA:.0f}s with LOW confidence)."
+            )
+            lines.append("     Do not recommend specific time gains for these corners — the data is unreliable.")
+        if corrupt_corners:
+            lines.append(f"  >> NOTE: {', '.join(corrupt_corners)} had implausible deltas and were capped.")
+            lines.append("     Do not recommend specific time gains for these corners — the data is unreliable.")
         lines.append("")
 
         # ── DRS/Aerodynamics analysis
@@ -2680,18 +3116,19 @@ window.addEventListener('DOMContentLoaded', () => {
         
         # Analyze DRS usage patterns
         drs_usage_per_lap = {}
-        for lap_num, lap in enumerate(laps, start=1):
+        for lap in laps:
+            lap_num = lap["lap_num"]
             lap_track = lap.get("track", [])
             drs_active_frames = 0
             drs_available_frames = 0
             total_frames = len(lap_track)
-            
+
             for pt in lap_track:
                 if pt.get("drs_enabled", False):
                     drs_active_frames += 1
                 if pt.get("drs_available", False):
                     drs_available_frames += 1
-            
+
             if drs_available_frames > 0:
                 drs_usage_pct = (drs_active_frames / drs_available_frames) * 100
                 drs_usage_per_lap[lap_num] = {
@@ -2699,7 +3136,7 @@ window.addEventListener('DOMContentLoaded', () => {
                     "available_frames": drs_available_frames,
                     "usage_pct": drs_usage_pct
                 }
-                
+
                 lines.append(f"  Lap {lap_num}: DRS used {drs_usage_pct:.1f}% of available time "
                            f"({drs_active_frames}/{drs_available_frames} frames)")
         
@@ -2727,34 +3164,39 @@ window.addEventListener('DOMContentLoaded', () => {
         ride_height_data = []
         pitch_data = []
         air_density_data = []
-        
-        for lap_num, lap in enumerate(laps, start=1):
+
+        for lap in laps:
+            lap_num = lap["lap_num"]
             lap_track = lap.get("track", [])
-            
-            # Collect ride height and pitch data
-            front_heights = [pt.get("ride_height_front", 0) for pt in lap_track if pt.get("ride_height_front", 0) > 0]
-            rear_heights = [pt.get("ride_height_rear", 0) for pt in lap_track if pt.get("ride_height_rear", 0) > 0]
+
+            # Collect ride height and pitch data (filter <1mm — likely uninitialized SHM in AC Evo EA)
+            front_heights = [pt.get("ride_height_front", 0) for pt in lap_track if pt.get("ride_height_front", 0) > 1.0]
+            rear_heights = [pt.get("ride_height_rear", 0) for pt in lap_track if pt.get("ride_height_rear", 0) > 1.0]
             pitch_values = [pt.get("pitch", 0) for pt in lap_track if pt.get("pitch", 0) != 0]
             air_densities = [pt.get("air_density", 0) for pt in lap_track if pt.get("air_density", 0) > 0]
-            
+
             if front_heights and rear_heights:
                 avg_front = sum(front_heights) / len(front_heights)
                 avg_rear = sum(rear_heights) / len(rear_heights)
                 ride_height_data.append((lap_num, avg_front, avg_rear, avg_rear - avg_front))
-                
-                lines.append(f"  Lap {lap_num}: Ride Height F={avg_front*1000:.1f}mm R={avg_rear*1000:.1f}mm "
-                           f"Rake={(avg_rear - avg_front)*1000:.1f}mm")
-            
+
+                lines.append(f"  Lap {lap_num}: Ride Height F={avg_front:.1f}mm R={avg_rear:.1f}mm "
+                           f"Rake={(avg_rear - avg_front):.1f}mm")
+
             if pitch_values:
                 avg_pitch = sum(pitch_values) / len(pitch_values)
                 pitch_deg = avg_pitch * (180.0 / math.pi)
-                pitch_data.append((lap_num, avg_pitch, pitch_deg))
-                
+                # Store pitch range along with avg for later sensitivity check
+                min_pitch = min(pitch_values)
+                max_pitch = max(pitch_values)
+                pitch_range = max_pitch - min_pitch
+                pitch_data.append((lap_num, avg_pitch, pitch_deg, pitch_range))
+
                 # Show pitch range (important for aero balance)
-                min_pitch = min(pitch_values) * (180.0 / math.pi)
-                max_pitch = max(pitch_values) * (180.0 / math.pi)
-                lines.append(f"    Pitch: avg={pitch_deg:+.2f}° range={min_pitch:+.2f}° to {max_pitch:+.2f}°")
-            
+                min_pitch_deg = min_pitch * (180.0 / math.pi)
+                max_pitch_deg = max_pitch * (180.0 / math.pi)
+                lines.append(f"    Pitch: avg={pitch_deg:+.2f}° range={min_pitch_deg:+.2f}° to {max_pitch_deg:+.2f}°")
+
             if air_densities:
                 avg_density = sum(air_densities) / len(air_densities)
                 air_density_data.append((lap_num, avg_density))
@@ -2770,25 +3212,24 @@ window.addEventListener('DOMContentLoaded', () => {
             avg_rake = sum(rakes) / len(rakes)
             rake_variance = max(rakes) - min(rakes)
             
-            if avg_rake < 0.010:  # Less than 10mm rake
-                lines.append(f"    >> LOW RAKE: {avg_rake*1000:.1f}mm average - consider increasing rear ride height "
+            if avg_rake < 10.0:  # Less than 10mm rake
+                lines.append(f"    >> LOW RAKE: {avg_rake:.1f}mm average - consider increasing rear ride height "
                            f"or lowering front for more rear downforce")
-            elif avg_rake > 0.050:  # More than 50mm rake
-                lines.append(f"    >> HIGH RAKE: {avg_rake*1000:.1f}mm average - may be excessive drag, "
+            elif avg_rake > 50.0:  # More than 50mm rake
+                lines.append(f"    >> HIGH RAKE: {avg_rake:.1f}mm average - may be excessive drag, "
                            f"consider reducing rake for better top speed")
             
-            if rake_variance > 0.015:  # More than 15mm variation
-                lines.append(f"    >> INCONSISTENT RAKE: varies by {rake_variance*1000:.1f}mm - "
+            if rake_variance > 15.0:  # More than 15mm variation
+                lines.append(f"    >> INCONSISTENT RAKE: varies by {rake_variance:.1f}mm - "
                            f"suspension compliance issue or inconsistent ride heights")
             
             # Check for pitch sensitivity
             if pitch_data:
-                pitch_ranges = [max(p[1] for p in pitch_data if p[0] == lap_num) - 
-                              min(p[1] for p in pitch_data if p[0] == lap_num) 
-                              for lap_num in set(p[0] for p in pitch_data)]
+                # pitch_data now stores (lap_num, avg_pitch, pitch_deg, pitch_range)
+                pitch_ranges = [p[3] for p in pitch_data]  # Use stored pitch_range
                 avg_pitch_range = sum(pitch_ranges) / len(pitch_ranges) if pitch_ranges else 0
                 avg_pitch_range_deg = avg_pitch_range * (180.0 / math.pi)
-                
+
                 if avg_pitch_range_deg > 2.0:  # More than 2 degrees pitch variation
                     lines.append(f"    >> HIGH PITCH SENSITIVITY: {avg_pitch_range_deg:.1f}° variation - "
                            f"consider stiffer springs or more aero balance")
@@ -2896,75 +3337,106 @@ window.addEventListener('DOMContentLoaded', () => {
                         lines.append(f"    Lap {ln}: {bias:.2f} ({bias*100:.0f}% front){bias_hint}")
                     lines.append("")
 
-        # ── Coaching request
+        # ── Coaching request (concise)
+        # ── Brake temperature extreme flag
+        _max_brake_temps: List[float] = []
+        for lap in laps:
+            for pt in lap.get("track", []):
+                for corner in ["fl", "fr", "rl", "rr"]:
+                    bt = pt.get(f"brake_temp_{corner}", 0)
+                    if isinstance(bt, (int, float)) and bt > 0:
+                        _max_brake_temps.append(bt)
+        if _max_brake_temps:
+            _peak_bt = max(_max_brake_temps)
+            if _peak_bt > 500:
+                lines.append("")
+                lines.append(f"BRAKE THERMAL WARNING: Peak brake temperature {_peak_bt:.0f}C detected.")
+                lines.append("  Consider shorter braking zones or adjusting brake bias to avoid fade.")
+
         lines.append("=" * 60)
-        lines.append("COACHING REQUEST:")
+        lines.append("RESPONSE FORMAT — FOLLOW EXACTLY. NO DEVIATION.")
         lines.append("")
-        lines.append("Using ALL telemetry data, provide concise, actionable coaching:")
+        lines.append("Output in clean Markdown. Use ## for section headers.")
+        lines.append("Use bullet points inside sections. Never use numbered lists inside bullets.")
+        lines.append("Every single bullet must contain at least one specific number from the data above.")
+        lines.append("No padding. No preamble. No 'Great question!' or 'Let me analyse...'")
+        lines.append("Do not repeat data the user already knows. Surface only conclusions.")
+        lines.append("Start your response directly with '## BMW M2 CS Racing — [Track Name] Debrief'")
         lines.append("")
-        lines.append("1. TIME LOSS PRIORITIES")
-        lines.append("   - Biggest time-loss corners and why")
-        lines.append("   - Use segment deltas and entry/exit speeds")
+        lines.append("---")
         lines.append("")
-        lines.append("2. BRAKING ANALYSIS")
-        lines.append("   - Brake timing: too early/late? Use brake_onset")
-        lines.append("   - Brake intensity: hard enough? Use peak_brake_g")
-        lines.append("   - Trail braking: effective? Use trail_brake% and combined_brake%")
-        lines.append("   - Brake bias vs ABS: check for lock tendency")
+        lines.append("## 1. TOP 3 TIME-LOSS CORNERS")
         lines.append("")
-        lines.append("3. TURN-IN & LINE")
-        lines.append("   - Turn-in timing: early/late? Use turn_in")
-        lines.append("   - Apex speed correlation with turn-in timing")
-        lines.append("   - Mid-corner corrections: wrong line? Use slip_angle")
+        lines.append("Exclude any corners flagged as corrupt/capped in the data above.")
+        lines.append("Format each corner EXACTLY like this:")
         lines.append("")
-        lines.append("4. THROTTLE APPLICATION")
-        lines.append("   - Throttle timing: gas_on after apex")
-        lines.append("   - Coasting: frames with no gas/brake")
-        lines.append("   - Traction limits: slip_ratio during acceleration")
+        lines.append("- **[Corner Name]** | [segment delta]s | [one sentence: what the data shows is causing the loss]")
         lines.append("")
-        lines.append("5. GRIP UTILIZATION")
-        lines.append("   - Underutilized grip: peak_g < session peak")
-        lines.append("   - Low grip fill: coasting/not loading tires")
-        lines.append("   - Friction circle: compare corner G usage")
-        lines.append("   - Combined grip: braking + turning simultaneously")
-        lines.append("   - Tire limits: Fx/Fy forces and slip patterns")
+        lines.append("Root cause must reference entry/apex/exit speed delta, braking delta, or trail brake % — not generic advice.")
         lines.append("")
-        lines.append("6. TYRE DEGRADATION")
-        lines.append("   - Peak_lat_g falling: grip loss - smoother inputs needed")
-        lines.append("   - Core temp rising: overheating - cooler driving")
-        lines.append("   - Slip_angle rising: sliding/mechanical wear")
-        lines.append("   - Wear rising: pace management for longer races")
+        lines.append("---")
         lines.append("")
-        lines.append("7. GEAR OPTIMIZATION")
-        lines.append("   - Optimal gears: gear_rpm_window ~1.0")
-        lines.append("   - Exit acceleration: better gear choices")
-        lines.append("   - Shifting points: optimal power delivery")
+        lines.append("## 2. DRIVING TECHNIQUE")
         lines.append("")
-        lines.append("8. AERODYNAMICS")
-        lines.append("   - Rake angle: optimal for track? Use ride height data")
-        lines.append("   - Pitch sensitivity: >2° = need stiffer setup")
-        lines.append("   - Ride height consistency: suspension compliance issues")
-        lines.append("   - Wing angles: adjust based on pitch balance/speed")
-        lines.append("   - Air density effects on downforce")
+        lines.append("5 bullets maximum. Each bullet covers exactly one issue.")
+        lines.append("Structure: [Corner name]: [what the data shows] → [what to do instead].")
+        lines.append("Cover at least: brake timing, trail braking, throttle pickup, turn-in consistency.")
+        lines.append("Cite the exact number that proves the issue (e.g. 'brake onset 0.70s later', 'trail brake 41% vs 31%', '+26.7 km/h entry speed delta').")
+        lines.append("Do NOT say 'consider' or 'try' — be direct.")
         lines.append("")
-        lines.append("9. CONSISTENCY DIAGNOSIS")
-        lines.append("   HIGH variation corners: reference-point vs confidence vs technique issue")
-        lines.append("   Use brake onset/turn-in timing variance to distinguish")
+        lines.append("---")
         lines.append("")
-        lines.append("10. BIGGEST IMPROVEMENT")
-        lines.append("   Single most impactful change with specific corner reference")
-        lines.append("   Example: 'at corner X, brake onset 0.3s earlier using 150m board'")
+        lines.append("## 3. CONSISTENCY")
         lines.append("")
-        lines.append("11. SETUP RECOMMENDATIONS")
-        lines.append("   Based on dynamics + balance hints (understeer/oversteer/neutral):")
-        lines.append("   - Tire pressures: hot targets/adjustment direction from temps")
-        lines.append("   - Alignment: camber/toe from slip angles and tire forces")
-        lines.append("   - ARBs/springs: front/rear balance from balance hints")
-        lines.append("   - Dampers: bump/rebound for entry/exit stability")
-        lines.append("   - Brake bias: from brake_torque distribution and ABS")
-        lines.append("   - Aerodynamics: ride height, rake, wing angles from pitch/aero data")
+        lines.append("3 bullets maximum.")
+        lines.append("Rank the 3 highest-variation corners by apex speed range (km/h).")
+        lines.append("For each: state the range, then diagnose whether the cause is a missing reference point (braking marker) or commitment variance (same entry, different apex).")
+        lines.append("Cite the specific apex speed range number.")
         lines.append("")
-        lines.append("Ground all recommendations in specific numbers above.")
+        lines.append("---")
+        lines.append("")
+        if car_known:
+            lines.append(f"## 4. CAR SETUP — {car_model}")
+            lines.append("")
+            lines.append("Output a Markdown table with exactly these columns:")
+            lines.append("| Parameter | Current indication from data | Suggested change | Reason |")
+            lines.append("| --- | --- | --- | --- |")
+            lines.append("")
+            lines.append("Rules:")
+            lines.append("- Only include rows where the telemetry data gives a CLEAR signal.")
+            lines.append("- 'Current indication' must quote an actual number from the data (e.g. '0.67 front bias', '26.9 psi avg', '-0.0mm rake').")
+            lines.append("- 'Suggested change' must be specific and directional (e.g. 'move to 0.64–0.65', 'reduce 0.3–0.5 psi', 'raise rear ride height').")
+            lines.append("- 'Reason' must reference a telemetry observation (e.g. 'understeer balance hint at Eau Rouge apex both laps', 'peak brake temp 687C').")
+            lines.append(f"- If you have car-specific knowledge of the {car_model} in AC Evo, apply it. Otherwise skip that parameter row.")
+            lines.append("- Cover: brake bias, tyre pressures, rake/aero, springs if signalled. Skip alignment unless load/slip data supports it.")
+            lines.append("- Do NOT fabricate setup parameters not evidenced in the data.")
+        else:
+            lines.append("## 4. CAR SETUP — SKIPPED")
+            lines.append("")
+            lines.append("Car identity unknown. Skip the setup table entirely. One line only: state data is insufficient.")
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+        lines.append(f"## 5. TRACK NOTES — {track_label}")
+        lines.append("")
+        lines.append("3 bullets maximum.")
+        lines.append("Each bullet must be a track-specific observation CONFIRMED by the data — not generic Spa knowledge.")
+        lines.append("Format: **[Corner/Section]:** [what the data shows] ([specific number]).")
+        lines.append("Example of the tone and specificity required:")
+        lines.append("  - **Blanchimont:** Both laps underutilise grip here — peak G only 0.77 vs session max 2.26, 1.50G headroom remaining. The car is capable of taking this flat.")
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+        lines.append("## 6. SINGLE BIGGEST GAIN")
+        lines.append("")
+        lines.append("Exactly one sentence. Must name: the specific corner + the specific input change + the expected time delta.")
+        lines.append("Example of required specificity:")
+        lines.append("  'Move the Pouhon 1 brake point 0.70s earlier (matching Lap 2 onset vs Lap 3) to recover the 9.3 km/h apex deficit, worth an estimated 0.5–0.8s.'")
+        lines.append("Do not hedge. Do not say 'this could' or 'potentially'.")
+        lines.append("")
+        lines.append("=" * 60)
+        lines.append("Every bullet must be grounded in a specific number from the telemetry above.")
+        lines.append("If a section genuinely has no actionable data, write one line saying so and move on.")
         lines.append("=" * 60)
 
         prompt = "\n".join(lines)
@@ -2972,5 +3444,5 @@ window.addEventListener('DOMContentLoaded', () => {
         with open(ai_prompt_path, "w", encoding="utf-8") as f:
             f.write(prompt)
 
-        print(f"[ANALYZER] Generated AI prompt: {ai_prompt_path} ({len(prompt):,} chars)")
+        log_debug(Component.ANALYZER, "Generated AI prompt", path=ai_prompt_path, chars=len(prompt))
         return ai_prompt_path
