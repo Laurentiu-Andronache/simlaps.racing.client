@@ -631,12 +631,6 @@ def build_track(frames: List[FrameData], hz: float = 1.0, start_idx: int = 0) ->
             "brake_bias": _optional_float(ph.get("brake_bias")),
             "engine_brake": ph.get("engine_brake", 0),
             "water_temp": _optional_float(ph.get("water_temp")),
-            # Aerodynamics data
-            "pitch": _optional_float(ph.get("pitch")),
-            "roll": _optional_float(ph.get("roll")),
-            "cg_height": _optional_float(ph.get("cg_height")),
-            "ride_height_front": _safe_4(ph.get("ride_height", []), default=0.0)[0] if len(_safe_4(ph.get("ride_height", []), default=0.0)) > 0 else 0.0,
-            "ride_height_rear": _safe_4(ph.get("ride_height", []), default=0.0)[1] if len(_safe_4(ph.get("ride_height", []), default=0.0)) > 1 else 0.0,
             "air_density": _optional_float(ph.get("air_density")),
             "air_temp": _optional_float(ph.get("air_temp")),
             "road_temp": _optional_float(ph.get("road_temp")),
@@ -661,6 +655,30 @@ def build_track(frames: List[FrameData], hz: float = 1.0, start_idx: int = 0) ->
             "diff_coast_level": gr.get("electronics_diff_coast"),
             "electronics_perf_mode": gr.get("electronics_perf_mode"),
             "electronics_pitlimiter_on": gr.get("electronics_pitlimiter_on"),
+            # Electronics limits (min/max) from Graphics SHM
+            "tc_level_min": gr.get("electronics_tc_level_min"),
+            "abs_level_min": gr.get("electronics_abs_level_min"),
+            "brake_bias_min": gr.get("electronics_brake_bias_min"),
+            "engine_map_min": gr.get("electronics_engine_map_min"),
+            "diff_power_min": gr.get("electronics_diff_power_min"),
+            "diff_coast_min": gr.get("electronics_diff_coast_min"),
+            "perf_mode_min": gr.get("electronics_perf_mode_min"),
+            "tc_level_max": gr.get("electronics_tc_level_max"),
+            "abs_level_max": gr.get("electronics_abs_level_max"),
+            "brake_bias_max": gr.get("electronics_brake_bias_max"),
+            "engine_map_max": gr.get("electronics_engine_map_max"),
+            "diff_power_max": gr.get("electronics_diff_power_max"),
+            "diff_coast_max": gr.get("electronics_diff_coast_max"),
+            "perf_mode_max": gr.get("electronics_perf_mode_max"),
+            # Electronics modifiable flags from Graphics SHM
+            "tc_level_modifiable": gr.get("electronics_tc_level_modifiable"),
+            "abs_level_modifiable": gr.get("electronics_abs_level_modifiable"),
+            "brake_bias_modifiable": gr.get("electronics_brake_bias_modifiable"),
+            "engine_map_modifiable": gr.get("electronics_engine_map_modifiable"),
+            "diff_power_modifiable": gr.get("electronics_diff_power_modifiable"),
+            "diff_coast_modifiable": gr.get("electronics_diff_coast_modifiable"),
+            "pitlimiter_modifiable": gr.get("electronics_pitlimiter_modifiable"),
+            "perf_mode_modifiable": gr.get("electronics_perf_mode_modifiable"),
         })
     return track
 
@@ -1504,7 +1522,7 @@ def analyze_electronics_per_lap(laps: List[Dict]) -> List[Dict]:
 
     Uses the first track-point of each lap as the representative settings
     snapshot and detects whether any key setting was changed by the final
-    track-point (mid-lap adjustment).
+    track-point (mid-lap adjustment). Also extracts limits and modifiable flags.
     """
     result: List[Dict] = []
     for lap in laps:
@@ -1534,6 +1552,30 @@ def analyze_electronics_per_lap(laps: List[Dict]) -> List[Dict]:
             "tc_changed": _changed("tc_level"),
             "abs_changed": _changed("abs_level"),
             "engine_map_changed": _changed("engine_map_level"),
+            # Limits (min/max)
+            "tc_level_min": _val(first, "tc_level_min"),
+            "abs_level_min": _val(first, "abs_level_min"),
+            "brake_bias_min": first.get("brake_bias_min"),
+            "engine_map_min": _val(first, "engine_map_min"),
+            "diff_power_min": _val(first, "diff_power_min"),
+            "diff_coast_min": _val(first, "diff_coast_min"),
+            "perf_mode_min": _val(first, "perf_mode_min"),
+            "tc_level_max": _val(first, "tc_level_max"),
+            "abs_level_max": _val(first, "abs_level_max"),
+            "brake_bias_max": first.get("brake_bias_max"),
+            "engine_map_max": _val(first, "engine_map_max"),
+            "diff_power_max": _val(first, "diff_power_max"),
+            "diff_coast_max": _val(first, "diff_coast_max"),
+            "perf_mode_max": _val(first, "perf_mode_max"),
+            # Modifiable flags
+            "tc_level_modifiable": first.get("tc_level_modifiable"),
+            "abs_level_modifiable": first.get("abs_level_modifiable"),
+            "brake_bias_modifiable": first.get("brake_bias_modifiable"),
+            "engine_map_modifiable": first.get("engine_map_modifiable"),
+            "diff_power_modifiable": first.get("diff_power_modifiable"),
+            "diff_coast_modifiable": first.get("diff_coast_modifiable"),
+            "pitlimiter_modifiable": first.get("pitlimiter_modifiable"),
+            "perf_mode_modifiable": first.get("perf_mode_modifiable"),
         })
     return result
 
@@ -2649,6 +2691,62 @@ window.addEventListener('DOMContentLoaded', () => {
             lines.append("(TC/ABS: 0=off, higher=more aggressive; EngMap=engine power mode;")
             lines.append(" DiffP=differential lock % under power; DiffC=differential lock % on coast)")
             lines.append("")
+            
+            # ── Show modifiable parameters and their limits (from first lap)
+            first_elec = elec_per_lap[0] if elec_per_lap else {}
+            has_limit_data = any(
+                first_elec.get(f"{param}_min") is not None or first_elec.get(f"{param}_max") is not None
+                for param in ["tc_level", "abs_level", "brake_bias", "engine_map", "diff_power", "diff_coast", "perf_mode"]
+            )
+            has_modifiable_data = any(
+                first_elec.get(f"{param}_modifiable") is not None
+                for param in ["tc_level", "abs_level", "brake_bias", "engine_map", "diff_power", "diff_coast", "pitlimiter", "perf_mode"]
+            )
+            
+            if has_modifiable_data or has_limit_data:
+                lines.append("ADJUSTABLE PARAMETERS (from shared memory limits/flags):")
+                if has_modifiable_data:
+                    modifiable_params = []
+                    if first_elec.get("tc_level_modifiable"):
+                        modifiable_params.append("TC")
+                    if first_elec.get("abs_level_modifiable"):
+                        modifiable_params.append("ABS")
+                    if first_elec.get("brake_bias_modifiable"):
+                        modifiable_params.append("BrakeBias")
+                    if first_elec.get("engine_map_modifiable"):
+                        modifiable_params.append("EngMap")
+                    if first_elec.get("diff_power_modifiable"):
+                        modifiable_params.append("DiffP")
+                    if first_elec.get("diff_coast_modifiable"):
+                        modifiable_params.append("DiffC")
+                    if first_elec.get("perf_mode_modifiable"):
+                        modifiable_params.append("PerfMode")
+                    if modifiable_params:
+                        lines.append(f"  Modifiable in-session: {', '.join(modifiable_params)}")
+                    else:
+                        lines.append("  Modifiable in-session: None (all parameters locked)")
+                else:
+                    lines.append("  Modifiable in-session: Unknown (limits not available)")
+                
+                if has_limit_data:
+                    # Show limits for key parameters
+                    limit_lines = []
+                    if first_elec.get("tc_level_min") is not None and first_elec.get("tc_level_max") is not None:
+                        limit_lines.append(f"TC: {first_elec['tc_level_min']}-{first_elec['tc_level_max']}")
+                    if first_elec.get("abs_level_min") is not None and first_elec.get("abs_level_max") is not None:
+                        limit_lines.append(f"ABS: {first_elec['abs_level_min']}-{first_elec['abs_level_max']}")
+                    if first_elec.get("brake_bias_min") is not None and first_elec.get("brake_bias_max") is not None:
+                        limit_lines.append(f"BrakeBias: {first_elec['brake_bias_min']:.2f}-{first_elec['brake_bias_max']:.2f}")
+                    if first_elec.get("engine_map_min") is not None and first_elec.get("engine_map_max") is not None:
+                        limit_lines.append(f"EngMap: {first_elec['engine_map_min']}-{first_elec['engine_map_max']}")
+                    if first_elec.get("diff_power_min") is not None and first_elec.get("diff_power_max") is not None:
+                        limit_lines.append(f"DiffP: {first_elec['diff_power_min']}-{first_elec['diff_power_max']}")
+                    if first_elec.get("diff_coast_min") is not None and first_elec.get("diff_coast_max") is not None:
+                        limit_lines.append(f"DiffC: {first_elec['diff_coast_min']}-{first_elec['diff_coast_max']}")
+                    if limit_lines:
+                        lines.append(f"  Valid ranges: {' | '.join(limit_lines)}")
+                lines.append("")
+            
             adjustments: List[str] = []
             diff_looks_invalid = False
             for e in elec_per_lap:

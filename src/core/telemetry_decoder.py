@@ -653,8 +653,11 @@ _GE_INSTANTANEOUS_KM_PER_FUEL_LITER = 1480
 _GE_GEAR_RPM_WINDOW = 1484
 # instrumentation × 3 (128 B each) at 1488..1872
 # SMEvoElectronics × 4 (128 B each) at 1872..2384
-# Only the first copy (current settings) is decoded; min-limit/max-limit/modifiable copies are skipped.
+# Copies: current values, min_limit, max_limit, is_modifiable (flags)
 _GE_ELECTRONICS = 1872
+_GE_ELECTRONICS_MIN = 2000   # _GE_ELECTRONICS + 128
+_GE_ELECTRONICS_MAX = 2128   # _GE_ELECTRONICS_MIN + 128
+_GE_ELECTRONICS_MODIFIABLE = 2256  # _GE_ELECTRONICS_MAX + 128
 _EL_TC_LEVEL = 0        # int8_t — traction-control level (0 = off)
 _EL_ABS_LEVEL = 2       # int8_t — ABS intervention level (0 = off)
 # 3-byte pad to 4-byte boundary before float
@@ -831,7 +834,7 @@ def decode_graphics_evo(data: bytes) -> Optional[Dict[str, Any]]:
         focused_car_id = struct.unpack_from("<Q", data, _GE_FOCUSED_CAR_ID_A)[0]
         player_car_id = struct.unpack_from("<Q", data, _GE_PLAYER_CAR_ID_A)[0]
 
-        # ── Electronics / aids (SMEvoElectronics — first copy at _GE_ELECTRONICS)
+        # ── Electronics / aids (SMEvoElectronics — 4 copies: current, min_limit, max_limit, is_modifiable)
         # Guard against captures where the buffer didn't grow to include this region.
         if len(data) >= _GE_ELECTRONICS + 128:
             electronics_tc_level = int(struct.unpack_from("<b", data, _GE_ELECTRONICS + _EL_TC_LEVEL)[0])
@@ -851,6 +854,62 @@ def decode_graphics_evo(data: bytes) -> Optional[Dict[str, Any]]:
             electronics_diff_coast = None
             electronics_pitlimiter = None
             electronics_perf_mode = None
+
+        # ── Electronics min_limit copy (if available)
+        if len(data) >= _GE_ELECTRONICS_MIN + 128:
+            electronics_tc_level_min = int(struct.unpack_from("<b", data, _GE_ELECTRONICS_MIN + _EL_TC_LEVEL)[0])
+            electronics_abs_level_min = int(struct.unpack_from("<b", data, _GE_ELECTRONICS_MIN + _EL_ABS_LEVEL)[0])
+            electronics_brake_bias_min = struct.unpack_from("<f", data, _GE_ELECTRONICS_MIN + _EL_BRAKE_BIAS)[0]
+            electronics_engine_map_min = int(struct.unpack_from("<b", data, _GE_ELECTRONICS_MIN + _EL_ENGINE_MAP)[0])
+            electronics_diff_power_min = int(struct.unpack_from("<b", data, _GE_ELECTRONICS_MIN + _EL_DIFF_POWER)[0])
+            electronics_diff_coast_min = int(struct.unpack_from("<b", data, _GE_ELECTRONICS_MIN + _EL_DIFF_COAST)[0])
+            electronics_perf_mode_min = int(struct.unpack_from("<b", data, _GE_ELECTRONICS_MIN + _EL_PERF_MODE)[0])
+        else:
+            electronics_tc_level_min = None
+            electronics_abs_level_min = None
+            electronics_brake_bias_min = None
+            electronics_engine_map_min = None
+            electronics_diff_power_min = None
+            electronics_diff_coast_min = None
+            electronics_perf_mode_min = None
+
+        # ── Electronics max_limit copy (if available)
+        if len(data) >= _GE_ELECTRONICS_MAX + 128:
+            electronics_tc_level_max = int(struct.unpack_from("<b", data, _GE_ELECTRONICS_MAX + _EL_TC_LEVEL)[0])
+            electronics_abs_level_max = int(struct.unpack_from("<b", data, _GE_ELECTRONICS_MAX + _EL_ABS_LEVEL)[0])
+            electronics_brake_bias_max = struct.unpack_from("<f", data, _GE_ELECTRONICS_MAX + _EL_BRAKE_BIAS)[0]
+            electronics_engine_map_max = int(struct.unpack_from("<b", data, _GE_ELECTRONICS_MAX + _EL_ENGINE_MAP)[0])
+            electronics_diff_power_max = int(struct.unpack_from("<b", data, _GE_ELECTRONICS_MAX + _EL_DIFF_POWER)[0])
+            electronics_diff_coast_max = int(struct.unpack_from("<b", data, _GE_ELECTRONICS_MAX + _EL_DIFF_COAST)[0])
+            electronics_perf_mode_max = int(struct.unpack_from("<b", data, _GE_ELECTRONICS_MAX + _EL_PERF_MODE)[0])
+        else:
+            electronics_tc_level_max = None
+            electronics_abs_level_max = None
+            electronics_brake_bias_max = None
+            electronics_engine_map_max = None
+            electronics_diff_power_max = None
+            electronics_diff_coast_max = None
+            electronics_perf_mode_max = None
+
+        # ── Electronics is_modifiable flags (if available)
+        if len(data) >= _GE_ELECTRONICS_MODIFIABLE + 128:
+            electronics_tc_level_modifiable = bool(data[_GE_ELECTRONICS_MODIFIABLE + _EL_TC_LEVEL])
+            electronics_abs_level_modifiable = bool(data[_GE_ELECTRONICS_MODIFIABLE + _EL_ABS_LEVEL])
+            electronics_brake_bias_modifiable = bool(data[_GE_ELECTRONICS_MODIFIABLE + _EL_BRAKE_BIAS])
+            electronics_engine_map_modifiable = bool(data[_GE_ELECTRONICS_MODIFIABLE + _EL_ENGINE_MAP])
+            electronics_diff_power_modifiable = bool(data[_GE_ELECTRONICS_MODIFIABLE + _EL_DIFF_POWER])
+            electronics_diff_coast_modifiable = bool(data[_GE_ELECTRONICS_MODIFIABLE + _EL_DIFF_COAST])
+            electronics_pitlimiter_modifiable = bool(data[_GE_ELECTRONICS_MODIFIABLE + _EL_PITLIMITER_ON])
+            electronics_perf_mode_modifiable = bool(data[_GE_ELECTRONICS_MODIFIABLE + _EL_PERF_MODE])
+        else:
+            electronics_tc_level_modifiable = None
+            electronics_abs_level_modifiable = None
+            electronics_brake_bias_modifiable = None
+            electronics_engine_map_modifiable = None
+            electronics_diff_power_modifiable = None
+            electronics_diff_coast_modifiable = None
+            electronics_pitlimiter_modifiable = None
+            electronics_perf_mode_modifiable = None
     except (struct.error, IndexError):
         return None
 
@@ -952,6 +1011,30 @@ def decode_graphics_evo(data: bytes) -> Optional[Dict[str, Any]]:
         "electronics_diff_coast": electronics_diff_coast,
         "electronics_pitlimiter_on": electronics_pitlimiter,
         "electronics_perf_mode": electronics_perf_mode,
+        # ── Electronics limits (min/max) — None when buffer too small
+        "electronics_tc_level_min": electronics_tc_level_min,
+        "electronics_abs_level_min": electronics_abs_level_min,
+        "electronics_brake_bias_min": electronics_brake_bias_min,
+        "electronics_engine_map_min": electronics_engine_map_min,
+        "electronics_diff_power_min": electronics_diff_power_min,
+        "electronics_diff_coast_min": electronics_diff_coast_min,
+        "electronics_perf_mode_min": electronics_perf_mode_min,
+        "electronics_tc_level_max": electronics_tc_level_max,
+        "electronics_abs_level_max": electronics_abs_level_max,
+        "electronics_brake_bias_max": electronics_brake_bias_max,
+        "electronics_engine_map_max": electronics_engine_map_max,
+        "electronics_diff_power_max": electronics_diff_power_max,
+        "electronics_diff_coast_max": electronics_diff_coast_max,
+        "electronics_perf_mode_max": electronics_perf_mode_max,
+        # ── Electronics modifiable flags — None when buffer too small
+        "electronics_tc_level_modifiable": electronics_tc_level_modifiable,
+        "electronics_abs_level_modifiable": electronics_abs_level_modifiable,
+        "electronics_brake_bias_modifiable": electronics_brake_bias_modifiable,
+        "electronics_engine_map_modifiable": electronics_engine_map_modifiable,
+        "electronics_diff_power_modifiable": electronics_diff_power_modifiable,
+        "electronics_diff_coast_modifiable": electronics_diff_coast_modifiable,
+        "electronics_pitlimiter_modifiable": electronics_pitlimiter_modifiable,
+        "electronics_perf_mode_modifiable": electronics_perf_mode_modifiable,
         # ── Setup / performance hints
         "diff_coast_raw_value": diff_coast_raw_value,
         "diff_power_raw_value": diff_power_raw_value,
