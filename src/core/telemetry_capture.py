@@ -126,21 +126,6 @@ class RegionReader:
         if sys.platform != "win32":
             return False
 
-        # Get current Windows session ID for diagnostics
-        try:
-            import subprocess
-            session_result = subprocess.run(
-                ['query', 'session'],
-                capture_output=True,
-                text=True,
-                timeout=1,
-                creationflags=subprocess.CREATE_NO_WINDOW
-            )
-            current_session = session_result.stdout
-            self._log(f"[TELEMETRY] Current Windows sessions:\n{current_session}")
-        except Exception as e:
-            self._log(f"[TELEMETRY] Could not query session info: {e}")
-
         # Only Win32-style names are valid for OpenFileMappingW.
         # Prior versions also tried NT Object Manager paths like
         # "\Sessions\N\BaseNamedObjects\<name>" — those always fail with

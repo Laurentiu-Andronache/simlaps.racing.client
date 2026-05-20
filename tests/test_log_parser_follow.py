@@ -392,6 +392,47 @@ class TestFollowWithCallbacks:
             "Restart must not trigger game_status=False; that's reserved for Exit."
         )
 
+    @pytest.mark.asyncio
+    async def test_follow_restart_keeps_lap_emission_without_game_started(self, tmp_path):
+        """Restart-in-place should not drop subsequent player lap emissions.
+
+        Regression: after `GameModeRequestRestartSession`, AC Evo may not emit a
+        fresh `Game Started!` marker. The parser still needs an active
+        `current_session` so `New lap carId ...` lines are accepted and emitted.
+        """
+        laps = []
+
+        async def on_lap(session, lap):
+            laps.append((session, lap))
+
+        parser = LogParser(
+            log_path=str(tmp_path / "test.log"),
+            on_lap_complete=on_lap,
+        )
+
+        parser._process_line(
+            "[2026-05-20 00:00:00.000] [network] [info] "
+            "76561198321627695 connected on car gt3_porsche, with new carId "
+            "4d27cc23-ee6c-e0de-9c38-10448288bcbb"
+        )
+        await parser._emit_session_restart()
+
+        parser._process_line(
+            "[2026-05-20 00:01:03.439] [gameplay] [info] "
+            "New lap carId 4d27cc23-ee6c-e0de-9c38-10448288bcbb: 02:23.706"
+        )
+        completed = parser._process_line(
+            "[2026-05-20 00:01:03.500] [network] [info] "
+            "Relevant onSplit for Combo 6@2: laptime 143706, valid true, "
+            "flags 2, lap 1 (prev 0)"
+        )
+
+        assert completed is not None
+        await parser._emit_lap(parser.current_session, completed)
+
+        assert laps, "Expected lap emission after in-place session restart"
+        assert laps[-1][1].lap_time_ms == 143706
+
 
 class TestFollowLiveTailing:
     """Test live tailing behavior."""

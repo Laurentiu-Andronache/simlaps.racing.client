@@ -439,6 +439,9 @@ class LogParser:
         be told explicitly to clear any in-flight buffer and start fresh.
         """
         log_debug(Component.LOG_PARSER, "[SESSION_RESTART] user requested restart")
+        prior_session_type = None
+        if self.current_session:
+            prior_session_type = self.current_session.session_type
         # Reset parser-side per-session state so stale flags from the old run
         # (penalty, track-limit, sector splits, physics_lap_num, etc.) don't
         # leak into the first lap of the restarted session.
@@ -448,6 +451,11 @@ class LogParser:
         self._reset_in_progress()
         if self.current_session:
             self._finalise_current_session()
+
+        # AC Evo may restart in-place without a fresh session-start marker.
+        # Create a new parser session immediately so subsequent player laps are
+        # not dropped while waiting for optional race-start chatter.
+        self._start_new_session(prior_session_type or "UNKNOWN", "")
         if self.on_session_restart:
             try:
                 await self.on_session_restart()
