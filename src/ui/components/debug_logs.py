@@ -4,10 +4,12 @@ Debug Logs Viewer Component
 Shows application debug logs in a popup window.
 """
 
+import os
 import sys
 import threading
 import time
 from collections import deque
+from datetime import datetime
 
 import flet as ft
 
@@ -152,6 +154,13 @@ class DebugLogsViewer:
             if success:
                 log_info(Component.DEBUG_LOGS, "Game logs exported successfully", filename=filename)
                 self._show_snackbar(f"Game logs exported to {filename}", "#51cf66")
+                
+                # Open the folder in Windows Explorer
+                try:
+                    import subprocess
+                    subprocess.run(['explorer', '/select,', filepath], check=False)
+                except Exception as ex:
+                    log_warning(Component.DEBUG_LOGS, "Failed to open folder in Explorer", error=str(ex))
             else:
                 log_error(Component.DEBUG_LOGS, "Failed to export game logs")
                 self._show_snackbar("Failed to export game logs", "#ff6b6b")

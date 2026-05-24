@@ -666,6 +666,10 @@ _EL_ENGINE_MAP = 12     # int8_t — engine map / power mode index
 # 3-byte pad, then float turbo_level at 16, int8 ers_deploy at 20, pad, float ers_recharge at 24
 _EL_DIFF_POWER = 31     # int8_t — differential lock level under power
 _EL_DIFF_COAST = 32     # int8_t — differential lock level on coast
+_EL_FRONT_BUMP_DAMPER = 33   # int8_t — front bump (compression) damper stiffness level
+_EL_FRONT_REBOUND_DAMPER = 34  # int8_t — front rebound damper stiffness level
+_EL_REAR_BUMP_DAMPER = 35    # int8_t — rear bump (compression) damper stiffness level
+_EL_REAR_REBOUND_DAMPER = 36   # int8_t — rear rebound damper stiffness level
 _EL_PITLIMITER_ON = 38  # bool   — pit-speed limiter active
 _EL_PERF_MODE = 39      # int8_t — active performance / power mode index
 _GE_TOTAL_LAP_COUNT = 2384
@@ -843,6 +847,10 @@ def decode_graphics_evo(data: bytes) -> Optional[Dict[str, Any]]:
             electronics_engine_map = int(struct.unpack_from("<b", data, _GE_ELECTRONICS + _EL_ENGINE_MAP)[0])
             electronics_diff_power = int(struct.unpack_from("<b", data, _GE_ELECTRONICS + _EL_DIFF_POWER)[0])
             electronics_diff_coast = int(struct.unpack_from("<b", data, _GE_ELECTRONICS + _EL_DIFF_COAST)[0])
+            electronics_front_bump_damper = int(struct.unpack_from("<b", data, _GE_ELECTRONICS + _EL_FRONT_BUMP_DAMPER)[0])
+            electronics_front_rebound_damper = int(struct.unpack_from("<b", data, _GE_ELECTRONICS + _EL_FRONT_REBOUND_DAMPER)[0])
+            electronics_rear_bump_damper = int(struct.unpack_from("<b", data, _GE_ELECTRONICS + _EL_REAR_BUMP_DAMPER)[0])
+            electronics_rear_rebound_damper = int(struct.unpack_from("<b", data, _GE_ELECTRONICS + _EL_REAR_REBOUND_DAMPER)[0])
             electronics_pitlimiter = bool(data[_GE_ELECTRONICS + _EL_PITLIMITER_ON])
             electronics_perf_mode = int(struct.unpack_from("<b", data, _GE_ELECTRONICS + _EL_PERF_MODE)[0])
         else:
@@ -852,6 +860,10 @@ def decode_graphics_evo(data: bytes) -> Optional[Dict[str, Any]]:
             electronics_engine_map = None
             electronics_diff_power = None
             electronics_diff_coast = None
+            electronics_front_bump_damper = None
+            electronics_front_rebound_damper = None
+            electronics_rear_bump_damper = None
+            electronics_rear_rebound_damper = None
             electronics_pitlimiter = None
             electronics_perf_mode = None
 
@@ -863,6 +875,10 @@ def decode_graphics_evo(data: bytes) -> Optional[Dict[str, Any]]:
             electronics_engine_map_min = int(struct.unpack_from("<b", data, _GE_ELECTRONICS_MIN + _EL_ENGINE_MAP)[0])
             electronics_diff_power_min = int(struct.unpack_from("<b", data, _GE_ELECTRONICS_MIN + _EL_DIFF_POWER)[0])
             electronics_diff_coast_min = int(struct.unpack_from("<b", data, _GE_ELECTRONICS_MIN + _EL_DIFF_COAST)[0])
+            electronics_front_bump_damper_min = int(struct.unpack_from("<b", data, _GE_ELECTRONICS_MIN + _EL_FRONT_BUMP_DAMPER)[0])
+            electronics_front_rebound_damper_min = int(struct.unpack_from("<b", data, _GE_ELECTRONICS_MIN + _EL_FRONT_REBOUND_DAMPER)[0])
+            electronics_rear_bump_damper_min = int(struct.unpack_from("<b", data, _GE_ELECTRONICS_MIN + _EL_REAR_BUMP_DAMPER)[0])
+            electronics_rear_rebound_damper_min = int(struct.unpack_from("<b", data, _GE_ELECTRONICS_MIN + _EL_REAR_REBOUND_DAMPER)[0])
             electronics_perf_mode_min = int(struct.unpack_from("<b", data, _GE_ELECTRONICS_MIN + _EL_PERF_MODE)[0])
         else:
             electronics_tc_level_min = None
@@ -871,6 +887,10 @@ def decode_graphics_evo(data: bytes) -> Optional[Dict[str, Any]]:
             electronics_engine_map_min = None
             electronics_diff_power_min = None
             electronics_diff_coast_min = None
+            electronics_front_bump_damper_min = None
+            electronics_front_rebound_damper_min = None
+            electronics_rear_bump_damper_min = None
+            electronics_rear_rebound_damper_min = None
             electronics_perf_mode_min = None
 
         # ── Electronics max_limit copy (if available)
@@ -881,6 +901,10 @@ def decode_graphics_evo(data: bytes) -> Optional[Dict[str, Any]]:
             electronics_engine_map_max = int(struct.unpack_from("<b", data, _GE_ELECTRONICS_MAX + _EL_ENGINE_MAP)[0])
             electronics_diff_power_max = int(struct.unpack_from("<b", data, _GE_ELECTRONICS_MAX + _EL_DIFF_POWER)[0])
             electronics_diff_coast_max = int(struct.unpack_from("<b", data, _GE_ELECTRONICS_MAX + _EL_DIFF_COAST)[0])
+            electronics_front_bump_damper_max = int(struct.unpack_from("<b", data, _GE_ELECTRONICS_MAX + _EL_FRONT_BUMP_DAMPER)[0])
+            electronics_front_rebound_damper_max = int(struct.unpack_from("<b", data, _GE_ELECTRONICS_MAX + _EL_FRONT_REBOUND_DAMPER)[0])
+            electronics_rear_bump_damper_max = int(struct.unpack_from("<b", data, _GE_ELECTRONICS_MAX + _EL_REAR_BUMP_DAMPER)[0])
+            electronics_rear_rebound_damper_max = int(struct.unpack_from("<b", data, _GE_ELECTRONICS_MAX + _EL_REAR_REBOUND_DAMPER)[0])
             electronics_perf_mode_max = int(struct.unpack_from("<b", data, _GE_ELECTRONICS_MAX + _EL_PERF_MODE)[0])
         else:
             electronics_tc_level_max = None
@@ -889,6 +913,10 @@ def decode_graphics_evo(data: bytes) -> Optional[Dict[str, Any]]:
             electronics_engine_map_max = None
             electronics_diff_power_max = None
             electronics_diff_coast_max = None
+            electronics_front_bump_damper_max = None
+            electronics_front_rebound_damper_max = None
+            electronics_rear_bump_damper_max = None
+            electronics_rear_rebound_damper_max = None
             electronics_perf_mode_max = None
 
         # ── Electronics is_modifiable flags (if available)
@@ -899,6 +927,10 @@ def decode_graphics_evo(data: bytes) -> Optional[Dict[str, Any]]:
             electronics_engine_map_modifiable = bool(data[_GE_ELECTRONICS_MODIFIABLE + _EL_ENGINE_MAP])
             electronics_diff_power_modifiable = bool(data[_GE_ELECTRONICS_MODIFIABLE + _EL_DIFF_POWER])
             electronics_diff_coast_modifiable = bool(data[_GE_ELECTRONICS_MODIFIABLE + _EL_DIFF_COAST])
+            electronics_front_bump_damper_modifiable = bool(data[_GE_ELECTRONICS_MODIFIABLE + _EL_FRONT_BUMP_DAMPER])
+            electronics_front_rebound_damper_modifiable = bool(data[_GE_ELECTRONICS_MODIFIABLE + _EL_FRONT_REBOUND_DAMPER])
+            electronics_rear_bump_damper_modifiable = bool(data[_GE_ELECTRONICS_MODIFIABLE + _EL_REAR_BUMP_DAMPER])
+            electronics_rear_rebound_damper_modifiable = bool(data[_GE_ELECTRONICS_MODIFIABLE + _EL_REAR_REBOUND_DAMPER])
             electronics_pitlimiter_modifiable = bool(data[_GE_ELECTRONICS_MODIFIABLE + _EL_PITLIMITER_ON])
             electronics_perf_mode_modifiable = bool(data[_GE_ELECTRONICS_MODIFIABLE + _EL_PERF_MODE])
         else:
@@ -908,6 +940,10 @@ def decode_graphics_evo(data: bytes) -> Optional[Dict[str, Any]]:
             electronics_engine_map_modifiable = None
             electronics_diff_power_modifiable = None
             electronics_diff_coast_modifiable = None
+            electronics_front_bump_damper_modifiable = None
+            electronics_front_rebound_damper_modifiable = None
+            electronics_rear_bump_damper_modifiable = None
+            electronics_rear_rebound_damper_modifiable = None
             electronics_pitlimiter_modifiable = None
             electronics_perf_mode_modifiable = None
     except (struct.error, IndexError):
@@ -1009,6 +1045,10 @@ def decode_graphics_evo(data: bytes) -> Optional[Dict[str, Any]]:
         "electronics_engine_map": electronics_engine_map,
         "electronics_diff_power": electronics_diff_power,
         "electronics_diff_coast": electronics_diff_coast,
+        "electronics_front_bump_damper": electronics_front_bump_damper,
+        "electronics_front_rebound_damper": electronics_front_rebound_damper,
+        "electronics_rear_bump_damper": electronics_rear_bump_damper,
+        "electronics_rear_rebound_damper": electronics_rear_rebound_damper,
         "electronics_pitlimiter_on": electronics_pitlimiter,
         "electronics_perf_mode": electronics_perf_mode,
         # ── Electronics limits (min/max) — None when buffer too small
@@ -1018,6 +1058,10 @@ def decode_graphics_evo(data: bytes) -> Optional[Dict[str, Any]]:
         "electronics_engine_map_min": electronics_engine_map_min,
         "electronics_diff_power_min": electronics_diff_power_min,
         "electronics_diff_coast_min": electronics_diff_coast_min,
+        "electronics_front_bump_damper_min": electronics_front_bump_damper_min,
+        "electronics_front_rebound_damper_min": electronics_front_rebound_damper_min,
+        "electronics_rear_bump_damper_min": electronics_rear_bump_damper_min,
+        "electronics_rear_rebound_damper_min": electronics_rear_rebound_damper_min,
         "electronics_perf_mode_min": electronics_perf_mode_min,
         "electronics_tc_level_max": electronics_tc_level_max,
         "electronics_abs_level_max": electronics_abs_level_max,
@@ -1025,6 +1069,10 @@ def decode_graphics_evo(data: bytes) -> Optional[Dict[str, Any]]:
         "electronics_engine_map_max": electronics_engine_map_max,
         "electronics_diff_power_max": electronics_diff_power_max,
         "electronics_diff_coast_max": electronics_diff_coast_max,
+        "electronics_front_bump_damper_max": electronics_front_bump_damper_max,
+        "electronics_front_rebound_damper_max": electronics_front_rebound_damper_max,
+        "electronics_rear_bump_damper_max": electronics_rear_bump_damper_max,
+        "electronics_rear_rebound_damper_max": electronics_rear_rebound_damper_max,
         "electronics_perf_mode_max": electronics_perf_mode_max,
         # ── Electronics modifiable flags — None when buffer too small
         "electronics_tc_level_modifiable": electronics_tc_level_modifiable,
@@ -1033,6 +1081,10 @@ def decode_graphics_evo(data: bytes) -> Optional[Dict[str, Any]]:
         "electronics_engine_map_modifiable": electronics_engine_map_modifiable,
         "electronics_diff_power_modifiable": electronics_diff_power_modifiable,
         "electronics_diff_coast_modifiable": electronics_diff_coast_modifiable,
+        "electronics_front_bump_damper_modifiable": electronics_front_bump_damper_modifiable,
+        "electronics_front_rebound_damper_modifiable": electronics_front_rebound_damper_modifiable,
+        "electronics_rear_bump_damper_modifiable": electronics_rear_bump_damper_modifiable,
+        "electronics_rear_rebound_damper_modifiable": electronics_rear_rebound_damper_modifiable,
         "electronics_pitlimiter_modifiable": electronics_pitlimiter_modifiable,
         "electronics_perf_mode_modifiable": electronics_perf_mode_modifiable,
         # ── Setup / performance hints

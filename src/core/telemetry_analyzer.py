@@ -653,6 +653,10 @@ def build_track(frames: List[FrameData], hz: float = 1.0, start_idx: int = 0) ->
             "engine_map_level": gr.get("electronics_engine_map"),
             "diff_power_level": gr.get("electronics_diff_power"),
             "diff_coast_level": gr.get("electronics_diff_coast"),
+            "front_bump_damper": gr.get("electronics_front_bump_damper"),
+            "front_rebound_damper": gr.get("electronics_front_rebound_damper"),
+            "rear_bump_damper": gr.get("electronics_rear_bump_damper"),
+            "rear_rebound_damper": gr.get("electronics_rear_rebound_damper"),
             "electronics_perf_mode": gr.get("electronics_perf_mode"),
             "electronics_pitlimiter_on": gr.get("electronics_pitlimiter_on"),
             # Electronics limits (min/max) from Graphics SHM
@@ -662,6 +666,10 @@ def build_track(frames: List[FrameData], hz: float = 1.0, start_idx: int = 0) ->
             "engine_map_min": gr.get("electronics_engine_map_min"),
             "diff_power_min": gr.get("electronics_diff_power_min"),
             "diff_coast_min": gr.get("electronics_diff_coast_min"),
+            "front_bump_damper_min": gr.get("electronics_front_bump_damper_min"),
+            "front_rebound_damper_min": gr.get("electronics_front_rebound_damper_min"),
+            "rear_bump_damper_min": gr.get("electronics_rear_bump_damper_min"),
+            "rear_rebound_damper_min": gr.get("electronics_rear_rebound_damper_min"),
             "perf_mode_min": gr.get("electronics_perf_mode_min"),
             "tc_level_max": gr.get("electronics_tc_level_max"),
             "abs_level_max": gr.get("electronics_abs_level_max"),
@@ -669,6 +677,10 @@ def build_track(frames: List[FrameData], hz: float = 1.0, start_idx: int = 0) ->
             "engine_map_max": gr.get("electronics_engine_map_max"),
             "diff_power_max": gr.get("electronics_diff_power_max"),
             "diff_coast_max": gr.get("electronics_diff_coast_max"),
+            "front_bump_damper_max": gr.get("electronics_front_bump_damper_max"),
+            "front_rebound_damper_max": gr.get("electronics_front_rebound_damper_max"),
+            "rear_bump_damper_max": gr.get("electronics_rear_bump_damper_max"),
+            "rear_rebound_damper_max": gr.get("electronics_rear_rebound_damper_max"),
             "perf_mode_max": gr.get("electronics_perf_mode_max"),
             # Electronics modifiable flags from Graphics SHM
             "tc_level_modifiable": gr.get("electronics_tc_level_modifiable"),
@@ -1548,6 +1560,10 @@ def analyze_electronics_per_lap(laps: List[Dict]) -> List[Dict]:
             "engine_map": _val(first, "engine_map_level"),
             "diff_power": _val(first, "diff_power_level"),
             "diff_coast": _val(first, "diff_coast_level"),
+            "front_bump_damper": _val(first, "front_bump_damper"),
+            "front_rebound_damper": _val(first, "front_rebound_damper"),
+            "rear_bump_damper": _val(first, "rear_bump_damper"),
+            "rear_rebound_damper": _val(first, "rear_rebound_damper"),
             "perf_mode": _val(first, "electronics_perf_mode"),
             "tc_changed": _changed("tc_level"),
             "abs_changed": _changed("abs_level"),
@@ -1559,6 +1575,10 @@ def analyze_electronics_per_lap(laps: List[Dict]) -> List[Dict]:
             "engine_map_min": _val(first, "engine_map_min"),
             "diff_power_min": _val(first, "diff_power_min"),
             "diff_coast_min": _val(first, "diff_coast_min"),
+            "front_bump_damper_min": _val(first, "front_bump_damper_min"),
+            "front_rebound_damper_min": _val(first, "front_rebound_damper_min"),
+            "rear_bump_damper_min": _val(first, "rear_bump_damper_min"),
+            "rear_rebound_damper_min": _val(first, "rear_rebound_damper_min"),
             "perf_mode_min": _val(first, "perf_mode_min"),
             "tc_level_max": _val(first, "tc_level_max"),
             "abs_level_max": _val(first, "abs_level_max"),
@@ -1566,6 +1586,10 @@ def analyze_electronics_per_lap(laps: List[Dict]) -> List[Dict]:
             "engine_map_max": _val(first, "engine_map_max"),
             "diff_power_max": _val(first, "diff_power_max"),
             "diff_coast_max": _val(first, "diff_coast_max"),
+            "front_bump_damper_max": _val(first, "front_bump_damper_max"),
+            "front_rebound_damper_max": _val(first, "front_rebound_damper_max"),
+            "rear_bump_damper_max": _val(first, "rear_bump_damper_max"),
+            "rear_rebound_damper_max": _val(first, "rear_rebound_damper_max"),
             "perf_mode_max": _val(first, "perf_mode_max"),
             # Modifiable flags
             "tc_level_modifiable": first.get("tc_level_modifiable"),
@@ -1574,6 +1598,10 @@ def analyze_electronics_per_lap(laps: List[Dict]) -> List[Dict]:
             "engine_map_modifiable": first.get("engine_map_modifiable"),
             "diff_power_modifiable": first.get("diff_power_modifiable"),
             "diff_coast_modifiable": first.get("diff_coast_modifiable"),
+            "front_bump_damper_modifiable": first.get("front_bump_damper_modifiable"),
+            "front_rebound_damper_modifiable": first.get("front_rebound_damper_modifiable"),
+            "rear_bump_damper_modifiable": first.get("rear_bump_damper_modifiable"),
+            "rear_rebound_damper_modifiable": first.get("rear_rebound_damper_modifiable"),
             "pitlimiter_modifiable": first.get("pitlimiter_modifiable"),
             "perf_mode_modifiable": first.get("perf_mode_modifiable"),
         })
@@ -2700,7 +2728,9 @@ window.addEventListener('DOMContentLoaded', () => {
             )
             has_modifiable_data = any(
                 first_elec.get(f"{param}_modifiable") is not None
-                for param in ["tc_level", "abs_level", "brake_bias", "engine_map", "diff_power", "diff_coast", "pitlimiter", "perf_mode"]
+                for param in ["tc_level", "abs_level", "brake_bias", "engine_map", "diff_power", "diff_coast", 
+                             "front_bump_damper", "front_rebound_damper", "rear_bump_damper", "rear_rebound_damper",
+                             "pitlimiter", "perf_mode"]
             )
             
             if has_modifiable_data or has_limit_data:
@@ -2719,6 +2749,14 @@ window.addEventListener('DOMContentLoaded', () => {
                         modifiable_params.append("DiffP")
                     if first_elec.get("diff_coast_modifiable"):
                         modifiable_params.append("DiffC")
+                    if first_elec.get("front_bump_damper_modifiable"):
+                        modifiable_params.append("FrontBump")
+                    if first_elec.get("front_rebound_damper_modifiable"):
+                        modifiable_params.append("FrontRebound")
+                    if first_elec.get("rear_bump_damper_modifiable"):
+                        modifiable_params.append("RearBump")
+                    if first_elec.get("rear_rebound_damper_modifiable"):
+                        modifiable_params.append("RearRebound")
                     if first_elec.get("perf_mode_modifiable"):
                         modifiable_params.append("PerfMode")
                     if modifiable_params:
@@ -2743,6 +2781,14 @@ window.addEventListener('DOMContentLoaded', () => {
                         limit_lines.append(f"DiffP: {first_elec['diff_power_min']}-{first_elec['diff_power_max']}")
                     if first_elec.get("diff_coast_min") is not None and first_elec.get("diff_coast_max") is not None:
                         limit_lines.append(f"DiffC: {first_elec['diff_coast_min']}-{first_elec['diff_coast_max']}")
+                    if first_elec.get("front_bump_damper_min") is not None and first_elec.get("front_bump_damper_max") is not None:
+                        limit_lines.append(f"FrontBump: {first_elec['front_bump_damper_min']}-{first_elec['front_bump_damper_max']}")
+                    if first_elec.get("front_rebound_damper_min") is not None and first_elec.get("front_rebound_damper_max") is not None:
+                        limit_lines.append(f"FrontRebound: {first_elec['front_rebound_damper_min']}-{first_elec['front_rebound_damper_max']}")
+                    if first_elec.get("rear_bump_damper_min") is not None and first_elec.get("rear_bump_damper_max") is not None:
+                        limit_lines.append(f"RearBump: {first_elec['rear_bump_damper_min']}-{first_elec['rear_bump_damper_max']}")
+                    if first_elec.get("rear_rebound_damper_min") is not None and first_elec.get("rear_rebound_damper_max") is not None:
+                        limit_lines.append(f"RearRebound: {first_elec['rear_rebound_damper_min']}-{first_elec['rear_rebound_damper_max']}")
                     if limit_lines:
                         lines.append(f"  Valid ranges: {' | '.join(limit_lines)}")
                 lines.append("")

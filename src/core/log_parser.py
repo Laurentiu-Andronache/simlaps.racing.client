@@ -1015,13 +1015,26 @@ class LogParser:
             return
         if self.current_session.session_type in RACE_LIKE:
             return
-        if self._ip.is_outlap:
-            return
+        
         m = self._pats["practice_split"].search(line)
         if not m:
             return
-
+        
         split_idx, split_ms = int(m.group(1)), int(m.group(2))
+        
+        # Clear outlap flag when first split of new lap is detected.
+        # AC Evo doesn't log outlap completions, so the outlap flag would
+        # persist indefinitely without this. When we see S1 of a new lap
+        # after an outlap, that means the outlap ended and a timed lap began.
+        if self._ip.is_outlap and split_idx == 0:
+            log_debug(Component.LOG_PARSER, 
+                "[OUTLAP] Clearing outlap flag — S1 of new flying lap detected")
+            self._ip.is_outlap = False
+        
+        # Skip recording splits during outlap (but flag was already cleared above if needed)
+        if self._ip.is_outlap:
+            return
+        
         self._ip.splits[split_idx] = split_ms
         log_debug(Component.LOG_PARSER, f"[SPLIT_PRACTICE] S{split_idx + 1}: {split_ms} ms")
 
@@ -1094,11 +1107,14 @@ class LogParser:
 
         # ── 1. Outlap ──────────────────────────────────────────────────────────
         # Primary: explicit 'Outplap split' marker in log.
-        # Fallback: physics lap counter == 1 in a practice session (covers the
-        #           case where the game doesn't log 'Outplap split').
+        # Fallback: physics lap counter == 1 in a practice session AND no splits
+        #           recorded yet (covers the case where the game doesn't log
+        #           'Outplap split' but we can infer it's an outlap because no
+        #           timed sectors exist). If splits ARE recorded, it's a flying lap.
         is_practice_outlap = (
             session_type in PRACTICE_LIKE
             and ip.physics_lap_num == 1
+            and not ip.splits
         )
         if ip.is_outlap or is_practice_outlap:
             if is_practice_outlap and not ip.is_outlap:
