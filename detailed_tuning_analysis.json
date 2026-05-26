@@ -1,0 +1,215 @@
+{
+  "ks_dallara_exp": {
+    "aero_wings": [
+      "data\\aero/wing_body_aoa_cd.curve",
+      "data\\aero/wing_body_aoa_cl.curve",
+      "data\\aero/wing_diffuser_aoa_cd.curve",
+      "data\\aero/wing_diffuser_aoa_cl.curve",
+      "data\\aero/wing_front_aoa_cd.curve",
+      "data\\aero/wing_front_aoa_cl.curve",
+      "data\\aero/wing_rear_aoa_cd.curve",
+      "data\\aero/wing_rear_aoa_cl.curve"
+    ],
+    "aero_body": [
+      "data\\aero/height_diffuser_cl.curve",
+      "data\\aero/height_front_cl.curve"
+    ],
+    "suspension_dampers": [],
+    "suspension_coilovers": [],
+    "engine_power": [
+      "data/exp_torque.curve"
+    ],
+    "engine_throttle": [
+      "data/exp_throttle.curve"
+    ],
+    "engine_turbo": [
+      "data/exp_ctrl_turbo0_controller0.curve"
+    ],
+    "electronics_abd": [],
+    "electronics_tc": [],
+    "electronics_controllers": [
+      "data/ks_dallara_exp_ctrl_ebbcontroller_0.curve",
+      "data/ks_dallara_exp_ctrl_ebbcontroller_1.curve",
+      "data/ks_dallara_exp_ctrl_single_lockcontroller_0.curve",
+      "data/ks_dallara_exp_ctrl_single_lockcontroller_1.curve",
+      "data/ks_dallara_exp_ctrl_single_lockcontroller_2.curve",
+      "data/ks_dallara_exp_ctrl_single_lockcontroller_3.curve",
+      "data\\aero/wingfront_controller_speed.curve",
+      "data\\aero/wing_controller_speed.curve"
+    ],
+    "drivetrain": [],
+    "brakes": [],
+    "general_curves": [
+      "data/exp_autoblipprofile.curve",
+      "data/exp_coast.curve",
+      "data/exp_downshiftprofile.curve",
+      "data/exp_upshiftprofile.curve",
+      "data/front_arb.curve",
+      "data/rear_arb.curve",
+      "data\\aero/height_diffuser_cd.curve",
+      "data\\aero/height_front_cd.curve"
+    ],
+    "setup_files": []
+  },
+  "ks_abarth_695_biposto": {
+    "aero_wings": [
+      "data/wing_body_aoa_cd.curve",
+      "data/wing_body_aoa_cl.curve",
+      "data/wing_front_aoa_cd.curve",
+      "data/wing_front_aoa_cl.curve",
+      "data/wing_rear_aoa_cd.curve",
+      "data/wing_rear_aoa_cl.curve"
+    ],
+    "aero_body": [],
+    "suspension_dampers": [],
+    "suspension_coilovers": [],
+    "engine_power": [
+      "data/header_power.curve"
+    ],
+    "engine_throttle": [
+      "data/throttle.curve"
+    ],
+    "engine_turbo": [
+      "data/ctrl_turbo1_controller1.curve"
+    ],
+    "electronics_abd": [],
+    "electronics_tc": [],
+    "electronics_controllers": [
+      "data/ctrl_ebbcontroller_0.curve",
+      "data/ctrl_ebbcontroller_2.curve"
+    ],
+    "drivetrain": [],
+    "brakes": [],
+    "general_curves": [
+      "data/autoblipprofile.curve",
+      "data/coast.curve",
+      "data/downshiftprofile.curve",
+      "data/upshiftprofile.curve"
+    ],
+    "setup_files": []
+  },
+  "ks_porsche_992_gt3_rs": {
+    "aero_wings": [
+      "data\\aero/wing_body_aoa_cd.curve",
+      "data\\aero/wing_body_aoa_cl.curve",
+      "data\\aero/wing_diffuser_aoa_cd.curve",
+      "data\\aero/wing_diffuser_aoa_cl_10deg.curve",
+      "data\\aero/wing_front_aoa_cd.curve",
+      "data\\aero/wing_front_aoa_cl.curve",
+      "data\\aero/wing_rear_aoa_cd.curve",
+      "data\\aero/wing_rear_aoa_cl.curve"
+    ],
+    "aero_body": [
+      "data\\aero/height_diffuser_cl_10deg.curve",
+      "data\\aero/height_front_cl.curve"
+    ],
+    "suspension_dampers": [
+      "data\\dampers/damperfrontcup.curve",
+      "data\\dampers/damperfrontcup_1.curve",
+      "data\\dampers/damperfrontcup_2.curve"
+    ],
+    "suspension_coilovers": [],
+    "engine_power": [
+      "data\\curves/header_power.curve"
+    ],
+    "engine_throttle": [
+      "data\\abd/992_gt3_rs_abd_throttle.curve",
+      "data\\curves/throttle.curve"
+    ],
+    "engine_turbo": [],
+    "electronics_abd": [
+      "data\\abd/992_gt3_rs_abd_donut.curve",
+      "data\\abd/992_gt3_rs_abd_latg.curve",
+      "data\\abd/992_gt3_rs_abd_oversteer.curve",
+      "data\\abd/992_gt3_rs_abd_slip.curve",
+      "data\\abd/992_gt3_rs_abd_understeer.curve"
+    ],
+    "electronics_tc": [],
+    "electronics_controllers": [
+      "data\\4ws/ctrl_4wscontroller_0.curve",
+      "data\\4ws/ctrl_4wscontroller_1.curve",
+      "data\\4ws/ctrl_4wscontroller_2.curve",
+      "data\\4ws/ctrl_4wscontroller_3.curve",
+      "data\\aero/wingfront_controller_speed.curve",
+      "data\\aero/wing_controller_speed.curve"
+    ],
+    "drivetrain": [],
+    "brakes": [],
+    "general_curves": [
+      "data\\aero/height_diffuser_cd.curve",
+      "data\\aero/height_front_cd.curve",
+      "data\\curves/autoblipprofile.curve",
+      "data\\curves/coast.curve"
+    ],
+    "setup_files": []
+  },
+  "ks_toyota_gr86": {
+    "aero_wings": [
+      "data\\aero/wing_body_aoa_cd.curve",
+      "data\\aero/wing_body_aoa_cl.curve",
+      "data\\aero/wing_front_aoa_cd.curve",
+      "data\\aero/wing_front_aoa_cl.curve",
+      "data\\aero/wing_rear_aoa_cd.curve",
+      "data\\aero/wing_rear_aoa_cl.curve"
+    ],
+    "aero_body": [],
+    "suspension_dampers": [],
+    "suspension_coilovers": [],
+    "engine_power": [
+      "data/header_power.curve"
+    ],
+    "engine_throttle": [
+      "data/throttle.curve"
+    ],
+    "engine_turbo": [],
+    "electronics_abd": [],
+    "electronics_tc": [],
+    "electronics_controllers": [
+      "data\\controllers/ctrl_ebbcontroller_0.curve",
+      "data\\controllers/ctrl_ebbcontroller_2.curve"
+    ],
+    "drivetrain": [],
+    "brakes": [],
+    "general_curves": [
+      "data/autoblipprofile.curve",
+      "data/coast.curve",
+      "data/downshiftprofile.curve",
+      "data/upshiftprofile.curve"
+    ],
+    "setup_files": []
+  },
+  "ks_mazda_mx5_na": {
+    "aero_wings": [
+      "data/wing_body_aoa_cd.curve",
+      "data/wing_body_aoa_cl.curve",
+      "data/wing_front_aoa_cl.curve",
+      "data/wing_rear_aoa_cd.curve",
+      "data/wing_rear_aoa_cl.curve"
+    ],
+    "aero_body": [],
+    "suspension_dampers": [],
+    "suspension_coilovers": [],
+    "engine_power": [
+      "data/header_power.curve",
+      "data/header_power_na16.curve",
+      "data/header_power_na18.curve",
+      "data/header_power_na18_rs.curve"
+    ],
+    "engine_throttle": [
+      "data/throttle.curve"
+    ],
+    "engine_turbo": [],
+    "electronics_abd": [],
+    "electronics_tc": [],
+    "electronics_controllers": [],
+    "drivetrain": [],
+    "brakes": [],
+    "general_curves": [
+      "data/autoblipprofile.curve",
+      "data/coast.curve",
+      "data/downshiftprofile.curve",
+      "data/upshiftprofile.curve"
+    ],
+    "setup_files": []
+  }
+}

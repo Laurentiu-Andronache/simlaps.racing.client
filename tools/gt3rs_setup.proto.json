@@ -1,0 +1,759 @@
+{
+  "file": "C:\\Storage\\my documents\\sim-laps-client\\extracted\\content\\cars\\ks_porsche_992_gt3_rs\\data\\setup\\porsche_992_gt3_rs.carsetup",
+  "size": 500,
+  "decoded": [
+    {
+      "field": 1,
+      "wire": 2,
+      "offset": 0,
+      "size": 44,
+      "children": [
+        {
+          "field": 1,
+          "wire": 2,
+          "offset": 0,
+          "size": 8,
+          "children": [
+            {
+              "field": 0,
+              "wire": 0,
+              "offset": 0,
+              "value": 64
+            },
+            {
+              "field": 3,
+              "wire": 4,
+              "offset": 2,
+              "unsupported": true
+            }
+          ]
+        },
+        {
+          "field": 2,
+          "wire": 5,
+          "offset": 10,
+          "value": 14.0,
+          "raw_hex": "00006041"
+        },
+        {
+          "field": 3,
+          "wire": 2,
+          "offset": 15,
+          "size": 10,
+          "children": [
+            {
+              "field": 1,
+              "wire": 5,
+              "offset": 0,
+              "value": 62.0,
+              "raw_hex": "00007842"
+            },
+            {
+              "field": 2,
+              "wire": 5,
+              "offset": 5,
+              "value": 100.0,
+              "raw_hex": "0000c842"
+            }
+          ]
+        },
+        {
+          "field": 4,
+          "wire": 2,
+          "offset": 27,
+          "size": 15,
+          "children": [
+            {
+              "field": 1,
+              "wire": 5,
+              "offset": 0,
+              "value": 0.3500000238418579,
+              "raw_hex": "3433b33e"
+            },
+            {
+              "field": 2,
+              "wire": 5,
+              "offset": 5,
+              "value": 0.3500000238418579,
+              "raw_hex": "3433b33e"
+            },
+            {
+              "field": 3,
+              "wire": 5,
+              "offset": 10,
+              "value": 10.0,
+              "raw_hex": "00002041"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "field": 2,
+      "wire": 2,
+      "offset": 46,
+      "size": 29,
+      "children": [
+        {
+          "field": 1,
+          "wire": 5,
+          "offset": 0,
+          "value": 95000.0,
+          "raw_hex": "008cb947"
+        },
+        {
+          "field": 2,
+          "wire": 2,
+          "offset": 5,
+          "size": 10,
+          "children": [
+            {
+              "field": 1,
+              "wire": 5,
+              "offset": 0,
+              "value": -0.039000000804662704,
+              "raw_hex": "77be1fbd"
+            },
+            {
+              "field": 2,
+              "wire": 5,
+              "offset": 5,
+              "value": 500.0,
+              "raw_hex": "0000fa43"
+            }
+          ]
+        },
+        {
+          "field": 3,
+          "wire": 2,
+          "offset": 17,
+          "size": 10,
+          "children": [
+            {
+              "field": 1,
+              "wire": 5,
+              "offset": 0,
+              "value": 0.10690999776124954,
+              "raw_hex": "a1f3da3d"
+            },
+            {
+              "field": 2,
+              "wire": 5,
+              "offset": 5,
+              "value": 500.0,
+              "raw_hex": "0000fa43"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "field": 2,
+      "wire": 2,
+      "offset": 77,
+      "size": 29,
+      "children": [
+        {
+          "field": 1,
+          "wire": 5,
+          "offset": 0,
+          "value": 95000.0,
+          "raw_hex": "008cb947"
+        },
+        {
+          "field": 2,
+          "wire": 2,
+          "offset": 5,
+          "size": 10,
+          "children": [
+            {
+              "field": 1,
+              "wire": 5,
+              "offset": 0,
+              "value": -0.039000000804662704,
+              "raw_hex": "77be1fbd"
+            },
+            {
+              "field": 2,
+              "wire": 5,
+              "offset": 5,
+              "value": 500.0,
+              "raw_hex": "0000fa43"
+            }
+          ]
+        },
+        {
+          "field": 3,
+          "wire": 2,
+          "offset": 17,
+          "size": 10,
+          "children": [
+            {
+              "field": 1,
+              "wire": 5,
+              "offset": 0,
+              "value": 0.10690999776124954,
+              "raw_hex": "a1f3da3d"
+            },
+            {
+              "field": 2,
+              "wire": 5,
+              "offset": 5,
+              "value": 500.0,
+              "raw_hex": "0000fa43"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "field": 2,
+      "wire": 2,
+      "offset": 108,
+      "size": 29,
+      "children": [
+        {
+          "field": 1,
+          "wire": 5,
+          "offset": 0,
+          "value": 150000.0,
+          "raw_hex": "007c1248"
+        },
+        {
+          "field": 2,
+          "wire": 2,
+          "offset": 5,
+          "size": 10,
+          "children": [
+            {
+              "field": 1,
+              "wire": 5,
+              "offset": 0,
+              "value": 0.014000000432133675,
+              "raw_hex": "4260653c"
+            },
+            {
+              "field": 2,
+              "wire": 5,
+              "offset": 5,
+              "value": 500.0,
+              "raw_hex": "0000fa43"
+            }
+          ]
+        },
+        {
+          "field": 3,
+          "wire": 2,
+          "offset": 17,
+          "size": 10,
+          "children": [
+            {
+              "field": 1,
+              "wire": 5,
+              "offset": 0,
+              "value": 0.0442500002682209,
+              "raw_hex": "7d3f353d"
+            },
+            {
+              "field": 2,
+              "wire": 5,
+              "offset": 5,
+              "value": 500.0,
+              "raw_hex": "0000fa43"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "field": 2,
+      "wire": 2,
+      "offset": 139,
+      "size": 29,
+      "children": [
+        {
+          "field": 1,
+          "wire": 5,
+          "offset": 0,
+          "value": 150000.0,
+          "raw_hex": "007c1248"
+        },
+        {
+          "field": 2,
+          "wire": 2,
+          "offset": 5,
+          "size": 10,
+          "children": [
+            {
+              "field": 1,
+              "wire": 5,
+              "offset": 0,
+              "value": 0.014000000432133675,
+              "raw_hex": "4260653c"
+            },
+            {
+              "field": 2,
+              "wire": 5,
+              "offset": 5,
+              "value": 500.0,
+              "raw_hex": "0000fa43"
+            }
+          ]
+        },
+        {
+          "field": 3,
+          "wire": 2,
+          "offset": 17,
+          "size": 10,
+          "children": [
+            {
+              "field": 1,
+              "wire": 5,
+              "offset": 0,
+              "value": 0.0442500002682209,
+              "raw_hex": "7d3f353d"
+            },
+            {
+              "field": 2,
+              "wire": 5,
+              "offset": 5,
+              "value": 500.0,
+              "raw_hex": "0000fa43"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "field": 3,
+      "wire": 2,
+      "offset": 170,
+      "size": 20,
+      "children": [
+        {
+          "field": 1,
+          "wire": 5,
+          "offset": 0,
+          "value": 8500.0,
+          "raw_hex": "00d00446"
+        },
+        {
+          "field": 2,
+          "wire": 5,
+          "offset": 5,
+          "value": 2000.0,
+          "raw_hex": "0000fa44"
+        },
+        {
+          "field": 3,
+          "wire": 5,
+          "offset": 10,
+          "value": 11000.0,
+          "raw_hex": "00e02b46"
+        },
+        {
+          "field": 4,
+          "wire": 5,
+          "offset": 15,
+          "value": 5000.0,
+          "raw_hex": "00409c45"
+        }
+      ]
+    },
+    {
+      "field": 3,
+      "wire": 2,
+      "offset": 192,
+      "size": 20,
+      "children": [
+        {
+          "field": 1,
+          "wire": 5,
+          "offset": 0,
+          "value": 8500.0,
+          "raw_hex": "00d00446"
+        },
+        {
+          "field": 2,
+          "wire": 5,
+          "offset": 5,
+          "value": 2000.0,
+          "raw_hex": "0000fa44"
+        },
+        {
+          "field": 3,
+          "wire": 5,
+          "offset": 10,
+          "value": 11000.0,
+          "raw_hex": "00e02b46"
+        },
+        {
+          "field": 4,
+          "wire": 5,
+          "offset": 15,
+          "value": 5000.0,
+          "raw_hex": "00409c45"
+        }
+      ]
+    },
+    {
+      "field": 3,
+      "wire": 2,
+      "offset": 214,
+      "size": 20,
+      "children": [
+        {
+          "field": 1,
+          "wire": 5,
+          "offset": 0,
+          "value": 15000.0,
+          "raw_hex": "00606a46"
+        },
+        {
+          "field": 2,
+          "wire": 5,
+          "offset": 5,
+          "value": 3000.0,
+          "raw_hex": "00803b45"
+        },
+        {
+          "field": 3,
+          "wire": 5,
+          "offset": 10,
+          "value": 18500.0,
+          "raw_hex": "00889046"
+        },
+        {
+          "field": 4,
+          "wire": 5,
+          "offset": 15,
+          "value": 3500.0,
+          "raw_hex": "00c05a45"
+        }
+      ]
+    },
+    {
+      "field": 3,
+      "wire": 2,
+      "offset": 236,
+      "size": 20,
+      "children": [
+        {
+          "field": 1,
+          "wire": 5,
+          "offset": 0,
+          "value": 15000.0,
+          "raw_hex": "00606a46"
+        },
+        {
+          "field": 2,
+          "wire": 5,
+          "offset": 5,
+          "value": 3000.0,
+          "raw_hex": "00803b45"
+        },
+        {
+          "field": 3,
+          "wire": 5,
+          "offset": 10,
+          "value": 18500.0,
+          "raw_hex": "00889046"
+        },
+        {
+          "field": 4,
+          "wire": 5,
+          "offset": 15,
+          "value": 3500.0,
+          "raw_hex": "00c05a45"
+        }
+      ]
+    },
+    {
+      "field": 4,
+      "wire": 2,
+      "offset": 258,
+      "size": 30,
+      "children": [
+        {
+          "field": 1,
+          "wire": 5,
+          "offset": 0,
+          "value": 28.0,
+          "raw_hex": "0000e041"
+        },
+        {
+          "field": 2,
+          "wire": 5,
+          "offset": 5,
+          "value": -2.5,
+          "raw_hex": "000020c0"
+        },
+        {
+          "field": 3,
+          "wire": 5,
+          "offset": 10,
+          "value": 0.10000000149011612,
+          "raw_hex": "cdcccc3d"
+        },
+        {
+          "field": 4,
+          "wire": 5,
+          "offset": 15,
+          "value": 0.004999999888241291,
+          "raw_hex": "0ad7a33b"
+        },
+        {
+          "field": 5,
+          "wire": 5,
+          "offset": 20,
+          "value": -3.492995262145996,
+          "raw_hex": "3c8d5fc0"
+        },
+        {
+          "field": 6,
+          "wire": 5,
+          "offset": 25,
+          "value": 2.7754851998906815e-06,
+          "raw_hex": "79423a36"
+        }
+      ]
+    },
+    {
+      "field": 4,
+      "wire": 2,
+      "offset": 290,
+      "size": 30,
+      "children": [
+        {
+          "field": 1,
+          "wire": 5,
+          "offset": 0,
+          "value": 28.0,
+          "raw_hex": "0000e041"
+        },
+        {
+          "field": 2,
+          "wire": 5,
+          "offset": 5,
+          "value": -2.5,
+          "raw_hex": "000020c0"
+        },
+        {
+          "field": 3,
+          "wire": 5,
+          "offset": 10,
+          "value": 0.10000000149011612,
+          "raw_hex": "cdcccc3d"
+        },
+        {
+          "field": 4,
+          "wire": 5,
+          "offset": 15,
+          "value": 0.004999999888241291,
+          "raw_hex": "0ad7a33b"
+        },
+        {
+          "field": 5,
+          "wire": 5,
+          "offset": 20,
+          "value": -3.492954969406128,
+          "raw_hex": "938c5fc0"
+        },
+        {
+          "field": 6,
+          "wire": 5,
+          "offset": 25,
+          "value": 2.779143642328563e-06,
+          "raw_hex": "53813a36"
+        }
+      ]
+    },
+    {
+      "field": 4,
+      "wire": 2,
+      "offset": 322,
+      "size": 25,
+      "children": [
+        {
+          "field": 1,
+          "wire": 5,
+          "offset": 0,
+          "value": 28.0,
+          "raw_hex": "0000e041"
+        },
+        {
+          "field": 2,
+          "wire": 5,
+          "offset": 5,
+          "value": -2.3999996185302734,
+          "raw_hex": "989919c0"
+        },
+        {
+          "field": 3,
+          "wire": 5,
+          "offset": 10,
+          "value": 0.10000000149011612,
+          "raw_hex": "cdcccc3d"
+        },
+        {
+          "field": 5,
+          "wire": 5,
+          "offset": 15,
+          "value": -2.3859682083129883,
+          "raw_hex": "b4b318c0"
+        },
+        {
+          "field": 6,
+          "wire": 5,
+          "offset": 20,
+          "value": -0.0003585808153729886,
+          "raw_hex": "e7ffbbb9"
+        }
+      ]
+    },
+    {
+      "field": 4,
+      "wire": 2,
+      "offset": 349,
+      "size": 25,
+      "children": [
+        {
+          "field": 1,
+          "wire": 5,
+          "offset": 0,
+          "value": 28.0,
+          "raw_hex": "0000e041"
+        },
+        {
+          "field": 2,
+          "wire": 5,
+          "offset": 5,
+          "value": -2.3999996185302734,
+          "raw_hex": "989919c0"
+        },
+        {
+          "field": 3,
+          "wire": 5,
+          "offset": 10,
+          "value": 0.10000000894069672,
+          "raw_hex": "cecccc3d"
+        },
+        {
+          "field": 5,
+          "wire": 5,
+          "offset": 15,
+          "value": -2.385928153991699,
+          "raw_hex": "0cb318c0"
+        },
+        {
+          "field": 6,
+          "wire": 5,
+          "offset": 20,
+          "value": -0.0003585779049899429,
+          "raw_hex": "83ffbbb9"
+        }
+      ]
+    },
+    {
+      "field": 5,
+      "wire": 2,
+      "offset": 376,
+      "size": 15,
+      "children": [
+        {
+          "field": 1,
+          "wire": 5,
+          "offset": 0,
+          "value": 3.0,
+          "raw_hex": "00004040"
+        },
+        {
+          "field": 3,
+          "wire": 5,
+          "offset": 5,
+          "value": 1.0,
+          "raw_hex": "0000803f"
+        },
+        {
+          "field": 4,
+          "wire": 5,
+          "offset": 10,
+          "value": 1.0,
+          "raw_hex": "0000803f"
+        }
+      ]
+    },
+    {
+      "field": 6,
+      "wire": 2,
+      "offset": 393,
+      "size": 33,
+      "children": [
+        {
+          "field": 1,
+          "wire": 2,
+          "offset": 0,
+          "size": 16,
+          "children": [
+            {
+              "field": 11,
+              "wire": 6,
+              "offset": 0,
+              "unsupported": true
+            }
+          ]
+        },
+        {
+          "field": 2,
+          "wire": 5,
+          "offset": 18,
+          "value": 110.0,
+          "raw_hex": "0000dc42"
+        },
+        {
+          "field": 3,
+          "wire": 5,
+          "offset": 23,
+          "value": 120.0,
+          "raw_hex": "0000f042"
+        },
+        {
+          "field": 5,
+          "wire": 5,
+          "offset": 28,
+          "value": -4.0,
+          "raw_hex": "000080c0"
+        }
+      ]
+    },
+    {
+      "field": 7,
+      "wire": 2,
+      "offset": 428,
+      "size": 5,
+      "children": [
+        {
+          "field": 1,
+          "wire": 5,
+          "offset": 0,
+          "value": 30.0,
+          "raw_hex": "0000f041"
+        }
+      ]
+    },
+    {
+      "field": 9,
+      "wire": 2,
+      "offset": 435,
+      "size": 63,
+      "children": [
+        {
+          "field": 13,
+          "wire": 3,
+          "offset": 0,
+          "unsupported": true
+        }
+      ]
+    }
+  ]
+}

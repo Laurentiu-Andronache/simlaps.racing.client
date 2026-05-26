@@ -100,3 +100,16 @@ def test_unconfirmed_batch_is_ignored_after_laps_have_started():
     parser._flush_pending_compound_batch()
 
     assert parser.context.tyre.compound_name == "HC"
+
+
+def test_loading_compound_falls_back_to_context_car_uuid_without_teleport():
+    """Practice sessions often lack CarTeleportCompleted; _last_car_uuid is None
+    but the player car UUID is already known from connect lines."""
+    parser = make_parser()
+    parser._last_car_uuid = None  # simulate missing teleport
+
+    parser._handle_compound_v2(
+        "[2026-04-02 23:22:17.035] [physics] [info] LOADING TYRE COMPOUND Slicks (S)"
+    )
+
+    assert parser.context.tyre.compound_name == "Slicks (S)"

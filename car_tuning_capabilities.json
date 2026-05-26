@@ -1,0 +1,1491 @@
+{
+  "summary": {
+    "high_tuning": 30,
+    "medium_tuning": 33,
+    "low_tuning": 0,
+    "no_tuning": 1
+  },
+  "categories": {
+    "high_tuning": [
+      {
+        "name": "common_phsx",
+        "capabilities": {
+          "aero": true,
+          "suspension": true,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": true,
+          "electronics": true,
+          "general_tuning": false,
+          "aftermarket": false
+        }
+      },
+      {
+        "name": "ks_alfa_romeo_giulia_gtam",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": true,
+          "general_tuning": true,
+          "aftermarket": false
+        }
+      },
+      {
+        "name": "ks_alpine_a110_s",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": true,
+          "general_tuning": true,
+          "aftermarket": false
+        }
+      },
+      {
+        "name": "ks_audi_r8_lms_gt4_evo",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": false,
+          "general_tuning": true,
+          "aftermarket": true
+        }
+      },
+      {
+        "name": "ks_audi_rs_3_sportback",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": true,
+          "general_tuning": true,
+          "aftermarket": false
+        }
+      },
+      {
+        "name": "ks_audi_rs_6_avant",
+        "capabilities": {
+          "aero": true,
+          "suspension": true,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": true,
+          "general_tuning": true,
+          "aftermarket": false
+        }
+      },
+      {
+        "name": "ks_bmw_m2_coupe",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": true,
+          "general_tuning": true,
+          "aftermarket": false
+        }
+      },
+      {
+        "name": "ks_bmw_m2_cs_racing",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": false,
+          "general_tuning": true,
+          "aftermarket": true
+        }
+      },
+      {
+        "name": "ks_bmw_m4_csl",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": true,
+          "general_tuning": true,
+          "aftermarket": false
+        }
+      },
+      {
+        "name": "ks_bmw_m4_gt3",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": false,
+          "general_tuning": true,
+          "aftermarket": true
+        }
+      },
+      {
+        "name": "ks_bmw_m8_competition",
+        "capabilities": {
+          "aero": true,
+          "suspension": true,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": false,
+          "general_tuning": true,
+          "aftermarket": false
+        }
+      },
+      {
+        "name": "ks_caterham_academy",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": false,
+          "general_tuning": true,
+          "aftermarket": true
+        }
+      },
+      {
+        "name": "ks_chevrolet_camaro_zl1",
+        "capabilities": {
+          "aero": true,
+          "suspension": true,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": true,
+          "general_tuning": true,
+          "aftermarket": false
+        }
+      },
+      {
+        "name": "ks_ferrari_296_gt3",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": false,
+          "general_tuning": true,
+          "aftermarket": true
+        }
+      },
+      {
+        "name": "ks_ferrari_296_gtb",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": true,
+          "general_tuning": true,
+          "aftermarket": false
+        }
+      },
+      {
+        "name": "ks_ferrari_488_challenge_evo",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": true,
+          "general_tuning": true,
+          "aftermarket": true
+        }
+      },
+      {
+        "name": "ks_ferrari_daytona_sp3",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": true,
+          "general_tuning": true,
+          "aftermarket": false
+        }
+      },
+      {
+        "name": "ks_ferrari_sf_25",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": true,
+          "general_tuning": true,
+          "aftermarket": false
+        }
+      },
+      {
+        "name": "ks_ford_mustang_gt3",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": false,
+          "general_tuning": true,
+          "aftermarket": true
+        }
+      },
+      {
+        "name": "ks_lamborghini_huracan_sto",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": true,
+          "general_tuning": true,
+          "aftermarket": true
+        }
+      },
+      {
+        "name": "ks_lamborghini_huracan_st_evo2",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": false,
+          "general_tuning": true,
+          "aftermarket": true
+        }
+      },
+      {
+        "name": "ks_lotus_emira",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": true,
+          "general_tuning": true,
+          "aftermarket": false
+        }
+      },
+      {
+        "name": "ks_maserati_mc20_gt2",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": true,
+          "general_tuning": true,
+          "aftermarket": true
+        }
+      },
+      {
+        "name": "ks_mazda_mx5_nd_cup",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": false,
+          "general_tuning": true,
+          "aftermarket": true
+        }
+      },
+      {
+        "name": "ks_mercedes_amg_gt2",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": false,
+          "general_tuning": true,
+          "aftermarket": true
+        }
+      },
+      {
+        "name": "ks_porsche_718_cayman_gt4_cs_mr",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": false,
+          "general_tuning": true,
+          "aftermarket": true
+        }
+      },
+      {
+        "name": "ks_porsche_992_gt3_cup",
+        "capabilities": {
+          "aero": true,
+          "suspension": true,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": true,
+          "general_tuning": true,
+          "aftermarket": true
+        }
+      },
+      {
+        "name": "ks_porsche_992_gt3_rs",
+        "capabilities": {
+          "aero": true,
+          "suspension": true,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": true,
+          "general_tuning": true,
+          "aftermarket": false
+        }
+      },
+      {
+        "name": "ks_porsche_992_gt3_r_rennsport",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": false,
+          "general_tuning": true,
+          "aftermarket": true
+        }
+      },
+      {
+        "name": "ks_toyota_gr86",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": true,
+          "general_tuning": true,
+          "aftermarket": false
+        }
+      }
+    ],
+    "medium_tuning": [
+      {
+        "name": "common_assets",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": false,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": true,
+          "general_tuning": false,
+          "aftermarket": false
+        }
+      },
+      {
+        "name": "ks_abarth_695_biposto",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": false,
+          "general_tuning": true,
+          "aftermarket": false
+        }
+      },
+      {
+        "name": "ks_alfa_romeo_75_turbo_evo",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": false,
+          "general_tuning": true,
+          "aftermarket": false
+        }
+      },
+      {
+        "name": "ks_alfa_romeo_giulia_gta_sprint",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": false,
+          "general_tuning": true,
+          "aftermarket": false
+        }
+      },
+      {
+        "name": "ks_alfa_romeo_junior",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": false,
+          "general_tuning": true,
+          "aftermarket": false
+        }
+      },
+      {
+        "name": "ks_alpine_a290_b",
+        "capabilities": {
+          "aero": false,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": true,
+          "general_tuning": true,
+          "aftermarket": false
+        }
+      },
+      {
+        "name": "ks_audi_sport_quattro",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": false,
+          "general_tuning": true,
+          "aftermarket": false
+        }
+      },
+      {
+        "name": "ks_bmw_m3_e30_evo_iii",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": false,
+          "general_tuning": true,
+          "aftermarket": false
+        }
+      },
+      {
+        "name": "ks_bmw_m3_e46_csl",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": false,
+          "general_tuning": true,
+          "aftermarket": false
+        }
+      },
+      {
+        "name": "ks_caterham_485_csr",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": false,
+          "general_tuning": true,
+          "aftermarket": false
+        }
+      },
+      {
+        "name": "ks_dallara_exp",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": false,
+          "general_tuning": true,
+          "aftermarket": false
+        }
+      },
+      {
+        "name": "ks_dallara_stradale_coupe",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": false,
+          "general_tuning": true,
+          "aftermarket": false
+        }
+      },
+      {
+        "name": "ks_ferrari_288_gto",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": false,
+          "general_tuning": true,
+          "aftermarket": false
+        }
+      },
+      {
+        "name": "ks_ferrari_f2004",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": false,
+          "general_tuning": true,
+          "aftermarket": false
+        }
+      },
+      {
+        "name": "ks_ferrari_f40_lm",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": false,
+          "general_tuning": true,
+          "aftermarket": false
+        }
+      },
+      {
+        "name": "ks_ford_escort_rs_cosworth",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": false,
+          "general_tuning": true,
+          "aftermarket": false
+        }
+      },
+      {
+        "name": "ks_honda_nsx_r",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": false,
+          "general_tuning": true,
+          "aftermarket": false
+        }
+      },
+      {
+        "name": "ks_honda_s2000_ap1",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": false,
+          "general_tuning": true,
+          "aftermarket": false
+        }
+      },
+      {
+        "name": "ks_hyundai_i30_n_hb",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": false,
+          "general_tuning": true,
+          "aftermarket": false
+        }
+      },
+      {
+        "name": "ks_lamborghini_countach",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": false,
+          "general_tuning": true,
+          "aftermarket": false
+        }
+      },
+      {
+        "name": "ks_lancia_delta_hf_integrale_evo_ii",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": false,
+          "general_tuning": true,
+          "aftermarket": false
+        }
+      },
+      {
+        "name": "ks_lotus_exige_v6_cup",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": false,
+          "general_tuning": true,
+          "aftermarket": false
+        }
+      },
+      {
+        "name": "ks_mazda_mx5_na",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": false,
+          "general_tuning": true,
+          "aftermarket": false
+        }
+      },
+      {
+        "name": "ks_mercedes_190e_evo_ii",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": false,
+          "general_tuning": true,
+          "aftermarket": false
+        }
+      },
+      {
+        "name": "ks_mini_jcs_1990",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": false,
+          "general_tuning": true,
+          "aftermarket": false
+        }
+      },
+      {
+        "name": "ks_peugeot_205_t16",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": false,
+          "general_tuning": true,
+          "aftermarket": false
+        }
+      },
+      {
+        "name": "ks_porsche_718_cayman_gt4_rs",
+        "capabilities": {
+          "aero": false,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": true,
+          "general_tuning": true,
+          "aftermarket": false
+        }
+      },
+      {
+        "name": "ks_porsche_964_turbo_3_6",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": false,
+          "general_tuning": true,
+          "aftermarket": false
+        }
+      },
+      {
+        "name": "ks_renault_5_gt_turbo",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": false,
+          "general_tuning": true,
+          "aftermarket": false
+        }
+      },
+      {
+        "name": "ks_toyota_ae86_sprinter_trueno",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": false,
+          "general_tuning": true,
+          "aftermarket": false
+        }
+      },
+      {
+        "name": "ks_toyota_supra_mkiv",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": false,
+          "general_tuning": true,
+          "aftermarket": false
+        }
+      },
+      {
+        "name": "ks_volkswagen_golf_gti_mk1",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": false,
+          "general_tuning": true,
+          "aftermarket": false
+        }
+      },
+      {
+        "name": "ks_volkswagen_golf_gti_mk8",
+        "capabilities": {
+          "aero": true,
+          "suspension": false,
+          "engine": true,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": false,
+          "general_tuning": true,
+          "aftermarket": false
+        }
+      }
+    ],
+    "low_tuning": [],
+    "no_tuning": [
+      {
+        "name": "dummycar",
+        "capabilities": {
+          "aero": false,
+          "suspension": false,
+          "engine": false,
+          "drivetrain": false,
+          "brakes": false,
+          "electronics": false,
+          "general_tuning": false,
+          "aftermarket": false
+        }
+      }
+    ]
+  },
+  "detailed": {
+    "common_assets": {
+      "aero": true,
+      "suspension": false,
+      "engine": false,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": true,
+      "general_tuning": false,
+      "aftermarket": false
+    },
+    "common_phsx": {
+      "aero": true,
+      "suspension": true,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": true,
+      "electronics": true,
+      "general_tuning": false,
+      "aftermarket": false
+    },
+    "dummycar": {
+      "aero": false,
+      "suspension": false,
+      "engine": false,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": false,
+      "general_tuning": false,
+      "aftermarket": false
+    },
+    "ks_abarth_695_biposto": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": false,
+      "general_tuning": true,
+      "aftermarket": false
+    },
+    "ks_alfa_romeo_75_turbo_evo": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": false,
+      "general_tuning": true,
+      "aftermarket": false
+    },
+    "ks_alfa_romeo_giulia_gtam": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": true,
+      "general_tuning": true,
+      "aftermarket": false
+    },
+    "ks_alfa_romeo_giulia_gta_sprint": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": false,
+      "general_tuning": true,
+      "aftermarket": false
+    },
+    "ks_alfa_romeo_junior": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": false,
+      "general_tuning": true,
+      "aftermarket": false
+    },
+    "ks_alpine_a110_s": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": true,
+      "general_tuning": true,
+      "aftermarket": false
+    },
+    "ks_alpine_a290_b": {
+      "aero": false,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": true,
+      "general_tuning": true,
+      "aftermarket": false
+    },
+    "ks_audi_r8_lms_gt4_evo": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": false,
+      "general_tuning": true,
+      "aftermarket": true
+    },
+    "ks_audi_rs_3_sportback": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": true,
+      "general_tuning": true,
+      "aftermarket": false
+    },
+    "ks_audi_rs_6_avant": {
+      "aero": true,
+      "suspension": true,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": true,
+      "general_tuning": true,
+      "aftermarket": false
+    },
+    "ks_audi_sport_quattro": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": false,
+      "general_tuning": true,
+      "aftermarket": false
+    },
+    "ks_bmw_m2_coupe": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": true,
+      "general_tuning": true,
+      "aftermarket": false
+    },
+    "ks_bmw_m2_cs_racing": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": false,
+      "general_tuning": true,
+      "aftermarket": true
+    },
+    "ks_bmw_m3_e30_evo_iii": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": false,
+      "general_tuning": true,
+      "aftermarket": false
+    },
+    "ks_bmw_m3_e46_csl": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": false,
+      "general_tuning": true,
+      "aftermarket": false
+    },
+    "ks_bmw_m4_csl": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": true,
+      "general_tuning": true,
+      "aftermarket": false
+    },
+    "ks_bmw_m4_gt3": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": false,
+      "general_tuning": true,
+      "aftermarket": true
+    },
+    "ks_bmw_m8_competition": {
+      "aero": true,
+      "suspension": true,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": false,
+      "general_tuning": true,
+      "aftermarket": false
+    },
+    "ks_caterham_485_csr": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": false,
+      "general_tuning": true,
+      "aftermarket": false
+    },
+    "ks_caterham_academy": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": false,
+      "general_tuning": true,
+      "aftermarket": true
+    },
+    "ks_chevrolet_camaro_zl1": {
+      "aero": true,
+      "suspension": true,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": true,
+      "general_tuning": true,
+      "aftermarket": false
+    },
+    "ks_dallara_exp": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": false,
+      "general_tuning": true,
+      "aftermarket": false
+    },
+    "ks_dallara_stradale_coupe": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": false,
+      "general_tuning": true,
+      "aftermarket": false
+    },
+    "ks_ferrari_288_gto": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": false,
+      "general_tuning": true,
+      "aftermarket": false
+    },
+    "ks_ferrari_296_gt3": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": false,
+      "general_tuning": true,
+      "aftermarket": true
+    },
+    "ks_ferrari_296_gtb": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": true,
+      "general_tuning": true,
+      "aftermarket": false
+    },
+    "ks_ferrari_488_challenge_evo": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": true,
+      "general_tuning": true,
+      "aftermarket": true
+    },
+    "ks_ferrari_daytona_sp3": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": true,
+      "general_tuning": true,
+      "aftermarket": false
+    },
+    "ks_ferrari_f2004": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": false,
+      "general_tuning": true,
+      "aftermarket": false
+    },
+    "ks_ferrari_f40_lm": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": false,
+      "general_tuning": true,
+      "aftermarket": false
+    },
+    "ks_ferrari_sf_25": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": true,
+      "general_tuning": true,
+      "aftermarket": false
+    },
+    "ks_ford_escort_rs_cosworth": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": false,
+      "general_tuning": true,
+      "aftermarket": false
+    },
+    "ks_ford_mustang_gt3": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": false,
+      "general_tuning": true,
+      "aftermarket": true
+    },
+    "ks_honda_nsx_r": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": false,
+      "general_tuning": true,
+      "aftermarket": false
+    },
+    "ks_honda_s2000_ap1": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": false,
+      "general_tuning": true,
+      "aftermarket": false
+    },
+    "ks_hyundai_i30_n_hb": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": false,
+      "general_tuning": true,
+      "aftermarket": false
+    },
+    "ks_lamborghini_countach": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": false,
+      "general_tuning": true,
+      "aftermarket": false
+    },
+    "ks_lamborghini_huracan_sto": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": true,
+      "general_tuning": true,
+      "aftermarket": true
+    },
+    "ks_lamborghini_huracan_st_evo2": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": false,
+      "general_tuning": true,
+      "aftermarket": true
+    },
+    "ks_lancia_delta_hf_integrale_evo_ii": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": false,
+      "general_tuning": true,
+      "aftermarket": false
+    },
+    "ks_lotus_emira": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": true,
+      "general_tuning": true,
+      "aftermarket": false
+    },
+    "ks_lotus_exige_v6_cup": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": false,
+      "general_tuning": true,
+      "aftermarket": false
+    },
+    "ks_maserati_mc20_gt2": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": true,
+      "general_tuning": true,
+      "aftermarket": true
+    },
+    "ks_mazda_mx5_na": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": false,
+      "general_tuning": true,
+      "aftermarket": false
+    },
+    "ks_mazda_mx5_nd_cup": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": false,
+      "general_tuning": true,
+      "aftermarket": true
+    },
+    "ks_mercedes_190e_evo_ii": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": false,
+      "general_tuning": true,
+      "aftermarket": false
+    },
+    "ks_mercedes_amg_gt2": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": false,
+      "general_tuning": true,
+      "aftermarket": true
+    },
+    "ks_mini_jcs_1990": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": false,
+      "general_tuning": true,
+      "aftermarket": false
+    },
+    "ks_peugeot_205_t16": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": false,
+      "general_tuning": true,
+      "aftermarket": false
+    },
+    "ks_porsche_718_cayman_gt4_cs_mr": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": false,
+      "general_tuning": true,
+      "aftermarket": true
+    },
+    "ks_porsche_718_cayman_gt4_rs": {
+      "aero": false,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": true,
+      "general_tuning": true,
+      "aftermarket": false
+    },
+    "ks_porsche_964_turbo_3_6": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": false,
+      "general_tuning": true,
+      "aftermarket": false
+    },
+    "ks_porsche_992_gt3_cup": {
+      "aero": true,
+      "suspension": true,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": true,
+      "general_tuning": true,
+      "aftermarket": true
+    },
+    "ks_porsche_992_gt3_rs": {
+      "aero": true,
+      "suspension": true,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": true,
+      "general_tuning": true,
+      "aftermarket": false
+    },
+    "ks_porsche_992_gt3_r_rennsport": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": false,
+      "general_tuning": true,
+      "aftermarket": true
+    },
+    "ks_renault_5_gt_turbo": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": false,
+      "general_tuning": true,
+      "aftermarket": false
+    },
+    "ks_toyota_ae86_sprinter_trueno": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": false,
+      "general_tuning": true,
+      "aftermarket": false
+    },
+    "ks_toyota_gr86": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": true,
+      "general_tuning": true,
+      "aftermarket": false
+    },
+    "ks_toyota_supra_mkiv": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": false,
+      "general_tuning": true,
+      "aftermarket": false
+    },
+    "ks_volkswagen_golf_gti_mk1": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": false,
+      "general_tuning": true,
+      "aftermarket": false
+    },
+    "ks_volkswagen_golf_gti_mk8": {
+      "aero": true,
+      "suspension": false,
+      "engine": true,
+      "drivetrain": false,
+      "brakes": false,
+      "electronics": false,
+      "general_tuning": true,
+      "aftermarket": false
+    }
+  }
+}

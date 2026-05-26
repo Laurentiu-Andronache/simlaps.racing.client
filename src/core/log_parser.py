@@ -664,10 +664,13 @@ class LogParser:
         if "LOADING TYRE COMPOUND" in line:
             self._flush_pending_compound_batch()
             m = self._pats["loading_tyre_compound"].search(line)
-            if m and self._last_car_uuid and self._is_player_car(self._last_car_uuid):
+            # In practice the player car may spawn without a CarTeleportCompleted
+            # event, so fall back to the known player car UUID from connect lines.
+            car_uuid = self._last_car_uuid or self.context.car_uuid
+            if m and car_uuid and self._is_player_car(car_uuid):
                 compound_name = m.group(1).strip()
                 self.context.tyre.set_all(compound_name)
-                log_debug(Component.LOG_PARSER, 
+                log_debug(Component.LOG_PARSER,
                     f"[COMPOUND] All tires -> {compound_name} "
                     f"(resolved: {self.context.tyre.compound_name})"
                 )

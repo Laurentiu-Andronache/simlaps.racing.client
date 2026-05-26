@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
+from src.core.car_tuning_catalog import format_tuning_block
 from src.core.telemetry_capture import CaptureMetadata, FrameData
 from src.core.track_catalog import select_track_profile
 from src.models import SharedSessionManager
@@ -2619,7 +2620,14 @@ window.addEventListener('DOMContentLoaded', () => {
             "Use bullet points. No padding, no repetition. "
             "Every claim must reference a specific number from the telemetry data below."
         )
-        if car_known:
+        tuning_block = format_tuning_block(car_model) if car_known else ""
+        if car_known and tuning_block:
+            lines.append(
+                f"The available setup parameters for the {car_model} in AC Evo are listed "
+                f"in the CAR SETUP PARAMETERS section below. "
+                f"Only recommend changes from that list."
+            )
+        elif car_known:
             lines.append(
                 f"If you have knowledge of the {car_model} setup parameters in AC Evo, "
                 f"use it. Otherwise limit setup advice to parameters confirmed by the telemetry "
@@ -2651,6 +2659,11 @@ window.addEventListener('DOMContentLoaded', () => {
             for note in analysis_notes:
                 lines.append(f"- {note}")
         lines.append("")
+
+        # ── Car setup parameters
+        if tuning_block:
+            lines.append(tuning_block)
+            lines.append("")
 
         # ── Session overview
         lines.append("SESSION OVERVIEW:")

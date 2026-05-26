@@ -79,3 +79,6 @@ obfuscated/
 
 # Local AST/RAG artifacts
 .windsurf/rag/
+
+# game files
+extracted.7z

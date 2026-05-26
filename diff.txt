@@ -1,0 +1,111 @@
+diff --git a/.gitignore b/.gitignore
+index e5cdf3d..c15bbee 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -78,4 +78,9 @@ Thumbs.db
+ obfuscated/
+ 
+ # Local AST/RAG artifacts
+-.windsurf/rag/
+\ No newline at end of file
++.windsurf/rag/
++
++# game files
++extracted.7z
++
++acevo-sdk/
+\ No newline at end of file
+diff --git a/src/core/log_parser.py b/src/core/log_parser.py
+index ce6a620..72cddff 100644
+--- a/src/core/log_parser.py
++++ b/src/core/log_parser.py
+@@ -664,10 +664,13 @@ class LogParser:
+         if "LOADING TYRE COMPOUND" in line:
+             self._flush_pending_compound_batch()
+             m = self._pats["loading_tyre_compound"].search(line)
+-            if m and self._last_car_uuid and self._is_player_car(self._last_car_uuid):
++            # In practice the player car may spawn without a CarTeleportCompleted
++            # event, so fall back to the known player car UUID from connect lines.
++            car_uuid = self._last_car_uuid or self.context.car_uuid
++            if m and car_uuid and self._is_player_car(car_uuid):
+                 compound_name = m.group(1).strip()
+                 self.context.tyre.set_all(compound_name)
+-                log_debug(Component.LOG_PARSER, 
++                log_debug(Component.LOG_PARSER,
+                     f"[COMPOUND] All tires -> {compound_name} "
+                     f"(resolved: {self.context.tyre.compound_name})"
+                 )
+diff --git a/src/core/telemetry_analyzer.py b/src/core/telemetry_analyzer.py
+index 3a208d4..cd29ddf 100644
+--- a/src/core/telemetry_analyzer.py
++++ b/src/core/telemetry_analyzer.py
+@@ -13,6 +13,7 @@ from dataclasses import dataclass
+ from datetime import datetime
+ from typing import Any, Dict, List, Optional, Tuple
+ 
++from src.core.car_tuning_catalog import format_tuning_block
+ from src.core.telemetry_capture import CaptureMetadata, FrameData
+ from src.core.track_catalog import select_track_profile
+ from src.models import SharedSessionManager
+@@ -2619,7 +2620,14 @@ window.addEventListener('DOMContentLoaded', () => {
+             "Use bullet points. No padding, no repetition. "
+             "Every claim must reference a specific number from the telemetry data below."
+         )
+-        if car_known:
++        tuning_block = format_tuning_block(car_model) if car_known else ""
++        if car_known and tuning_block:
++            lines.append(
++                f"The available setup parameters for the {car_model} in AC Evo are listed "
++                f"in the CAR SETUP PARAMETERS section below. "
++                f"Only recommend changes from that list."
++            )
++        elif car_known:
+             lines.append(
+                 f"If you have knowledge of the {car_model} setup parameters in AC Evo, "
+                 f"use it. Otherwise limit setup advice to parameters confirmed by the telemetry "
+@@ -2652,6 +2660,11 @@ window.addEventListener('DOMContentLoaded', () => {
+                 lines.append(f"- {note}")
+         lines.append("")
+ 
++        # ── Car setup parameters
++        if tuning_block:
++            lines.append(tuning_block)
++            lines.append("")
++
+         # ── Session overview
+         lines.append("SESSION OVERVIEW:")
+         lines.append(f"- Total laps analysed: {len(laps)}")
+diff --git a/tests/test_log_parser_core_methods.py b/tests/test_log_parser_core_methods.py
+index 8bfdb58..116d822 100644
+--- a/tests/test_log_parser_core_methods.py
++++ b/tests/test_log_parser_core_methods.py
+@@ -112,7 +112,7 @@ class TestDetermineLapStateEdgeCases:
+         ip = InProgressLap()
+         ip.is_outlap = False
+         ip.physics_lap_num = 1  # First lap in practice
+-        ip.splits = {0: 30000, 1: 60000}
++        ip.splits = {}  # No splits for outlap detection via physics counter
+         
+         state = parser._determine_lap_state(ip, [0, 1], [30000, 60000], 90000, "PRACTICE")
+         
+diff --git a/tests/test_log_parser_tyre_compounds.py b/tests/test_log_parser_tyre_compounds.py
+index fd6025a..869e267 100644
+--- a/tests/test_log_parser_tyre_compounds.py
++++ b/tests/test_log_parser_tyre_compounds.py
+@@ -100,3 +100,16 @@ def test_unconfirmed_batch_is_ignored_after_laps_have_started():
+     parser._flush_pending_compound_batch()
+ 
+     assert parser.context.tyre.compound_name == "HC"
++
++
++def test_loading_compound_falls_back_to_context_car_uuid_without_teleport():
++    """Practice sessions often lack CarTeleportCompleted; _last_car_uuid is None
++    but the player car UUID is already known from connect lines."""
++    parser = make_parser()
++    parser._last_car_uuid = None  # simulate missing teleport
++
++    parser._handle_compound_v2(
++        "[2026-04-02 23:22:17.035] [physics] [info] LOADING TYRE COMPOUND Slicks (S)"
++    )
++
++    assert parser.context.tyre.compound_name == "Slicks (S)"

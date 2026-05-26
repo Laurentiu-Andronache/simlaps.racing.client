@@ -112,7 +112,7 @@ class TestDetermineLapStateEdgeCases:
         ip = InProgressLap()
         ip.is_outlap = False
         ip.physics_lap_num = 1  # First lap in practice
-        ip.splits = {0: 30000, 1: 60000}
+        ip.splits = {}  # No splits for outlap detection via physics counter
         
         state = parser._determine_lap_state(ip, [0, 1], [30000, 60000], 90000, "PRACTICE")
         
