@@ -51,6 +51,7 @@ coverage.xml
 .venv
 env/
 venv/
+venv-sim-laps-client/
 ENV/
 env.bak/
 venv.bak/

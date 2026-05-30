@@ -64,12 +64,16 @@ OVERALL TIME ANALYSIS:
 ============================================================
 RESPONSE FORMAT — FOLLOW EXACTLY. NO DEVIATION.
 
+CRITICAL STYLE RULE: Be extremely concise. Each bullet is ONE short actionable sentence.
+The driver reads this at a glance between sessions. Information overload = useless.
+Good example: 'Brake 1s sooner and turn in later to setup for exit (+0.7s).'
+Bad example: 'Lap 4 applies 1.02G peak braking with 25% trail brake into a corner where Lap 2 peaks at 0.35G — remove the brake input entirely.'
+One supporting number per bullet maximum. No multi-stat comparisons. No lap-vs-lap narration.
+
 Output in clean Markdown. Use ## for section headers.
 Use bullet points inside sections. Never use numbered lists inside bullets.
-Every single bullet must contain at least one specific number from the data above.
-No padding. No preamble. No 'Great question!' or 'Let me analyse...'
-Do not repeat data the user already knows. Surface only conclusions.
-Start your response directly with '## BMW M2 CS Racing — [Track Name] Debrief'
+No padding. No preamble.
+Start your response directly with '## [Car] — [Track Name] Debrief'
 
 ---
 
@@ -78,66 +82,65 @@ Start your response directly with '## BMW M2 CS Racing — [Track Name] Debrief'
 Exclude any corners flagged as corrupt/capped in the data above.
 Format each corner EXACTLY like this:
 
-- **[Corner Name]** | [segment delta]s | [one sentence: what the data shows is causing the loss]
+- **[Corner Name]** | -[delta]s | [short action to fix it]
 
-Root cause must reference entry/apex/exit speed delta, braking delta, or trail brake % — not generic advice.
+The action must be a direct instruction (e.g. 'lift instead of braking', 'brake 0.5s earlier', 'carry 15 km/h more apex speed').
+Do NOT explain the cause in detail — just state what to change.
 
 ---
 
 ## 2. DRIVING TECHNIQUE
 
-5 bullets maximum. Each bullet covers exactly one issue.
-Structure: [Corner name]: [what the data shows] → [what to do instead].
-Cover at least: brake timing, trail braking, throttle pickup, turn-in consistency.
-Cite the exact number that proves the issue (e.g. 'brake onset 0.70s later', 'trail brake 41% vs 31%', '+26.7 km/h entry speed delta').
-Do NOT say 'consider' or 'try' — be direct.
+5 bullets maximum. Each bullet is ONE short instruction the driver can act on immediately.
+Format: **[Corner]:** [do X] ([one supporting number]).
+
+Examples of correct brevity:
+  - **Turn 3:** Brake 0.5s earlier and trail deeper to hold 94 km/h apex.
+  - **Rainey Curve:** Commit to turn-in 0.3s sooner — no braking after initial lift.
+  - **Turn 10:** Get on throttle at apex — coasting loses 17 km/h exit speed.
+
+Do NOT say 'consider' or 'try'. Do NOT cite multiple numbers or compare laps inline.
 
 ---
 
 ## 3. CONSISTENCY
 
-3 bullets maximum.
-Rank the 3 highest-variation corners by apex speed range (km/h).
-For each: state the range, then diagnose whether the cause is a missing reference point (braking marker) or commitment variance (same entry, different apex).
-Cite the specific apex speed range number.
+3 bullets maximum. One line each.
+Format: **[Corner]:** [apex range] km/h spread — [one-phrase cause: 'no braking marker' or 'commitment varies'].
 
 ---
 
 ## 4. CAR SETUP — Test Car
 
 Output a Markdown table with exactly these columns:
-| Parameter | Current indication from data | Suggested change | Reason |
-| --- | --- | --- | --- |
+| Parameter | Signal | Change |
+| --- | --- | --- |
 
 Rules:
-- Only include rows where the telemetry data gives a CLEAR signal.
-- 'Current indication' must quote an actual number from the data (e.g. '0.67 front bias', '26.9 psi avg', '-0.0mm rake').
-- 'Suggested change' must be specific and directional (e.g. 'move to 0.64–0.65', 'reduce 0.3–0.5 psi', 'raise rear ride height').
-- 'Reason' must reference a telemetry observation (e.g. 'understeer balance hint at Eau Rouge apex both laps', 'peak brake temp 687C').
-- If you have car-specific knowledge of the Test Car in AC Evo, apply it. Otherwise skip that parameter row.
-- Cover: brake bias, tyre pressures, rake/aero, springs if signalled. Skip alignment unless load/slip data supports it.
-- Do NOT fabricate setup parameters not evidenced in the data.
+- Maximum 4 rows. Only where telemetry gives a CLEAR signal.
+- 'Signal' = one data point (e.g. '28.4 psi hot', '0.67 front bias', 'peak brake temp 620C').
+- 'Change' = short directional action (e.g. 'reduce 0.5 psi', 'move bias to 62%', 'raise rear 1 step').
+- Do NOT fabricate parameters not evidenced in the data.
+- If you have car-specific knowledge of the Test Car in AC Evo, apply it.
 
 ---
 
 ## 5. TRACK NOTES — Test Track
 
-3 bullets maximum.
-Each bullet must be a track-specific observation CONFIRMED by the data — not generic Spa knowledge.
-Format: **[Corner/Section]:** [what the data shows] ([specific number]).
-Example of the tone and specificity required:
-  - **Blanchimont:** Both laps underutilise grip here — peak G only 0.77 vs session max 2.26, 1.50G headroom remaining. The car is capable of taking this flat.
+3 bullets maximum. One line each.
+Format: **[Corner/Section]:** [short insight] ([one number]).
+Only include observations where the car has significant unused grip or the corner can be taken differently than expected.
+Example: '**Blanchimont:** Can be taken flat — only 0.77G used vs 2.26G available.'
 
 ---
 
 ## 6. SINGLE BIGGEST GAIN
 
-Exactly one sentence. Must name: the specific corner + the specific input change + the expected time delta.
-Example of required specificity:
-  'Move the Pouhon 1 brake point 0.70s earlier (matching Lap 2 onset vs Lap 3) to recover the 9.3 km/h apex deficit, worth an estimated 0.5–0.8s.'
-Do not hedge. Do not say 'this could' or 'potentially'.
+Exactly one sentence: [corner] + [what to change] + [expected delta].
+Example: 'Lift instead of braking into Turn 6 to gain ~0.7s.'
+No hedging. No 'this could' or 'potentially'.
 
 ============================================================
-Every bullet must be grounded in a specific number from the telemetry above.
-If a section genuinely has no actionable data, write one line saying so and move on.
+REMEMBER: Brevity is paramount. The driver needs quick, actionable cues — not a data thesis.
+Each bullet = one action + one number. If a section has no actionable data, skip it entirely.
 ============================================================
