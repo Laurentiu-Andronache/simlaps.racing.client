@@ -348,6 +348,43 @@ class TestFollowWithCallbacks:
         )
 
     @pytest.mark.asyncio
+    async def test_follow_end_session_ending_lap_emits_game_stopped(self, tmp_path):
+        """END_SESSION 'Ending Lap for ... car' should stop the active session."""
+        log_file = tmp_path / "test.log"
+        log_file.write_text("")
+
+        game_calls = []
+        async def on_game(running):
+            game_calls.append(running)
+
+        parser = LogParser(
+            log_path=str(log_file), on_game_status_change=on_game
+        )
+        parser.context.car_uuid = "4d27cc23ee6ce0de-9c3810448288bcbb"
+        parser._running = True
+
+        async def append_end_session():
+            await asyncio.sleep(0.05)
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(
+                    "[2026-06-01 23:55:08.308] [gameplay] [info] "
+                    "END_SESSION Ending Lap for 4d27cc23ee6ce0de-9c3810448288bcbb car\n"
+                )
+
+        appender = asyncio.create_task(append_end_session())
+        try:
+            await asyncio.wait_for(parser.follow(poll_interval=0.01), timeout=0.5)
+        except asyncio.TimeoutError:
+            pass
+        finally:
+            parser.stop()
+            await appender
+
+        assert False in game_calls, (
+            f"Expected game_status=False from END_SESSION Ending Lap, got {game_calls!r}"
+        )
+
+    @pytest.mark.asyncio
     async def test_follow_restart_does_not_double_fire_exit(self, tmp_path):
         """A Restart line must not also be treated as an Exit (mutually exclusive).
 

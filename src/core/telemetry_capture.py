@@ -429,6 +429,7 @@ class TelemetryCapture:
             None,
             "manual",
             "session_end",
+            "session_restart",
             "disabled",
             "app_close",
         }

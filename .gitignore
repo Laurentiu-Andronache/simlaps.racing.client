@@ -83,3 +83,4 @@ obfuscated/
 
 # game files
 extracted.7z
+tests/output/

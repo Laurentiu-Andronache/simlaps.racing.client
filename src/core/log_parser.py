@@ -308,7 +308,7 @@ class LogParser:
             self._session_active_from_logs = False
             return
 
-        if "END_SESSION car" in line and self._line_mentions_player_car(line):
+        if "END_SESSION" in line and self._line_mentions_player_car(line):
             self._session_active_from_logs = False
             return
 
@@ -1712,7 +1712,7 @@ class LogParser:
                         # restart, the user is leaving the session entirely.
                         elif "request made GameModeRequestExit" in line:
                             await self._emit_game_status(False, trigger="GameModeRequestExit")
-                        if "END_SESSION car" in line:
+                        if "END_SESSION" in line:
                             if self._line_mentions_player_car(line):
                                 await self._emit_game_status(False, trigger="END_SESSION matched")
                             else:

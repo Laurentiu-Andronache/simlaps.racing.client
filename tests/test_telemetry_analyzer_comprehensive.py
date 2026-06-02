@@ -1302,3 +1302,83 @@ class TestFixedMeasurementWindow:
         assert "TIME LOSS RANKING" in prompt
         # Delta is 6.0s with LOW confidence -> should be flagged suspect and capped at 3.0s
         assert "suspect" in prompt.lower() or "SUSPECT" in prompt
+
+    @pytest.mark.asyncio
+    async def test_ai_prompt_excludes_brake_bias_when_not_in_catalog(self):
+        """When tuning catalog exists for a car but lacks brake bias, prompt must forbid it."""
+        from src.core.telemetry_analyzer import TelemetryAnalyzer
+        from src.core.car_tuning_catalog import get_tuning_params
+
+        car_model = "BMW M2 Coupe"
+        params = get_tuning_params(car_model)
+        assert params is not None, "M2 should match catalog"
+        param_labels = [p["label"].lower() for p in params]
+        assert not any("brake bias" in l for l in param_labels), "M2 catalog must not list brake bias"
+
+        corner = {
+            "id": 1, "name": "T1", "apex_speed": 80.0, "entry_speed": 100.0,
+            "exit_speed": 90.0, "start_frame": 10, "end_frame": 30, "apex_frame": 20,
+            "segment_time_s": 2.0, "confidence_label": "high",
+            "entry_state": None, "apex_state": None, "exit_state": None,
+        }
+        lap = {
+            "lap_num": 1, "lap_time_s": 90.0, "lap_time_str": "1:30.00",
+            "max_speed": 200.0, "avg_speed": 140.0,
+            "start_frame": 0, "end_frame": 100,
+            "corners": [corner], "track": [],
+        }
+        data = {
+            "hz": 10.0, "laps": [lap, {**lap, "lap_num": 2}],
+            "best_lap_num": 1, "reference_lap_num": 1, "comparison_lap_num": 2,
+            "ref_corners": [{"id": 1, "name": "T1"}], "corner_data": {}, "corner_speeds": {},
+            "analysis_mode": "full", "analysis_confidence": "high",
+            "analysis_notes": [], "authoritative_progress_ratio": 1.0,
+            "plausible_frame_ratio": 1.0, "track_label": "Test Track",
+            "car": car_model,
+        }
+        analyzer = TelemetryAnalyzer(output_dir="tests/output", session_manager=SharedSessionManager())
+        path = await analyzer._generate_ai_prompt(data, output_prefix="test_brake_bias_catalog")
+        with open(path, "r", encoding="utf-8") as fh:
+            prompt = fh.read()
+
+        assert "CAR SETUP PARAMETERS" in prompt, "Tuning block should be present"
+        assert "ONLY recommend parameters listed in the CAR SETUP PARAMETERS" in prompt
+        assert "move bias" not in prompt, "Brake bias example should be removed from rules"
+        assert "Parameter and Signal MUST describe the same subsystem" in prompt
+        assert "Tyre pressure rows MUST use tyre pressure evidence in psi only" in prompt
+        assert "Brake temperature evidence may only support brake-related parameters" in prompt
+
+    @pytest.mark.asyncio
+    async def test_ai_prompt_unknown_car_forbids_brake_bias(self):
+        """When car is unknown, prompt must not encourage brake bias recommendations."""
+        from src.core.telemetry_analyzer import TelemetryAnalyzer
+
+        corner = {
+            "id": 1, "name": "T1", "apex_speed": 80.0, "entry_speed": 100.0,
+            "exit_speed": 90.0, "start_frame": 10, "end_frame": 30, "apex_frame": 20,
+            "segment_time_s": 2.0, "confidence_label": "high",
+            "entry_state": None, "apex_state": None, "exit_state": None,
+        }
+        lap = {
+            "lap_num": 1, "lap_time_s": 90.0, "lap_time_str": "1:30.00",
+            "max_speed": 200.0, "avg_speed": 140.0,
+            "start_frame": 0, "end_frame": 100,
+            "corners": [corner], "track": [],
+        }
+        data = {
+            "hz": 10.0, "laps": [lap, {**lap, "lap_num": 2}],
+            "best_lap_num": 1, "reference_lap_num": 1, "comparison_lap_num": 2,
+            "ref_corners": [{"id": 1, "name": "T1"}], "corner_data": {}, "corner_speeds": {},
+            "analysis_mode": "full", "analysis_confidence": "high",
+            "analysis_notes": [], "authoritative_progress_ratio": 1.0,
+            "plausible_frame_ratio": 1.0, "track_label": "Test Track",
+            "car": "",
+        }
+        analyzer = TelemetryAnalyzer(output_dir="tests/output", session_manager=SharedSessionManager())
+        path = await analyzer._generate_ai_prompt(data, output_prefix="test_unknown_car")
+        with open(path, "r", encoding="utf-8") as fh:
+            prompt = fh.read()
+
+        assert "CAR SETUP" in prompt
+        assert "SKIPPED" in prompt
+        assert "Do NOT recommend brake bias" in prompt

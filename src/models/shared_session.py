@@ -11,7 +11,7 @@ from typing import Any, Callable, Dict, Optional, Set
 import threading
 import uuid
 
-from .lap import LapData, SessionData
+from .lap import LapData, LapState, SessionData
 
 
 @dataclass
@@ -20,6 +20,7 @@ class LapValidityData:
 
     lap_number: int
     is_valid: bool
+    lap_state: Optional[str] = None
     invalidation_reason: Optional[str] = None
     invalidation_timestamp: Optional[str] = None
     source: str = "shm_graphics"
@@ -243,7 +244,7 @@ class SharedSessionManager:
             lap_validity = self._session_data.lap_validity.get(lap_num)
             if lap_validity is None:
                 return None
-            return "PUSH" if lap_validity.is_valid else "INVALID_GAME"
+            return lap_validity.lap_state or ("PUSH" if lap_validity.is_valid else "INVALID_GAME")
 
     def get_car_setup(self) -> Dict[str, Any]:
         with self._lock:
@@ -350,11 +351,14 @@ class SharedSessionManager:
     def update_lap_validity_from_graphics_shm(self, lap_num: int, is_invalid: bool) -> None:
         with self._lock:
             current = self._session_data.lap_validity.get(lap_num)
+            lap_state = "INVALID_GAME" if is_invalid else "PUSH"
             if current is None:
-                current = LapValidityData(lap_number=lap_num, is_valid=not is_invalid)
+                current = LapValidityData(lap_number=lap_num, is_valid=not is_invalid, lap_state=lap_state)
                 self._session_data.lap_validity[lap_num] = current
             else:
                 current.is_valid = not is_invalid
+                if current.lap_state in (None, "PUSH", "INVALID_GAME"):
+                    current.lap_state = lap_state
             current.source = "shm_graphics"
 
             self._session_data.lap_validity_flat[lap_num] = not is_invalid
@@ -557,6 +561,7 @@ class SharedSessionManager:
             self._session_data.lap_validity[lap_data.lap_number] = LapValidityData(
                 lap_number=lap_data.lap_number,
                 is_valid=lap_data.is_valid,
+                lap_state=lap_data.lap_type or lap_data.lap_state.value,
                 source="logs",
             )
             self._session_data.lap_validity_flat[lap_data.lap_number] = lap_data.is_valid
@@ -751,6 +756,13 @@ class LegacySessionDataWrapper:
             lap_time_value = lap_times.get(lap_num)
             lap_time_ms = int(lap_time_value) if isinstance(lap_time_value, (int, float)) else 0
             sector_times = self._shared.get_sector_times(lap_num) or {}
+            lap_state_value = self._shared.get_lap_state(lap_num) or (
+                "PUSH" if lap_validity.get(lap_num, True) else "INVALID_GAME"
+            )
+            try:
+                lap_state = LapState(lap_state_value)
+            except ValueError:
+                lap_state = LapState.PUSH if lap_validity.get(lap_num, True) else LapState.INVALID_GAME
             laps.append(
                 LapData(
                     lap_number=lap_num,
@@ -760,6 +772,8 @@ class LegacySessionDataWrapper:
                     sector1_ms=sector_times.get(1),
                     sector2_ms=sector_times.get(2),
                     sector3_ms=sector_times.get(3),
+                    lap_state=lap_state,
+                    lap_type=lap_state.value,
                     is_valid=lap_validity.get(lap_num, True),
                 )
             )

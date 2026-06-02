@@ -35,6 +35,11 @@ class TestShouldNotifyStopCallback:
         capture._stop_reason = "session_end"
         assert capture._should_notify_stop_callback() is False
 
+    def test_no_notify_for_session_restart(self):
+        capture = TelemetryCapture(hz=10.0)
+        capture._stop_reason = "session_restart"
+        assert capture._should_notify_stop_callback() is False
+
     def test_no_notify_for_disabled(self):
         capture = TelemetryCapture(hz=10.0)
         capture._stop_reason = "disabled"

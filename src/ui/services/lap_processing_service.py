@@ -40,10 +40,12 @@ class LapProcessingService:
         # Fuel per lap is owned entirely by the log parser (Physics SHM + spike
         # detection) and is already set on lap.fuel_used before this point.
         if app._telemetry_capture and app._telemetry_capture.is_capturing():
-            app._telemetry_capture.record_lap_boundary(
-                lap.lap_time_ms,
-                lap.lap_number,
-            )
+            lap_type = getattr(lap, "lap_type", None) or getattr(getattr(lap, "lap_state", None), "value", None)
+            if lap_type != "OUTLAP":
+                app._telemetry_capture.record_lap_boundary(
+                    lap.lap_time_ms,
+                    lap.lap_number,
+                )
 
         elif app._config.telemetry_enabled and app._telemetry_capture:
             # A lap-complete event is too late to begin a useful capture

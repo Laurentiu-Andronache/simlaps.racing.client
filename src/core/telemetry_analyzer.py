@@ -913,6 +913,12 @@ def detect_corners(track: List[Dict], lap_start_frame: int, lap_end_frame: int, 
         entry = window[0]
         exit_pt = window[-1]
 
+        # Average entry/exit speeds over a few frames to reduce
+        # single-point jitter on braking zones and acceleration zones.
+        _N_AVG = min(3, max(1, len(window) // 3))
+        entry_speed = sum(pt["speed"] for pt in window[:_N_AVG]) / _N_AVG
+        exit_speed = sum(pt["speed"] for pt in window[-_N_AVG:]) / _N_AVG
+
         result.append({
             "id": cid,
             "start_frame": seg[ci_start]["frame"],
@@ -920,8 +926,8 @@ def detect_corners(track: List[Dict], lap_start_frame: int, lap_end_frame: int, 
             "apex_frame": apex["frame"],
             "apex_speed": apex["speed"],
             "min_speed": min(pt["speed"] for pt in window),
-            "entry_speed": entry["speed"],
-            "exit_speed": exit_pt["speed"],
+            "entry_speed": entry_speed,
+            "exit_speed": exit_speed,
             "apex_x": apex["x"],
             "apex_z": apex["z"],
             "lap_pos": seg[ci_start]["lap_pos"],
@@ -957,6 +963,12 @@ def detect_profiled_corners(track: List[Dict], lap_start_frame: int, lap_end_fra
         entry = window[0]
         exit_pt = window[-1]
 
+        # Average entry/exit speeds over a few frames to reduce
+        # single-point jitter on braking zones and acceleration zones.
+        _N_AVG = min(3, max(1, len(window) // 3))
+        entry_speed = sum(pt["speed"] for pt in window[:_N_AVG]) / _N_AVG
+        exit_speed = sum(pt["speed"] for pt in window[-_N_AVG:]) / _N_AVG
+
         # Measure segment time over a fixed lap_progress window so every lap
         # is evaluated on the identical track section.
         m_start, m_end = _corner_measurement_window(spec)
@@ -982,8 +994,8 @@ def detect_profiled_corners(track: List[Dict], lap_start_frame: int, lap_end_fra
             "apex_frame": apex["frame"],
             "apex_speed": apex["speed"],
             "min_speed": min(pt["speed"] for pt in window),
-            "entry_speed": entry["speed"],
-            "exit_speed": exit_pt["speed"],
+            "entry_speed": entry_speed,
+            "exit_speed": exit_speed,
             "apex_x": apex["x"],
             "apex_z": apex["z"],
             "lap_pos": apex["lap_pos"],
@@ -1022,11 +1034,15 @@ def match_corners(ref_corners: List[Dict], lap_corners: List[Dict], tol: float =
 
 
 def _corner_measurement_window(spec: Dict[str, Any]) -> Tuple[float, float]:
-    """Return a fixed lap_progress range centred on the corner profile."""
+    """Return a fixed lap_progress range centred on the corner profile.
+
+    The window is clamped to the corner profile bounds so that braking
+    zones and adjacent straights never inflate the segment time delta.
+    """
     center = (spec["start"] + spec["end"]) / 2.0
     return (
-        center - _CORNER_MEASUREMENT_WINDOW_BEFORE,
-        center + _CORNER_MEASUREMENT_WINDOW_AFTER,
+        max(spec["start"], center - _CORNER_MEASUREMENT_WINDOW_BEFORE),
+        min(spec["end"], center + _CORNER_MEASUREMENT_WINDOW_AFTER),
     )
 
 
@@ -1999,20 +2015,20 @@ class TelemetryAnalyzer:
             track_slim = [
                 {
                     "frame": pt["frame"],
-                    "x": round(pt["x"], 2),
-                    "z": round(pt["z"], 2),
-                    "speed": round(pt["speed"], 1),
-                    "brake": round(pt["brake"], 3),
-                    "gas": round(pt["gas"], 3),
+                    "x": round(_optional_float(pt.get("x")) or 0.0, 2),
+                    "z": round(_optional_float(pt.get("z")) or 0.0, 2),
+                    "speed": round(_optional_float(pt.get("speed")) or 0.0, 1),
+                    "brake": round(_optional_float(pt.get("brake")) or 0.0, 3),
+                    "gas": round(_optional_float(pt.get("gas")) or 0.0, 3),
                     "gear": pt["gear"],
-                    "steer": round(pt.get("steer", 0), 6),
-                    "yaw_rate": round(pt.get("yaw_rate", 0), 6),
-                    "acc_g_x": round(pt.get("acc_g_x", 0), 6),
-                    "acc_g_z": round(pt.get("acc_g_z", 0), 6),
-                    "brake_temp_fl": round(pt.get("brake_temp_fl", 0), 2),
-                    "brake_temp_fr": round(pt.get("brake_temp_fr", 0), 2),
-                    "brake_temp_rl": round(pt.get("brake_temp_rl", 0), 2),
-                    "brake_temp_rr": round(pt.get("brake_temp_rr", 0), 2),
+                    "steer": round(_optional_float(pt.get("steer")) or 0.0, 6),
+                    "yaw_rate": round(_optional_float(pt.get("yaw_rate")) or 0.0, 6),
+                    "acc_g_x": round(_optional_float(pt.get("acc_g_x")) or 0.0, 6),
+                    "acc_g_z": round(_optional_float(pt.get("acc_g_z")) or 0.0, 6),
+                    "brake_temp_fl": round(_optional_float(pt.get("brake_temp_fl")) or 0.0, 2),
+                    "brake_temp_fr": round(_optional_float(pt.get("brake_temp_fr")) or 0.0, 2),
+                    "brake_temp_rl": round(_optional_float(pt.get("brake_temp_rl")) or 0.0, 2),
+                    "brake_temp_rr": round(_optional_float(pt.get("brake_temp_rr")) or 0.0, 2),
                 }
                 for pt in render_track
             ]
@@ -2629,16 +2645,17 @@ window.addEventListener('DOMContentLoaded', () => {
             )
         elif car_known:
             lines.append(
-                f"If you have knowledge of the {car_model} setup parameters in AC Evo, "
-                f"use it. Otherwise limit setup advice to parameters confirmed by the telemetry "
-                f"signals (brake bias, tyre pressure, balance)."
+                f"The {car_model} setup parameters are not in the catalog. "
+                f"Only recommend setup changes for parameters adjustable in the car's setup screen. "
+                f"Do NOT assume brake bias is adjustable -- many road cars have fixed brake bias. "
+                f"Limit advice to tyre pressures, alignment, and parameters you are certain this car exposes."
             )
         else:
             lines.append(
                 "Car identity was not captured from shared memory. "
                 "Do NOT guess the car or fabricate setup parameters. "
-                "Limit advice to driving technique and parameters visible in the data "
-                "(brake bias, tyre pressure, balance hints)."
+                "Do NOT recommend brake bias changes -- many cars have fixed brake bias. "
+                "Limit setup advice to tyre pressures only. Focus on driving technique."
             )
         lines.append("")
 
@@ -3568,10 +3585,18 @@ window.addEventListener('DOMContentLoaded', () => {
             lines.append("")
             lines.append("Rules:")
             lines.append("- Maximum 4 rows. Only where telemetry gives a CLEAR signal.")
-            lines.append("- 'Signal' = one data point (e.g. '28.4 psi hot', '0.67 front bias', 'peak brake temp 620C').")
-            lines.append("- 'Change' = short directional action (e.g. 'reduce 0.5 psi', 'move bias to 62%', 'raise rear 1 step').")
-            lines.append("- Do NOT fabricate parameters not evidenced in the data.")
-            lines.append(f"- If you have car-specific knowledge of the {car_model} in AC Evo, apply it.")
+            lines.append("- 'Signal' = one data point (e.g. '28.4 psi hot', 'peak brake temp 620C').")
+            lines.append("- 'Change' = short directional action (e.g. 'reduce 0.5 psi', 'raise rear 1 step').")
+            lines.append("- Parameter and Signal MUST describe the same subsystem. Never mix evidence across systems.")
+            lines.append("- Tyre pressure rows MUST use tyre pressure evidence in psi only -- never brake temperature, tyre temperature, or wear.")
+            lines.append("- Brake temperature evidence may only support brake-related parameters, and only if that brake-related parameter is listed as adjustable for this car.")
+            lines.append("- If you do not have a matching telemetry signal for a parameter, omit that row entirely.")
+            if tuning_block:
+                lines.append("- ONLY recommend parameters listed in the CAR SETUP PARAMETERS section above.")
+                lines.append("- If a parameter is NOT in that list, the car cannot adjust it -- do NOT suggest it.")
+            else:
+                lines.append("- Do NOT assume brake bias is adjustable -- many cars have fixed brake bias.")
+                lines.append("- Only recommend parameters you are certain this car can adjust in AC Evo.")
         else:
             lines.append("## 4. CAR SETUP — SKIPPED")
             lines.append("")

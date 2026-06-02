@@ -6,6 +6,7 @@ import tracemalloc
 
 from src.models import (
     LapData,
+    LapState,
     SessionData,
     SharedSessionManager,
 )
@@ -188,6 +189,35 @@ def test_to_legacy_session_data_uses_graphics_lap_time_priority() -> None:
     legacy_session = manager.to_legacy_session_data()
     lap_two = next(l for l in legacy_session.laps if l.lap_number == 2)
     assert lap_two.lap_time_ms == 120000
+
+
+def test_legacy_wrapper_preserves_log_derived_outlap_state() -> None:
+    manager = SharedSessionManager()
+    session = SessionData(
+        session_id="session-outlap",
+        session_type="PRACTICE",
+        player_id="76561198321627695",
+        player_name="Driver",
+        car_uuid="car-uuid",
+        car="ks_porsche_992_gt3_cup",
+        track="spa_francorchamps",
+    )
+    lap = LapData(
+        lap_number=1,
+        physics_lap_number=1,
+        lap_time_ms=120000,
+        lap_time_str="2:00.000",
+        lap_state=LapState.OUTLAP,
+        lap_type=LapState.OUTLAP.value,
+        is_valid=False,
+        timestamp="2026-01-01T00:00:00",
+    )
+
+    manager.update_lap_from_logs(lap, session_data=session)
+
+    legacy_session = manager.to_legacy_session_data()
+    assert legacy_session.laps[0].lap_state == LapState.OUTLAP
+    assert legacy_session.laps[0].lap_type == "OUTLAP"
 
 
 def test_observer_notified_and_observer_errors_are_isolated() -> None:

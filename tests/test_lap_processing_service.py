@@ -205,6 +205,37 @@ async def test_handle_lap_complete_records_telemetry_boundary_when_capturing():
 
 
 @pytest.mark.asyncio
+async def test_handle_lap_complete_does_not_record_telemetry_boundary_for_outlap():
+    app = _make_app(telemetry_enabled=True)
+    app._telemetry_capture = MagicMock()
+    app._telemetry_capture.is_capturing.return_value = True
+    app._session_manager.get_lap_validity_data.return_value = None
+    card = MagicMock()
+    app._home_page.add_lap.return_value = card
+
+    session = SessionData(track="Laguna Seca", car="Ferrari 296 GT3")
+    lap = SessionLapData(
+        lap_number=1,
+        physics_lap_number=1,
+        lap_time_ms=120000,
+        lap_time_str="2:00.000",
+        lap_type="OUTLAP",
+        is_valid=False,
+        timestamp="2026-04-29T00:00:00",
+    )
+
+    service = LapProcessingService()
+    await service.handle_lap_complete(
+        app=app,
+        session=session,
+        lap=lap,
+        create_history_entry=lambda **kwargs: SimpleNamespace(**kwargs),
+    )
+
+    app._telemetry_capture.record_lap_boundary.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_handle_lap_complete_skips_pb_cache_when_unknown_track_or_car():
     app = _make_app(auto_submit=False)
     app._session_manager.get_lap_validity_data.return_value = None
