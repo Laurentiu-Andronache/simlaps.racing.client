@@ -207,10 +207,10 @@ class TestHandleLapCompleteWithData:
         assert result.is_valid is True
         assert parser._pending_lap is None  # flushed
 
-    def test_handle_lap_validity_game_says_invalid_overrides_push(self):
-        """Test that game's invalid flag demotes a heuristically-valid lap.
+    def test_handle_lap_validity_flags_one_invalidates_push(self):
+        """Test that the game's invalid flag demotes a heuristically-valid lap.
 
-        If our sector/split checks say PUSH (valid) but the game says the
+        If our sector/split checks say PUSH (valid) but the game flags the
         lap is invalid, we trust the game and mark it INVALID_GAME.
         """
         parser = LogParser()
@@ -243,7 +243,7 @@ class TestHandleLapCompleteWithData:
         # 2) Game says invalid (e.g., track cut the UI didn't show)
         line_validity = (
             "[2026-04-26 00:10:41.462] [network] [info] "
-            "Relevant onSplit for Combo 6@2: laptime 125000, valid false, flags 2, lap 2 (prev 1)"
+            "Relevant onSplit for Combo 6@2: laptime 125000, valid false, flags 1, lap 2 (prev 1)"
         )
         result = parser._handle_lap_validity(line_validity)
 
@@ -253,6 +253,47 @@ class TestHandleLapCompleteWithData:
         assert result.is_valid is False
         assert result.lap_type == "INVALID_GAME"
         assert parser._pending_lap is None  # flushed
+
+    def test_handle_lap_validity_flags_two_valid_even_when_boolean_false(self):
+        """AC Evo 0.7.0 can log valid false + flags 2 for a valid final lap."""
+        parser = LogParser()
+        parser.current_session = SessionData(
+            track="brands_hatch",
+            car="ks_abarth_695_biposto",
+            player_id="76561198321627695",
+            session_type="PRACTICE",
+        )
+        parser.context.player_id = "76561198321627695"
+        parser.context.car_uuid = "42c664e0cfa01f9e-868df28c1b9fb49b"
+        parser.context.tyre.set_all("SC")
+
+        parser._ip.physics_lap_num = 5
+        parser._ip.splits = {0: 39225, 1: 6456, 2: 24867}
+        parser._ip.split_end_confirmed = True
+
+        line_new_lap = (
+            "[2026-06-03 23:17:00.127] [gameplay] [info] "
+            "New lap carId 42c664e0cfa01f9e-868df28c1b9fb49b: 01:10.548"
+        )
+        result = parser._handle_lap_complete(line_new_lap)
+        assert result is None
+        assert parser._pending_lap is not None
+        assert parser._pending_lap.is_valid is True
+
+        line_validity = (
+            "[2026-06-03 23:17:00.135] [network] [info] "
+            "Relevant onSplit for Combo 2@8: laptime 70548, valid false, "
+            "flags 2, lap 4 (prev 3)"
+        )
+        result = parser._handle_lap_validity(line_validity)
+
+        assert result is not None
+        assert result.lap_number == 4
+        assert result.lap_time_ms == 70548
+        assert result.lap_state == LapState.PUSH
+        assert result.is_valid is True
+        assert result.lap_type == "PUSH"
+        assert parser._pending_lap is None
 
     def test_handle_lap_complete_missing_sectors(self):
         """Test handles missing sector data."""

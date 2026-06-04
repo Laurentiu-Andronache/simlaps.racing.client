@@ -113,3 +113,45 @@ def test_loading_compound_falls_back_to_context_car_uuid_without_teleport():
     )
 
     assert parser.context.tyre.compound_name == "Slicks (S)"
+
+
+
+
+def test_loading_compound_does_not_override_resolved_player_compound():
+    parser = make_parser()
+
+    parser.context.tyre.set_all("SC")
+    parser._last_car_uuid = PLAYER_CAR_ID
+
+    parser._handle_compound_v2(
+        "[2026-06-03 23:21:08.329] [physics] [info] LOADING TYRE COMPOUND Road (RD)"
+    )
+
+    assert parser.context.tyre.compound_name == "SC"
+def test_ai_prelap_compound_batch_does_not_replace_player_tyres():
+    parser = make_parser()
+    ai_car_id = "412d4e4b881874e9-a398f42b7df830b2"
+
+    parser._process_line(
+        f"[2026-06-03 23:21:00.451] [gameplay] [info] "
+        f"FUEL car {PLAYER_CAR_ID} setup with 30 L"
+    )
+    for pos in range(4):
+        parser._process_line(
+            f"[2026-06-03 23:21:00.451] [physics] [info] "
+            f"setCompound Tyre: {pos} compound name: SC"
+        )
+
+    parser._process_line(
+        f"[2026-06-03 23:21:08.325] [gameplay] [info] "
+        f"FUEL car {ai_car_id} setup with 30 L"
+    )
+    for pos in range(4):
+        parser._process_line(
+            f"[2026-06-03 23:21:08.329] [physics] [info] "
+            f"setCompound Tyre: {pos} compound name: RD"
+        )
+
+    parser._flush_pending_compound_batch()
+
+    assert parser.context.tyre.compound_name == "SC"

@@ -189,6 +189,24 @@ class TestProcessLineHandlers:
         assert parser.context.car_uuid == "4e2c85191a9274ee-634e033ab0de17ae"
         assert parser.current_session.car_uuid == "4e2c85191a9274ee-634e033ab0de17ae"
 
+    def test_handle_connect_accepts_boolean_parenthesized_format(self):
+        """AC Evo 0.7.0 logs the player connect marker as '(true)'."""
+        parser = LogParser()
+        parser.current_session = SessionData(track="brands_hatch", session_type="PRACTICE")
+
+        line = (
+            "[2026-06-03 23:11:44.074] [gameplay] [info] "
+            "76561198321627695 connected (true) on car ks_abarth_695_biposto, "
+            "with new carId 42c664e0cfa01f9e-868df28c1b9fb49b"
+        )
+
+        parser._handle_connect(line)
+
+        assert parser.context.player_id == "76561198321627695"
+        assert parser.context.current_car == "ks_abarth_695_biposto"
+        assert parser.context.car_uuid == "42c664e0cfa01f9e-868df28c1b9fb49b"
+        assert parser.current_session.car_uuid == "42c664e0cfa01f9e-868df28c1b9fb49b"
+
     def test_handle_fuel_accepts_new_setup_with_format(self):
         """Test fuel setup lines from the updated logs populate initial fuel."""
         parser = LogParser()

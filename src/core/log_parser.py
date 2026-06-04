@@ -135,7 +135,9 @@ class LogParser:
         
         # Track last seen car ID for compound detection
         self._last_car_uuid: Optional[str] = None
+        self._last_setup_car_uuid: Optional[str] = None
         self._pending_compound_ts: Optional[str] = None
+        self._pending_compound_source_car_uuid: Optional[str] = None
         self._pending_compound_updates: dict[int, str] = {}
         self._pending_compound_confirmed: set[int] = set()
 
@@ -156,7 +158,7 @@ class LogParser:
             "driver_line": re.compile(r"\tDriver (.+) on car ([\w_]+)"),
 
             "connect": re.compile(
-                r"(\d+) connected(?: \(\d+\))? on car ([\w_]+), with new carId ([a-f0-9\-]+)"
+                r"(\d+) connected(?: \([^)]+\))? on car ([\w_]+), with new carId ([a-f0-9\-]+)"
             ),
             "connecting_gamecar": re.compile(
                 r"connecting gamecar ([a-f0-9\-]+) \((.+)\)"
@@ -232,11 +234,11 @@ class LogParser:
             # [network] channel ~ms after `New lap carId`, e.g.:
             #   Relevant onSplit for Combo 6@2: laptime 146939, valid true,
             #   flags 2, lap 1 (prev 0)
-            # Captures: laptime_ms, valid_str ("true"|"false"), lap_num.
+            # Captures: laptime_ms, valid_str ("true"|"false"), flags, lap_num.
             "lap_validity": re.compile(
                 r"\[network\] \[info\] Relevant onSplit for Combo "
                 r"\d+@\d+: laptime (\d+), valid (true|false), "
-                r"flags \d+, lap (\d+)"
+                r"flags (\d+), lap (\d+)"
             ),
 
             # AC Evo emits the same `UINotificationType_SessionPenalty`
@@ -669,11 +671,17 @@ class LogParser:
             car_uuid = self._last_car_uuid or self.context.car_uuid
             if m and car_uuid and self._is_player_car(car_uuid):
                 compound_name = m.group(1).strip()
-                self.context.tyre.set_all(compound_name)
-                log_debug(Component.LOG_PARSER,
-                    f"[COMPOUND] All tires -> {compound_name} "
-                    f"(resolved: {self.context.tyre.compound_name})"
-                )
+                if self.context.tyre.compound_name == "Unknown":
+                    self.context.tyre.set_all(compound_name)
+                    log_debug(Component.LOG_PARSER,
+                        f"[COMPOUND] All tires -> {compound_name} "
+                        f"(resolved: {self.context.tyre.compound_name})"
+                    )
+                else:
+                    log_debug(Component.LOG_PARSER,
+                        f"[COMPOUND] Ignoring LOADING fallback -> {compound_name} "
+                        f"because resolved compound is already {self.context.tyre.compound_name}"
+                    )
             return
 
         # TYRE COMPOUND summary lines are ignored - they include all cars in
@@ -711,6 +719,13 @@ class LogParser:
 
         if self._pending_compound_ts and line_ts != self._pending_compound_ts:
             self._flush_pending_compound_batch()
+        elif (
+            line_ts
+            and self._pending_compound_ts == line_ts
+            and pos in self._pending_compound_updates
+            and set(self._pending_compound_updates) == {0, 1, 2, 3}
+        ):
+            self._flush_pending_compound_batch()
 
         if not line_ts:
             self.context.tyre.set(pos, compound_name)
@@ -721,6 +736,8 @@ class LogParser:
             return
 
         self._pending_compound_ts = line_ts
+        if not self._pending_compound_updates:
+            self._pending_compound_source_car_uuid = self._last_setup_car_uuid
         self._pending_compound_updates[pos] = compound_name
         log_debug(Component.LOG_PARSER, 
             f"[COMPOUND] Pending tyre {pos} -> {code} at {line_ts} "
@@ -730,6 +747,7 @@ class LogParser:
     def _flush_pending_compound_batch(self) -> None:
         if not self._pending_compound_updates:
             self._pending_compound_ts = None
+            self._pending_compound_source_car_uuid = None
             self._pending_compound_confirmed.clear()
             return
 
@@ -741,6 +759,9 @@ class LogParser:
         }
         has_full_batch = set(pending) == {0, 1, 2, 3}
         prelap_window = self.current_session is None or not self.current_session.laps
+        source_car_uuid = self._pending_compound_source_car_uuid
+        player_scoped = source_car_uuid is not None and self._is_player_car(source_car_uuid)
+        legacy_unscoped = source_car_uuid is None
 
         if confirmed:
             for pos, compound in confirmed.items():
@@ -749,7 +770,7 @@ class LogParser:
                 f"[COMPOUND] Applied player-confirmed positions "
                 f"{sorted(confirmed)} -> {self.context.tyre.compound_name}"
             )
-        elif has_full_batch and prelap_window:
+        elif has_full_batch and prelap_window and (player_scoped or legacy_unscoped):
             self.context.tyre.reset()
             for pos, compound in pending.items():
                 self.context.tyre.set(pos, compound)
@@ -764,6 +785,7 @@ class LogParser:
             )
 
         self._pending_compound_ts = None
+        self._pending_compound_source_car_uuid = None
         self._pending_compound_updates.clear()
         self._pending_compound_confirmed.clear()
 
@@ -839,6 +861,8 @@ class LogParser:
         preserved_setup_values = self.context.setup_values.copy()
         self.context.reset_for_new_session()
         self.context.setup_values = preserved_setup_values
+        self._last_setup_car_uuid = None
+        self._pending_compound_source_car_uuid = None
 
         tm = self._pats["date"].match(line)
         start_time = tm.group(1) if tm else datetime.now().isoformat()
@@ -879,9 +903,12 @@ class LogParser:
             or "setup with" in line
         ):
             m = self._pats["fuel_filled"].search(line)
-            if m and self.current_session and self._is_player_car(m.group(1)):
-                self.current_session.initial_fuel = float(m.group(2))
-                log_debug(Component.LOG_PARSER, f"[FUEL] Initial fill: {m.group(2)} L")
+            if m:
+                car_id = m.group(1)
+                self._last_setup_car_uuid = car_id
+                if self.current_session and self._is_player_car(car_id):
+                    self.current_session.initial_fuel = float(m.group(2))
+                    log_debug(Component.LOG_PARSER, f"[FUEL] Initial fill: {m.group(2)} L")
             return
 
         # ── Per-lap energy-source event ────────────────────────────────────────
@@ -1334,9 +1361,10 @@ class LogParser:
     def _handle_lap_validity(self, line: str) -> Optional[LapData]:
         """Apply the game's authoritative per-lap validity flag.
 
-        AC Evo emits a `[network] [info] Relevant onSplit for Combo …:
-        laptime N, valid true|false, …` line ~ms after each `New lap carId`.
-        It is the ground truth for whether the lap counts.
+        AC Evo emits a `[network] [info] Relevant onSplit for Combo ...:
+        laptime N, valid true|false, flags N, ...` line ~ms after each
+        `New lap carId`. In 0.7.0 the textual boolean can be stale at
+        session end; the flags value is the useful validity signal.
 
         When this matches the currently-pending (just-completed) lap by
         ``laptime``, we override the heuristic state if it disagrees:
@@ -1367,10 +1395,18 @@ class LogParser:
             # Mismatch — likely a stale broadcast for a different car.
             return None
 
-        game_valid = m.group(2) == "true"
+        valid_text = m.group(2)
+        validity_flags = int(m.group(3))
+        # Since AC Evo 0.7.0 the text boolean can be false on a completed,
+        # accepted lap at session end, while flags still carries the useful
+        # validity class: 1 = invalid, 2 = valid.
+        if validity_flags in (1, 2):
+            game_valid = validity_flags == 2
+        else:
+            game_valid = valid_text == "true"
         # The Relevant onSplit message carries the authoritative game lap number.
         # Correct any physics-derived lap_number (which can be off-by-one) here.
-        pending.lap_number = int(m.group(3))
+        pending.lap_number = int(m.group(4))
         prev_state = pending.lap_state
         prev_valid = pending.is_valid
 
@@ -1475,6 +1511,8 @@ class LogParser:
         """Fallback session creator for edge cases (no 'Game Started!' seen)."""
         self._flush_pending_compound_batch()
         self.context.reset_for_new_session()
+        self._last_setup_car_uuid = None
+        self._pending_compound_source_car_uuid = None
         self.current_session = SessionData(
             session_type=SESSION_TYPE_MAP.get(session_type, session_type),
             game_version=self.context.game_version,
