@@ -1065,6 +1065,18 @@ class LogParser:
         if self._ip.is_outlap:
             return
         
+        # Ignore zero-time splits: these are start-line crossing markers, not
+        # actual sector times. E.g. Nurburgring Tourist emits "On Split start
+        # true end false id 0 splittime 0" at start line, then "On Split start
+        # false end true id 1 splittime <lap_time>" at finish. Recording the
+        # zero-time split would create phantom sectors.
+        if split_ms == 0:
+            log_debug(Component.LOG_PARSER, 
+                f"[SPLIT_PRACTICE] Ignoring zero-time split id {split_idx} "
+                "(start-line marker, not a sector)"
+            )
+            return
+        
         self._ip.splits[split_idx] = split_ms
         log_debug(Component.LOG_PARSER, f"[SPLIT_PRACTICE] S{split_idx + 1}: {split_ms} ms")
 
