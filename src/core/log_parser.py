@@ -1175,12 +1175,20 @@ class LogParser:
             return LapState.INVALID_SPLIT
 
         # ── 5. Split key guard ────────────────────────────────────────────────
-        # Keys must be contiguous from 0 (e.g. [0,1] or [0,1,2]) and we
-        # require at least two sectors to avoid validating partial laps.
-        if len(split_keys) < 2:
+        # Keys must be contiguous from 0 (e.g. [0,1] or [0,1,2]).
+        # Some tracks (e.g. Nurburgring Tourist) only have a finish-line split
+        # without intermediate sectors. Allow single-split laps if split_end is
+        # confirmed, otherwise require at least 2 splits to avoid partial laps.
+        if len(split_keys) < 1:
+            log_debug(Component.LOG_PARSER, 
+                f"[VALIDITY] INVALID_SPLIT: no splits recorded"
+            )
+            return LapState.INVALID_SPLIT
+        
+        if len(split_keys) < 2 and not ip.split_end_confirmed:
             log_debug(Component.LOG_PARSER, 
                 f"[VALIDITY] INVALID_SPLIT: keys={split_keys} "
-                "expected at least [0,1]"
+                "expected at least [0,1] or split-end confirmation"
             )
             return LapState.INVALID_SPLIT
 

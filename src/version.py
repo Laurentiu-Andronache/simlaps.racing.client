@@ -13,7 +13,7 @@ GAME_DISPLAY_NAME = "AC EVO"
 # Version components
 VERSION_MAJOR = 1
 VERSION_MINOR = 3
-VERSION_PATCH = 4
+VERSION_PATCH = 5
 
 # Full version string
 VERSION = f"{VERSION_MAJOR}.{VERSION_MINOR}.{VERSION_PATCH}"
@@ -21,9 +21,6 @@ VERSION = f"{VERSION_MAJOR}.{VERSION_MINOR}.{VERSION_PATCH}"
 # Build metadata (set during build process)
 BUILD_DATE = "2025-10-13"
 BUILD_COMMIT = "fbb9876"
-
-# Minimum compatible server API version
-MIN_SERVER_VERSION = "1.1.1"
 
 # User-Agent string for API requests
 USER_AGENT = f"SimLaps-Client/{VERSION}"

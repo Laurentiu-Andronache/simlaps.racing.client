@@ -62,12 +62,26 @@ class TestDetermineLapStateEdgeCases:
         assert state == LapState.INVALID_SPLIT
 
     def test_determine_lap_state_insufficient_splits(self):
-        """Test insufficient split keys."""
+        """Test single-split lap with split_end confirmed (e.g. Nurburgring Tourist)."""
         parser = LogParser()
         ip = InProgressLap()
         ip.split_end_confirmed = True
-        ip.splits = {0: 30000}  # Only one split
+        ip.splits = {0: 30000}  # Only one split, but split_end confirmed
         
+        # Single-split laps are valid when split_end is confirmed (e.g. tracks
+        # with only a finish line split like Nurburgring Tourist)
+        state = parser._determine_lap_state(ip, [0], [30000], 30000, "PRACTICE")
+        
+        assert state == LapState.PUSH
+
+    def test_determine_lap_state_single_split_no_confirmation(self):
+        """Test single-split lap without split_end confirmation remains invalid."""
+        parser = LogParser()
+        ip = InProgressLap()
+        ip.split_end_confirmed = False  # No split-end confirmation
+        ip.splits = {0: 30000}
+        
+        # Without split_end confirmation, single-split laps are invalid (partial lap)
         state = parser._determine_lap_state(ip, [0], [30000], 30000, "PRACTICE")
         
         assert state == LapState.INVALID_SPLIT
