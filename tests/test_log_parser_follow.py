@@ -470,6 +470,59 @@ class TestFollowWithCallbacks:
         assert laps, "Expected lap emission after in-place session restart"
         assert laps[-1][1].lap_time_ms == 143706
 
+    @pytest.mark.asyncio
+    async def test_follow_restart_preserves_tyre_compound(self, tmp_path):
+        """Tyre compound must survive a pause-menu restart.
+
+        Regression: AC Evo logs the compound (setCompound / LOADING TYRE
+        COMPOUND) only at the original session start, not after an in-place
+        restart. The restart reset the parser tyre state to Unknown, so the
+        restarted session's laps were reported with compound "Unknown" even
+        though the same car/tyres were in use.
+        """
+        laps = []
+
+        async def on_lap(session, lap):
+            laps.append((session, lap))
+
+        parser = LogParser(
+            log_path=str(tmp_path / "test.log"),
+            on_lap_complete=on_lap,
+        )
+
+        parser._process_line(
+            "[2026-06-05 23:39:31.000] [network] [info] "
+            "76561198321627695 connected on car ks_lotus_emira, with new carId "
+            "4d27cc23-ee6c-e0de-9c38-10448288bcbb"
+        )
+        # Compound logged at original session start (full 4-tyre batch).
+        for pos in range(4):
+            parser._process_line(
+                "[2026-06-05 23:39:41.117] [physics] [info] "
+                f"setCompound Tyre: {pos} compound name: HC"
+            )
+
+        # Pause-menu restart — AC Evo does NOT re-log the compound afterwards.
+        # The pending compound batch is flushed during _finalise_current_session
+        # inside the restart handler.
+        await parser._emit_session_restart()
+
+        # Compound preserved across the restart
+        assert parser.context.tyre.compound_name == "HC"
+
+        parser._process_line(
+            "[2026-06-05 23:49:36.991] [gameplay] [info] "
+            "New lap carId 4d27cc23-ee6c-e0de-9c38-10448288bcbb: 08:21.918"
+        )
+        completed = parser._process_line(
+            "[2026-06-05 23:49:36.998] [network] [info] "
+            "Relevant onSplit for Combo 19@54: laptime 501918, valid true, "
+            "flags 2, lap 1 (prev 0)"
+        )
+
+        assert completed is not None
+        assert completed.tyre_compound == "HC"
+
 
 class TestFollowLiveTailing:
     """Test live tailing behavior."""

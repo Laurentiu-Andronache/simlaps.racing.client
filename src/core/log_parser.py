@@ -205,9 +205,11 @@ class LogParser:
                 r": \((\d+) ms, splitindex (\d+)\)"
             ),
 
-            # Practice-mode: player-only sector event
+            # Practice-mode: player-only sector event.
+            # AC Evo logs boolean start/end flags ("start true end false"); the
+            # \S+ tokens tolerate both that and legacy numeric values.
             "practice_split": re.compile(
-                r"\[gameplay\] \[info\] On Split start \d+ end \d+"
+                r"\[gameplay\] \[info\] On Split start \S+ end \S+"
                 r" id (\d+) splittime (\d+)"
             ),
 
@@ -454,10 +456,25 @@ class LogParser:
         if self.current_session:
             self._finalise_current_session()
 
+        # AC Evo only logs the tyre compound (setCompound / LOADING TYRE
+        # COMPOUND) at the original session start, NOT after an in-place
+        # restart. A pause-menu restart reuses the same car and tyres, so
+        # snapshot the compound before _start_new_session wipes it and restore
+        # it afterwards; otherwise the restarted session's laps show "Unknown".
+        preserved_tyre = self.context.tyre.snapshot()
+
         # AC Evo may restart in-place without a fresh session-start marker.
         # Create a new parser session immediately so subsequent player laps are
         # not dropped while waiting for optional race-start chatter.
         self._start_new_session(prior_session_type or "UNKNOWN", "")
+
+        if preserved_tyre.compound_name != "Unknown":
+            self.context.tyre = preserved_tyre
+            if self.current_session:
+                self.current_session.tyre_compound = preserved_tyre.compound_name
+            log_debug(Component.LOG_PARSER, 
+                f"[SESSION_RESTART] Preserved tyre compound "
+                f"{preserved_tyre.compound_name} across restart")
         if self.on_session_restart:
             try:
                 await self.on_session_restart()
@@ -1065,18 +1082,10 @@ class LogParser:
         if self._ip.is_outlap:
             return
         
-        # Ignore zero-time splits: these are start-line crossing markers, not
-        # actual sector times. E.g. Nurburgring Tourist emits "On Split start
-        # true end false id 0 splittime 0" at start line, then "On Split start
-        # false end true id 1 splittime <lap_time>" at finish. Recording the
-        # zero-time split would create phantom sectors.
-        if split_ms == 0:
-            log_debug(Component.LOG_PARSER, 
-                f"[SPLIT_PRACTICE] Ignoring zero-time split id {split_idx} "
-                "(start-line marker, not a sector)"
-            )
-            return
-        
+        # Record the split (including the id 0 start-line marker at splittime 0).
+        # Keeping id 0 preserves contiguous split keys ([0,1,...]) for the
+        # validity guard; for single-split tracks (e.g. Nurburgring Tourist) the
+        # finish split carries the full lap time so 0 + lap_time still matches.
         self._ip.splits[split_idx] = split_ms
         log_debug(Component.LOG_PARSER, f"[SPLIT_PRACTICE] S{split_idx + 1}: {split_ms} ms")
 

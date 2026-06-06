@@ -278,3 +278,61 @@ class TestOutlapFlagClearing:
         assert parser._ip.is_outlap is True
         # No splits should be recorded during outlap
         assert 1 not in parser._ip.splits
+
+    def test_boolean_split_format_clears_outlap_and_records_zero_marker(self):
+        """AC Evo logs boolean start/end flags. The zero-time id 0 start marker
+        must still match the regex, clear the outlap flag, and be recorded so
+        split keys stay contiguous ([0,1]) for the validity guard."""
+        parser = LogParser()
+        parser.current_session = SessionData(
+            track="nurburgring touristenfahrten",
+            car="porsche",
+            session_type="PRACTICE",
+        )
+        parser._ip.is_outlap = True
+
+        # Real AC Evo format: start-line crossing marker (start true, splittime 0)
+        line = ("[2026-06-05 23:41:15.072] [gameplay] [info] "
+                "On Split start true end false id 0 splittime 0")
+        parser._handle_splits_practice(line)
+
+        # Outlap flag cleared even though splittime is 0
+        assert parser._ip.is_outlap is False
+        # Zero-time start marker recorded to preserve contiguous keys
+        assert parser._ip.splits.get(0) == 0
+
+    def test_single_split_tourist_lap_is_valid(self):
+        """Nurburgring Tourist emits a zero-time start marker (id 0) and a
+        finish split (id 1) carrying the full lap time. The lap must validate
+        as PUSH, not INVALID_SPLIT/OUTLAP."""
+        parser = LogParser()
+        parser.current_session = SessionData(
+            track="nurburgring touristenfahrten",
+            car="porsche",
+            session_type="PRACTICE",
+        )
+        parser._ip.is_outlap = True
+        parser._ip.physics_lap_num = 2
+
+        lap_time_ms = 501918
+        for line in (
+            "[t] [gameplay] [info] On Split start true end false id 0 splittime 0",
+            f"[t] [gameplay] [info] On Split start false end true id 1 splittime {lap_time_ms}",
+        ):
+            parser._handle_splits_practice(line)
+        parser._handle_split_end(
+            "[t] [gameplay] [info] On Split end with all splits, id 1"
+        )
+
+        ip = parser._ip
+        split_keys = sorted(ip.splits.keys())
+        split_times = [ip.splits[k] for k in split_keys]
+
+        assert split_keys == [0, 1]
+        assert ip.is_outlap is False
+        assert ip.split_end_confirmed is True
+
+        state = parser._determine_lap_state(
+            ip, split_keys, split_times, lap_time_ms, "PRACTICE"
+        )
+        assert state == LapState.PUSH
