@@ -18,7 +18,7 @@ class LapState(str, Enum):
 
     Using `str` mixin so values serialise naturally to JSON without extra work.
     """
-    PUSH               = "PUSH"                # Clean timed lap
+    VALID              = "VALID"               # Clean timed lap
     OUTLAP             = "OUTLAP"              # Pit-exit or formation lap
     INLAP              = "INLAP"               # Return to pits lap
     INVALID_TRACK_LIMIT = "INVALID_TRACK_LIMIT"  # tyres out → 4 during lap
@@ -38,14 +38,8 @@ class InProgressLap:
     # Sector times: key = split index (0..N), value = ms
     splits: dict[int, int] = field(default_factory=dict)
 
-    # Validity flags — each independently marks the lap invalid
-    has_track_limit_violation: bool = False
-    has_unexpected_split: bool = False
+    # Outlap classification (structural, not validity)
     is_outlap: bool = False
-    has_penalty: bool = False
-
-    # Set by 'On Split end with all splits' — all sectors captured
-    split_end_confirmed: bool = False
 
     # Energy-source event (fires once, just before New lap)
     fuel_used: Optional[float] = None
@@ -120,8 +114,8 @@ class LapData:
     sector3_ms: Optional[int] = None
     sectors_consistent: Optional[bool] = None  # |S1+S2+S3 − lap_time| ≤ 50 ms
 
-    lap_state: LapState = field(default_factory=lambda: LapState.PUSH)
-    lap_type: str = "PUSH"               # String alias of lap_state.value (compat)
+    lap_state: LapState = field(default_factory=lambda: LapState.VALID)
+    lap_type: str = "VALID"              # String alias of lap_state.value (compat)
     is_valid: bool = True
 
     fuel_used: Optional[float] = None

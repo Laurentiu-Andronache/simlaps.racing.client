@@ -25,8 +25,6 @@ from ..models import (
     TyreState,
     LogContext,
     # Constants
-    PIT_TELEPORT_DISTANCE_M,
-    TRACK_LIMIT_INVALIDATION_THRESHOLD_M,
     SECTOR_SUM_TOLERANCE_MS,
     HYBRID_FUEL_THRESHOLD_L,
     HYBRID_SPIKE_SESSION_THRESHOLD,
@@ -992,51 +990,6 @@ class LogParser:
             f"reliable={self._ip.fuel_reliable}"
         )
 
-    def _handle_track_limits(self, line: str) -> None:
-        """Detect real track-limit violations for the player's car.
-
-        Pit-teleport artefacts are identified by a very large positive
-        inside_distance value (always 12.52 m in the analysed logs; real
-        violations are below ±3.5 m).
-
-        Brief momentary excursions (inside_distance < 2m) are tolerated by
-        the game and do not invalidate laps. Only sustained off-track
-        cuts (inside_distance >= 2m) are considered lap-invalidating.
-        """
-        if "Limits: car" not in line or "tyres out changed:" not in line:
-            return
-        m = self._pats["track_limits"].search(line)
-        if not m:
-            return
-
-        car_id = m.group(1)
-        new_count = int(m.group(2))
-        inside_dist = float(m.group(3))
-
-        if not self._is_player_car(car_id):
-            return
-        if new_count != 4:
-            return
-
-        if inside_dist > PIT_TELEPORT_DISTANCE_M:
-            log_debug(Component.LOG_PARSER, 
-                f"[LIMITS] Pit-teleport artefact ignored "
-                f"(inside_dist={inside_dist} m)"
-            )
-            return
-
-        # Brief momentary excursions with small inside_distance are tolerated
-        # by the game and do not invalidate the lap.
-        if inside_dist < TRACK_LIMIT_INVALIDATION_THRESHOLD_M:
-            log_debug(Component.LOG_PARSER, 
-                f"[LIMITS] Brief excursion tolerated (inside_dist={inside_dist} m < "
-                f"{TRACK_LIMIT_INVALIDATION_THRESHOLD_M} m threshold)"
-            )
-            return
-
-        self._ip.has_track_limit_violation = True
-        log_debug(Component.LOG_PARSER, f"[LIMITS] Violation! inside_dist={inside_dist} m")
-
     def _handle_splits_race(self, line: str) -> None:
         if "Split completed for car" not in line:
             return
@@ -1089,10 +1042,6 @@ class LogParser:
         self._ip.splits[split_idx] = split_ms
         log_debug(Component.LOG_PARSER, f"[SPLIT_PRACTICE] S{split_idx + 1}: {split_ms} ms")
 
-    def _handle_split_end(self, line: str) -> None:
-        if "On Split end with all splits" in line:
-            self._ip.split_end_confirmed = True
-
     def _handle_outlap_signals(self, line: str) -> None:
         """'Outplap split' is the authoritative outlap marker for practice-like
         modes. It is NOT reliable in race-like modes: AC Evo emits one
@@ -1129,39 +1078,25 @@ class LogParser:
         if m:
             self._ip.physics_lap_num = int(m.group(1))
 
-    def _handle_penalty(self, line: str) -> None:
-        if self._pats["penalty"].search(line):
-            self._ip.has_penalty = True
-            log_debug(Component.LOG_PARSER, "[VALIDITY] Penalty detected")
-
-    def _handle_unexpected_split(self, line: str) -> None:
-        if "Unexpected On Split" in line:
-            self._ip.has_unexpected_split = True
-            log_debug(Component.LOG_PARSER, "[VALIDITY] Unexpected On Split")
-
     # ── Lap state determination ───────────────────────────────────────────────
 
     def _determine_lap_state(
         self,
         ip: InProgressLap,
-        split_keys: list[int],
-        split_times: list[int],
-        lap_time_ms: int,
         session_type: str,
     ) -> LapState:
-        """Evaluate all validity signals and return the most specific LapState.
+        """Classify the lap structurally: OUTLAP or VALID.
 
-        Order of precedence matters: outlap → track limit → penalty → split
-        issues → sector consistency.  PUSH (valid) is returned only when all
-        checks pass.
+        Validity is determined exclusively by the game's authoritative
+        ``Relevant onSplit`` flag (handled in ``_handle_lap_validity``).
+        This method only decides whether the lap is an outlap (pits / warm-up)
+        or a valid lap eligible for timing.
         """
-
-        # ── 1. Outlap ──────────────────────────────────────────────────────────
         # Primary: explicit 'Outplap split' marker in log.
         # Fallback: physics lap counter == 1 in a practice session AND no splits
-        #           recorded yet (covers the case where the game doesn't log
-        #           'Outplap split' but we can infer it's an outlap because no
-        #           timed sectors exist). If splits ARE recorded, it's a flying lap.
+        # recorded yet (covers the case where the game doesn't log
+        # 'Outplap split' but we can infer it's an outlap because no
+        # timed sectors exist). If splits ARE recorded, it's a flying lap.
         is_practice_outlap = (
             session_type in PRACTICE_LIKE
             and ip.physics_lap_num == 1
@@ -1169,86 +1104,13 @@ class LogParser:
         )
         if ip.is_outlap or is_practice_outlap:
             if is_practice_outlap and not ip.is_outlap:
-                log_debug(Component.LOG_PARSER, 
+                log_debug(Component.LOG_PARSER,
                     "[VALIDITY] OUTLAP via physics_lap_num==1 fallback "
                     "(no Outplap split logged)"
                 )
-            # Clear any track limit violations that occurred during the outlap.
-            # Outlaps are not competitive timed laps, so violations don't count.
-            if ip.has_track_limit_violation:
-                log_debug(Component.LOG_PARSER, 
-                    "[VALIDITY] Clearing track limit violation from OUTLAP "
-                    "(outlap violations don't invalidate subsequent laps)"
-                )
-                ip.has_track_limit_violation = False
             return LapState.OUTLAP
 
-        # ── 2. Track limit violation ───────────────────────────────────────────
-        if ip.has_track_limit_violation:
-            return LapState.INVALID_TRACK_LIMIT
-
-        # ── 3. Penalty ────────────────────────────────────────────────────────
-        if ip.has_penalty:
-            return LapState.INVALID_PENALTY
-
-        # ── 4. Unexpected split ────────────────────────────────────────────────
-        if ip.has_unexpected_split:
-            return LapState.INVALID_SPLIT
-
-        # ── 5. Split key guard ────────────────────────────────────────────────
-        # Keys must be contiguous from 0 (e.g. [0,1] or [0,1,2]).
-        # Some tracks (e.g. Nurburgring Tourist) only have a finish-line split
-        # without intermediate sectors. Allow single-split laps if split_end is
-        # confirmed, otherwise require at least 2 splits to avoid partial laps.
-        if len(split_keys) < 1:
-            log_debug(Component.LOG_PARSER, 
-                f"[VALIDITY] INVALID_SPLIT: no splits recorded"
-            )
-            return LapState.INVALID_SPLIT
-        
-        if len(split_keys) < 2 and not ip.split_end_confirmed:
-            log_debug(Component.LOG_PARSER, 
-                f"[VALIDITY] INVALID_SPLIT: keys={split_keys} "
-                "expected at least [0,1] or split-end confirmation"
-            )
-            return LapState.INVALID_SPLIT
-
-        expected_keys = list(range(split_keys[-1] + 1))
-        if split_keys != expected_keys:
-            log_debug(Component.LOG_PARSER, 
-                f"[VALIDITY] INVALID_SPLIT: keys={split_keys} "
-                f"expected {expected_keys}"
-            )
-            return LapState.INVALID_SPLIT
-
-        # ── 6. Split-end confirmation ──────────────────────────────────────────
-        if not ip.split_end_confirmed:
-            # Live tailing can occasionally observe a complete lap payload with
-            # split_end missing due to log write timing. In practice-like modes,
-            # trust fully populated + consistent sectors as a fallback.
-            if (
-                session_type in PRACTICE_LIKE
-                and abs(sum(split_times) - lap_time_ms) <= SECTOR_SUM_TOLERANCE_MS
-            ):
-                log_debug(Component.LOG_PARSER, 
-                    "[VALIDITY] split-end missing but sectors are "
-                    "complete/consistent in practice-like mode"
-                )
-            else:
-                log_debug(Component.LOG_PARSER, "[VALIDITY] INVALID_SPLIT: no split-end confirmation")
-                return LapState.INVALID_SPLIT
-
-        # ── 7. Sector consistency guard ────────────────────────────────────────
-        sector_sum = sum(split_times)
-        if abs(sector_sum - lap_time_ms) > SECTOR_SUM_TOLERANCE_MS:
-            log_debug(Component.LOG_PARSER, 
-                f"[VALIDITY] INVALID_SECTORS: sum={sector_sum} "
-                f"lap={lap_time_ms} "
-                f"delta={abs(sector_sum - lap_time_ms)} ms"
-            )
-            return LapState.INVALID_SECTORS
-
-        return LapState.PUSH
+        return LapState.VALID
 
     # ── Lap completion ────────────────────────────────────────────────────────
 
@@ -1307,10 +1169,8 @@ class LogParser:
         session_type = self.current_session.session_type
 
         # ── Lap state ─────────────────────────────────────────────────────────
-        lap_state = self._determine_lap_state(
-            ip, split_keys, split_times, lap_time_ms, session_type
-        )
-        is_valid = lap_state == LapState.PUSH
+        lap_state = self._determine_lap_state(ip, session_type)
+        is_valid = lap_state == LapState.VALID
 
         # ── Sector consistency flag ────────────────────────────────────────────
         sectors_consistent: Optional[bool] = None
@@ -1333,7 +1193,7 @@ class LogParser:
         physics_lap_number = ip.physics_lap_num
         lap_number = physics_lap_number or (len(self.current_session.laps) + 1)
 
-        # Update stint (only for laps that actually ran, including invalid push)
+        # Update stint (only for laps that actually ran, including invalid valid)
         if lap_state != LapState.OUTLAP:
             stint = self._ensure_stint(compound)
             stint.add_lap(lap_number, fuel_used if fuel_reliable else None)
@@ -1393,17 +1253,19 @@ class LogParser:
         AC Evo emits a `[network] [info] Relevant onSplit for Combo ...:
         laptime N, valid true|false, flags N, ...` line ~ms after each
         `New lap carId`. In 0.7.0 the textual boolean can be stale at
-        session end; the flags value is the useful validity signal.
+        session end; the flags value is the useful validity signal:
+        2 = valid, 1 = invalid.
 
         When this matches the currently-pending (just-completed) lap by
-        ``laptime``, we override the heuristic state if it disagrees:
+        ``laptime``:
 
-        * Heuristic INVALID_SECTORS / INVALID_SPLIT but game says valid →
-          upgrade to PUSH (e.g. Spa grid-start S1 inflation).
-        * Heuristic PUSH but game says invalid → demote to INVALID_GAME.
-        * Other invalid heuristics (track limit, penalty, outlap) are
-          retained — they encode the *reason* and remain truthful even when
-          the game's binary flag would round to the same boolean.
+        * Game says valid → lap_state VALID, is_valid True.
+        * Game says invalid → lap_state INVALID_GAME, is_valid False.
+        * OUTLAP is retained — it is a structural classification (the lap
+          leaving the pits), not a validity verdict.
+
+        If no authoritative line arrives (EOF / session end), the lap retains
+        its default VALID / valid state.
 
         Returns the now-finalised lap so the caller can emit it; otherwise
         returns None.
@@ -1439,25 +1301,26 @@ class LogParser:
         prev_state = pending.lap_state
         prev_valid = pending.is_valid
 
-        if game_valid and not prev_valid and prev_state in (
-            LapState.INVALID_SECTORS,
-            LapState.INVALID_SPLIT,
-        ):
-            pending.lap_state = LapState.PUSH
-            pending.lap_type = LapState.PUSH.value
-            pending.is_valid = True
-            log_debug(Component.LOG_PARSER, 
-                f"[VALIDITY] Game says valid — upgrading "
-                f"#{pending.lap_number} {prev_state.value} → PUSH"
-            )
-        elif (not game_valid) and prev_valid:
-            pending.lap_state = LapState.INVALID_GAME
-            pending.lap_type = LapState.INVALID_GAME.value
-            pending.is_valid = False
-            log_debug(Component.LOG_PARSER, 
-                f"[VALIDITY] Game says invalid — demoting "
-                f"#{pending.lap_number} PUSH → INVALID_GAME"
-            )
+        if prev_state == LapState.OUTLAP:
+            # OUTLAP is a structural classification, not a validity verdict.
+            # The game flag doesn't change it into a valid lap.
+            pass
+        elif game_valid:
+            if pending.lap_state != LapState.VALID or not pending.is_valid:
+                pending.lap_state = LapState.VALID
+                pending.lap_type = LapState.VALID.value
+                pending.is_valid = True
+                log_debug(Component.LOG_PARSER,
+                    f"[VALIDITY] Game says valid — #{pending.lap_number} → VALID"
+                )
+        else:
+            if pending.lap_state != LapState.INVALID_GAME or pending.is_valid:
+                pending.lap_state = LapState.INVALID_GAME
+                pending.lap_type = LapState.INVALID_GAME.value
+                pending.is_valid = False
+                log_debug(Component.LOG_PARSER,
+                    f"[VALIDITY] Game says invalid — #{pending.lap_number} → INVALID_GAME"
+                )
 
         self.current_session.laps.append(pending)
         self._pending_lap = None
@@ -1626,14 +1489,10 @@ class LogParser:
 
         # ── In-session events ─────────────────────────────────────────────────
         self._handle_fuel(line)
-        self._handle_track_limits(line)
         self._handle_splits_race(line)
         self._handle_splits_practice(line)
-        self._handle_split_end(line)
         self._handle_outlap_signals(line)
         self._handle_physics_lap(line)
-        self._handle_penalty(line)
-        self._handle_unexpected_split(line)
 
         # ── Lap completion ────────────────────────────────────────────────────
         # Two paths can produce an emittable lap on a single line:

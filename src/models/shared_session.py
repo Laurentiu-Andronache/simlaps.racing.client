@@ -244,7 +244,7 @@ class SharedSessionManager:
             lap_validity = self._session_data.lap_validity.get(lap_num)
             if lap_validity is None:
                 return None
-            return lap_validity.lap_state or ("PUSH" if lap_validity.is_valid else "INVALID_GAME")
+            return lap_validity.lap_state or ("VALID" if lap_validity.is_valid else "INVALID_GAME")
 
     def get_car_setup(self) -> Dict[str, Any]:
         with self._lock:
@@ -351,13 +351,13 @@ class SharedSessionManager:
     def update_lap_validity_from_graphics_shm(self, lap_num: int, is_invalid: bool) -> None:
         with self._lock:
             current = self._session_data.lap_validity.get(lap_num)
-            lap_state = "INVALID_GAME" if is_invalid else "PUSH"
+            lap_state = "INVALID_GAME" if is_invalid else "VALID"
             if current is None:
                 current = LapValidityData(lap_number=lap_num, is_valid=not is_invalid, lap_state=lap_state)
                 self._session_data.lap_validity[lap_num] = current
             else:
                 current.is_valid = not is_invalid
-                if current.lap_state in (None, "PUSH", "INVALID_GAME"):
+                if current.lap_state in (None, "VALID", "INVALID_GAME"):
                     current.lap_state = lap_state
             current.source = "shm_graphics"
 
@@ -757,12 +757,12 @@ class LegacySessionDataWrapper:
             lap_time_ms = int(lap_time_value) if isinstance(lap_time_value, (int, float)) else 0
             sector_times = self._shared.get_sector_times(lap_num) or {}
             lap_state_value = self._shared.get_lap_state(lap_num) or (
-                "PUSH" if lap_validity.get(lap_num, True) else "INVALID_GAME"
+                "VALID" if lap_validity.get(lap_num, True) else "INVALID_GAME"
             )
             try:
                 lap_state = LapState(lap_state_value)
             except ValueError:
-                lap_state = LapState.PUSH if lap_validity.get(lap_num, True) else LapState.INVALID_GAME
+                lap_state = LapState.VALID if lap_validity.get(lap_num, True) else LapState.INVALID_GAME
             laps.append(
                 LapData(
                     lap_number=lap_num,

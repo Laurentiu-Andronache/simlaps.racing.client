@@ -227,162 +227,43 @@ class TestDetermineLapStateFull:
         keys = sorted(splits.keys())
         return keys, [splits[k] for k in keys]
 
-    def test_determine_lap_state_clean(self):
-        """Clean lap with all signals positive returns ``PUSH``."""
+    def test_determine_lap_state_valid(self):
+        """Non-outlap returns ``VALID``."""
         ip = self.parser._ip
         ip.is_outlap = False
-        ip.has_track_limit_violation = False
-        ip.has_penalty = False
-        ip.has_unexpected_split = False
-        ip.split_end_confirmed = True
-        ip.distance_hundredm = 50
-
-        keys, times = self._split_args({0: 30000, 1: 30000, 2: 38456})
-        state = self.parser._determine_lap_state(
-            ip, keys, times, 98456, "PRACTICE"
-        )
-
-        assert state == LapState.PUSH
-
-    def test_determine_lap_state_track_limit_violation(self):
-        """Track-limit violation returns ``INVALID_TRACK_LIMIT``."""
-        ip = self.parser._ip
-        ip.is_outlap = False
-        ip.has_track_limit_violation = True
-        ip.has_penalty = False
-        ip.has_unexpected_split = False
-        ip.split_end_confirmed = True
-        ip.distance_hundredm = 50
-
-        keys, times = self._split_args({0: 30000, 1: 30000, 2: 38456})
-        state = self.parser._determine_lap_state(
-            ip, keys, times, 98456, "PRACTICE"
-        )
-
-        assert state == LapState.INVALID_TRACK_LIMIT
-
-    def test_determine_lap_state_incomplete_sectors(self):
-        """Incomplete sector keys return ``INVALID_SPLIT``."""
-        ip = self.parser._ip
-        ip.is_outlap = False
-        ip.has_track_limit_violation = False
-        ip.has_penalty = False
-        ip.has_unexpected_split = False
-        ip.split_end_confirmed = True
-        ip.distance_hundredm = 50
-
-        # Only 2 sectors but practice-like physics_lap_num triggers outlap
-        # fallback at lap 1, so set lap 2 to bypass that branch.
-        ip.physics_lap_num = 2
-        keys, times = self._split_args({0: 30000, 1: 30000})
-        state = self.parser._determine_lap_state(
-            ip, keys, times, 98456, "PRACTICE"
-        )
-
-        # Two sectors satisfy the >=2 guard and form contiguous keys [0,1],
-        # so the lap is considered well-formed at the split layer. The
-        # remaining failure mode at this point is sector-vs-lap-time
-        # consistency, which yields ``INVALID_SECTORS`` (or PUSH if the
-        # tolerance is loose). Either way it must NOT raise.
-        assert state in (LapState.INVALID_SECTORS, LapState.PUSH)
-
-    def test_determine_lap_state_sectors_inconsistent(self):
-        """Sector sum diverging from lap time returns ``INVALID_SECTORS``."""
-        ip = self.parser._ip
-        ip.is_outlap = False
-        ip.has_track_limit_violation = False
-        ip.has_penalty = False
-        ip.has_unexpected_split = False
-        ip.split_end_confirmed = True
-        ip.distance_hundredm = 50
-        ip.physics_lap_num = 2  # bypass practice-outlap fallback
-
-        # Sum = 30 s, claimed lap time = 98 s.
-        keys, times = self._split_args({0: 10000, 1: 10000, 2: 10000})
-        state = self.parser._determine_lap_state(
-            ip, keys, times, 98456, "PRACTICE"
-        )
-
-        assert state == LapState.INVALID_SECTORS
-
-    def test_determine_lap_state_split_not_confirmed(self):
-        """Missing split-end confirmation returns ``INVALID_SPLIT``.
-
-        In practice-like sessions the source has a fallback path: if
-        sectors sum to the lap time within ``SECTOR_SUM_TOLERANCE_MS``,
-        the missing split-end confirmation is forgiven (live-tailing
-        race condition mitigation). To exercise the strict branch this
-        test uses a non-practice session type.
-        """
-        ip = self.parser._ip
-        ip.is_outlap = False
-        ip.has_track_limit_violation = False
-        ip.has_penalty = False
-        ip.has_unexpected_split = False
-        ip.split_end_confirmed = False
-        ip.distance_hundredm = 50
         ip.physics_lap_num = 2
 
-        keys, times = self._split_args({0: 30000, 1: 30000, 2: 38456})
-        state = self.parser._determine_lap_state(
-            ip, keys, times, 98456, "RACE"
-        )
+        state = self.parser._determine_lap_state(ip, "PRACTICE")
+        assert state == LapState.VALID
 
-        assert state == LapState.INVALID_SPLIT
-
-    def test_determine_lap_state_outlap_returns_outlap(self):
-        """Outlaps are tagged ``OUTLAP`` (not generic invalid)."""
+    def test_determine_lap_state_outlap_flag(self):
+        """Outlap flag returns ``OUTLAP``."""
         ip = self.parser._ip
         ip.is_outlap = True
-        ip.has_track_limit_violation = False
-        ip.has_penalty = False
-        ip.has_unexpected_split = False
-        ip.split_end_confirmed = True
-        ip.distance_hundredm = 50
+        ip.physics_lap_num = 2
 
-        keys, times = self._split_args({0: 30000, 1: 30000, 2: 38456})
-        state = self.parser._determine_lap_state(
-            ip, keys, times, 98456, "PRACTICE"
-        )
-
-        # OUTLAP is its own state — not lumped under INVALID_*.
+        state = self.parser._determine_lap_state(ip, "PRACTICE")
         assert state == LapState.OUTLAP
 
-    def test_determine_lap_state_unexpected_split(self):
-        """Unexpected-split signal returns ``INVALID_SPLIT``."""
+    def test_determine_lap_state_practice_outlap_fallback(self):
+        """Practice lap 1 with no splits returns ``OUTLAP``."""
         ip = self.parser._ip
         ip.is_outlap = False
-        ip.has_track_limit_violation = False
-        ip.has_penalty = False
-        ip.has_unexpected_split = True
-        ip.split_end_confirmed = True
-        ip.distance_hundredm = 50
-        ip.physics_lap_num = 2
+        ip.physics_lap_num = 1
+        ip.splits = {}
 
-        keys, times = self._split_args({0: 30000, 1: 30000, 2: 38456})
-        state = self.parser._determine_lap_state(
-            ip, keys, times, 98456, "PRACTICE"
-        )
+        state = self.parser._determine_lap_state(ip, "PRACTICE")
+        assert state == LapState.OUTLAP
 
-        assert state == LapState.INVALID_SPLIT
-
-    def test_determine_lap_state_penalty(self):
-        """Penalty signal returns ``INVALID_PENALTY``."""
+    def test_determine_lap_state_practice_lap1_with_splits_is_valid(self):
+        """Practice lap 1 with splits is a flying lap → ``VALID``."""
         ip = self.parser._ip
         ip.is_outlap = False
-        ip.has_track_limit_violation = False
-        ip.has_penalty = True
-        ip.has_unexpected_split = False
-        ip.split_end_confirmed = True
-        ip.distance_hundredm = 50
-        ip.physics_lap_num = 2
+        ip.physics_lap_num = 1
+        ip.splits = {0: 30000, 1: 30000, 2: 38456}
 
-        keys, times = self._split_args({0: 30000, 1: 30000, 2: 38456})
-        state = self.parser._determine_lap_state(
-            ip, keys, times, 98456, "PRACTICE"
-        )
-
-        assert state == LapState.INVALID_PENALTY
+        state = self.parser._determine_lap_state(ip, "PRACTICE")
+        assert state == LapState.VALID
 
 
 class TestLogBufferOperations:

@@ -61,13 +61,12 @@ class TestHandleLapCompleteWithData:
             session_type="PRACTICE"
         )
         parser.context.player_id = "76561198321627695"
-        parser.context.car_uuid = "player_car_uuid"
+        parser.context.car_uuid = "abc123def4567890"
         parser.context.tyre.set_all("SC")
         
         # Set up in-progress lap data
         parser._ip.physics_lap_num = 5
         parser._ip.splits = {0: 30000, 1: 30000, 2: 38456}  # 1:38.456
-        parser._ip.split_end_confirmed = True
         parser._ip.distance_hundredm = 50
         parser._ip.fuel_used = 2.5
         parser._ip.fuel_reliable = True
@@ -77,7 +76,7 @@ class TestHandleLapCompleteWithData:
         parser = LogParser()
         self.setup_parser_with_lap_data(parser)
         
-        line = "New lap carId=player_car_uuid time=1:38.456"
+        line = "New lap carId=abc123def4567890 time=1:38.456"
         result = parser._handle_lap_complete(line)
         
         # May or may not return lap depending on internal logic
@@ -93,25 +92,26 @@ class TestHandleLapCompleteWithData:
         parser._ip.start_fuel = 45.0
         parser._ip.end_fuel = 41.5
         
-        line = "New lap carId=player_car_uuid time=1:38.456"
+        line = "New lap carId=abc123def4567890 time=1:38.456"
         result = parser._handle_lap_complete(line)
         
         # Fuel tracking code path exercised
         assert True
 
     def test_handle_lap_complete_invalid_lap(self):
-        """Test lap completion with invalid lap state."""
+        """Test lap completion defaults to valid (heuristics removed)."""
         parser = LogParser()
         self.setup_parser_with_lap_data(parser)
-        
-        # Make lap invalid
-        parser._ip.has_track_limit_violation = True
-        
-        line = "New lap carId=player_car_uuid time=1:38.456"
+
+        line = (
+            "[2024-01-01 12:00:00.000] [gameplay] [info] "
+            "New lap carId abc123def4567890: 1:38.456"
+        )
         result = parser._handle_lap_complete(line)
-        
-        # Should still create lap but mark as invalid
-        assert True
+
+        assert parser._pending_lap is not None
+        assert parser._pending_lap.lap_state == LapState.VALID
+        assert parser._pending_lap.is_valid is True
 
     def test_handle_lap_complete_outlap(self):
         """Test lap completion when marked as outlap."""
@@ -120,7 +120,7 @@ class TestHandleLapCompleteWithData:
         
         parser._ip.is_outlap = True
         
-        line = "New lap carId=player_car_uuid time=1:38.456"
+        line = "New lap carId=abc123def4567890 time=1:38.456"
         result = parser._handle_lap_complete(line)
         
         # Should handle outlap case
@@ -135,7 +135,7 @@ class TestHandleLapCompleteWithData:
         # S1 is corrupted - larger than total lap time (race grid start issue)
         parser._ip.splits = {0: 180000, 1: 20000, 2: 18456}  # S1=180s > lap=98s
         
-        line = "New lap carId=player_car_uuid time=1:38.456"
+        line = "New lap carId=abc123def4567890 time=1:38.456"
         result = parser._handle_lap_complete(line)
         
         # Should detect and fix S1 corruption
@@ -172,7 +172,6 @@ class TestHandleLapCompleteWithData:
 
         parser._ip.physics_lap_num = 1
         parser._ip.splits = {0: 110411, 1: 64650, 2: 38082}  # raw, S1 inflated
-        parser._ip.split_end_confirmed = True
 
         # 1) Lap completes — buffered, nothing emitted yet
         line_new_lap = (
@@ -183,12 +182,9 @@ class TestHandleLapCompleteWithData:
         assert result is None  # deferred emit
         assert parser._pending_lap is not None
         assert parser._pending_lap.lap_time_ms == 146939
-        # Heuristic state before authoritative flag arrives:
-        # S1 was back-calculated, so sectors are consistent, but if the
-        # old narrow guard had missed it, this would be INVALID_SECTORS.
-        # With the broadened guard it is already PUSH; the validity line
+        # Default heuristic state is VALID; the validity line
         # will confirm it.
-        assert parser._pending_lap.lap_state == LapState.PUSH
+        assert parser._pending_lap.lap_state == LapState.VALID
 
         # 2) Authoritative validity line arrives ~13 ms later
         line_validity = (
@@ -203,14 +199,14 @@ class TestHandleLapCompleteWithData:
         assert result.sector2_ms == 64650
         assert result.sector3_ms == 38082
         assert result.sectors_consistent is True
-        assert result.lap_state == LapState.PUSH
+        assert result.lap_state == LapState.VALID
         assert result.is_valid is True
         assert parser._pending_lap is None  # flushed
 
-    def test_handle_lap_validity_flags_one_invalidates_push(self):
+    def test_handle_lap_validity_flags_one_invalidates_valid(self):
         """Test that the game's invalid flag demotes a heuristically-valid lap.
 
-        If our sector/split checks say PUSH (valid) but the game flags the
+        If our sector/split checks say VALID but the game flags the
         lap is invalid, we trust the game and mark it INVALID_GAME.
         """
         parser = LogParser()
@@ -224,10 +220,8 @@ class TestHandleLapCompleteWithData:
         parser.context.car_uuid = "abc123-def456"
         parser.context.tyre.set_all("S")
 
-        # Clean lap by our heuristics (consistent sectors, no penalties, etc.)
         parser._ip.physics_lap_num = 2
         parser._ip.splits = {0: 42000, 1: 45000, 2: 38000}  # sum = 125000
-        parser._ip.split_end_confirmed = True
 
         # 1) Lap completes — buffered
         line_new_lap = (
@@ -237,7 +231,7 @@ class TestHandleLapCompleteWithData:
         result = parser._handle_lap_complete(line_new_lap)
         assert result is None  # deferred emit
         assert parser._pending_lap is not None
-        assert parser._pending_lap.lap_state == LapState.PUSH
+        assert parser._pending_lap.lap_state == LapState.VALID
         assert parser._pending_lap.is_valid is True
 
         # 2) Game says invalid (e.g., track cut the UI didn't show)
@@ -269,7 +263,6 @@ class TestHandleLapCompleteWithData:
 
         parser._ip.physics_lap_num = 5
         parser._ip.splits = {0: 39225, 1: 6456, 2: 24867}
-        parser._ip.split_end_confirmed = True
 
         line_new_lap = (
             "[2026-06-03 23:17:00.127] [gameplay] [info] "
@@ -290,10 +283,95 @@ class TestHandleLapCompleteWithData:
         assert result is not None
         assert result.lap_number == 4
         assert result.lap_time_ms == 70548
-        assert result.lap_state == LapState.PUSH
+        assert result.lap_state == LapState.VALID
         assert result.is_valid is True
-        assert result.lap_type == "PUSH"
+        assert result.lap_type == "VALID"
         assert parser._pending_lap is None
+
+    def test_handle_lap_validity_upgrades_stale_penalty(self):
+        """Game's valid flag must override a stale heuristic penalty.
+
+        Regression (Nurburgring Tourist): with heuristics removed, the lap
+        defaults to VALID. The game's authoritative ``Relevant onSplit ...
+        valid true, flags 2`` confirms it stays VALID.
+
+        Reference: logs/game_logs_20260606_221943.txt lines 20680-20684
+            New lap carId 4d19cc73858c594e-1fb0a71f9cba54a7: 06:18.351
+            Relevant onSplit for Combo 19@91: laptime 378351, valid true,
+            flags 2, lap 1 (prev 0)
+        """
+        parser = LogParser()
+        parser.current_session = SessionData(
+            track="nurburgring touristenfahrten",
+            car="ks_lotus_emira",
+            player_id="76561198321627695",
+            session_type="PRACTICE",
+        )
+        parser.context.player_id = "76561198321627695"
+        parser.context.car_uuid = "4d19cc73858c594e-1fb0a71f9cba54a7"
+        parser.context.tyre.set_all("HC")
+
+        # Single-finish-split track: start line (id 0) + finish (id 1).
+        parser._ip.splits = {0: 0, 1: 378351}
+
+        line_new_lap = (
+            "[2026-06-06 22:09:00.622] [gameplay] [info] "
+            "New lap carId 4d19cc73858c594e-1fb0a71f9cba54a7: 06:18.351"
+        )
+        result = parser._handle_lap_complete(line_new_lap)
+        assert result is None  # deferred emit
+        assert parser._pending_lap is not None
+        # Default heuristic state is VALID
+        assert parser._pending_lap.lap_state == LapState.VALID
+        assert parser._pending_lap.is_valid is True
+
+        line_validity = (
+            "[2026-06-06 22:09:00.633] [network] [info] "
+            "Relevant onSplit for Combo 19@91: laptime 378351, valid true, "
+            "flags 2, lap 1 (prev 0)"
+        )
+        result = parser._handle_lap_validity(line_validity)
+
+        assert result is not None
+        assert result.lap_time_ms == 378351
+        assert result.lap_state == LapState.VALID
+        assert result.is_valid is True
+        assert parser._pending_lap is None
+
+    def test_handle_lap_validity_keeps_genuinely_invalid_penalty(self):
+        """Game flag 1 (invalid) demotes a default-VALID lap to INVALID_GAME.
+
+        Reference: logs/game_logs_20260606_221943.txt line 4414
+            Relevant onSplit for Combo 19@92: laptime 385308, valid false,
+            flags 1, lap 1 (prev 0)
+        """
+        parser = LogParser()
+        parser.current_session = SessionData(
+            track="nurburgring touristenfahrten",
+            car="ks_lotus_emira",
+            player_id="76561198321627695",
+            session_type="PRACTICE",
+        )
+        parser.context.player_id = "76561198321627695"
+        parser.context.car_uuid = "4422a48dcd944a5a-d38c24fbe4c806a7"
+        parser.context.tyre.set_all("HC")
+
+        parser._ip.splits = {0: 0, 1: 385308}
+
+        parser._handle_lap_complete(
+            "[2026-06-06 19:27:36.422] [gameplay] [info] "
+            "New lap carId 4422a48dcd944a5a-d38c24fbe4c806a7: 06:25.308"
+        )
+        result = parser._handle_lap_validity(
+            "[2026-06-06 19:27:36.432] [network] [info] "
+            "Relevant onSplit for Combo 19@92: laptime 385308, valid false, "
+            "flags 1, lap 1 (prev 0)"
+        )
+
+        assert result is not None
+        assert result.lap_time_ms == 385308
+        assert result.is_valid is False
+        assert result.lap_state == LapState.INVALID_GAME
 
     def test_handle_lap_complete_missing_sectors(self):
         """Test handles missing sector data."""
@@ -303,25 +381,27 @@ class TestHandleLapCompleteWithData:
         # Only 2 sectors
         parser._ip.splits = {0: 45000, 1: 53456}
         
-        line = "New lap carId=player_car_uuid time=1:38.456"
+        line = "New lap carId=abc123def4567890 time=1:38.456"
         result = parser._handle_lap_complete(line)
         
         # Should handle missing S3
         assert True
 
-    def test_handle_lap_complete_split_end_not_confirmed(self):
-        """Test handles split end not confirmed."""
+    def test_handle_lap_complete_defaults_valid(self):
+        """With heuristics removed, laps default to VALID / valid."""
         parser = LogParser()
         self.setup_parser_with_lap_data(parser)
         parser.current_session.session_type = "RACE"
-        
-        parser._ip.split_end_confirmed = False
-        
-        line = "New lap carId=player_car_uuid time=1:38.456"
+
+        line = (
+            "[2024-01-01 12:00:00.000] [gameplay] [info] "
+            "New lap carId abc123def4567890: 1:38.456"
+        )
         result = parser._handle_lap_complete(line)
-        
-        # Should handle missing split-end
-        assert True
+
+        assert parser._pending_lap is not None
+        assert parser._pending_lap.lap_state == LapState.VALID
+        assert parser._pending_lap.is_valid is True
 
     def test_handle_lap_complete_no_physics_lap_num(self):
         """Test uses fallback lap number when physics_lap_num not set."""
@@ -330,7 +410,7 @@ class TestHandleLapCompleteWithData:
         
         parser._ip.physics_lap_num = None
         
-        line = "New lap carId=player_car_uuid time=1:38.456"
+        line = "New lap carId=abc123def4567890 time=1:38.456"
         result = parser._handle_lap_complete(line)
         
         # Should use len(laps)+1 as fallback
@@ -353,7 +433,6 @@ class TestHandleLapCompleteSectorConsistency:
         # Perfect sector match: 30+30+38.456 = 98.456
         parser._ip.physics_lap_num = 1
         parser._ip.splits = {0: 30000, 1: 30000, 2: 38456}
-        parser._ip.split_end_confirmed = True
         
         line = "New lap carId=abc123 time=1:38.456"
         result = parser._handle_lap_complete(line)
@@ -374,7 +453,6 @@ class TestHandleLapCompleteSectorConsistency:
         # Inconsistent: 30+30+30 = 90 != 98.456
         parser._ip.physics_lap_num = 1
         parser._ip.splits = {0: 30000, 1: 30000, 2: 30000}
-        parser._ip.split_end_confirmed = True
         
         line = "New lap carId=abc123 time=1:38.456"
         result = parser._handle_lap_complete(line)
@@ -398,7 +476,6 @@ class TestHandleLapCompleteStint:
         
         parser._ip.physics_lap_num = 1
         parser._ip.splits = {0: 30000, 1: 30000, 2: 38456}
-        parser._ip.split_end_confirmed = True
         parser._ip.fuel_used = 2.5
         parser._ip.fuel_reliable = True
         
@@ -423,7 +500,6 @@ class TestHandleLapCompleteStint:
         
         parser._ip.physics_lap_num = 1
         parser._ip.splits = {0: 30000, 1: 30000, 2: 38456}
-        parser._ip.split_end_confirmed = True
         parser._ip.is_outlap = True  # Mark as outlap
         
         line = "New lap carId=abc123 time=1:38.456"

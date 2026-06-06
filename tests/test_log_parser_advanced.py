@@ -123,10 +123,10 @@ class TestPatternMatching:
 class TestLapState:
     """Test lap state management."""
 
-    def test_lap_state_push(self):
-        """Test PUSH lap state."""
-        state = LapState.PUSH
-        assert state.value == "PUSH"
+    def test_lap_state_valid(self):
+        """Test VALID lap state."""
+        state = LapState.VALID
+        assert state.value == "VALID"
 
     def test_lap_state_outlap(self):
         """Test OUTLAP lap state."""
@@ -228,14 +228,14 @@ class TestLapDataAdvanced:
             assert lap.is_valid is False
             assert lap.lap_state == LapState.INVALID
         else:
-            # Use PUSH state instead
+            # Use VALID state instead
             lap = LapData(
                 lap_number=1,
                 physics_lap_number=1,
                 lap_time_ms=83456,
                 lap_time_str="1:23.456",
                 is_valid=False,
-                lap_state=LapState.PUSH
+                lap_state=LapState.VALID
             )
             
             assert lap.is_valid is False

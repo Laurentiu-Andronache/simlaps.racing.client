@@ -50,75 +50,15 @@ class TestHandleLapComplete:
 class TestDetermineLapStateEdgeCases:
     """Test edge cases in _determine_lap_state."""
 
-    def test_determine_lap_state_unexpected_split(self):
-        """Test unexpected split detection."""
+    def test_determine_lap_state_outlap_flag(self):
+        """Outlap flag returns OUTLAP."""
         parser = LogParser()
         ip = InProgressLap()
-        ip.has_unexpected_split = True
-        ip.splits = {0: 30000, 1: 60000}
-        
-        state = parser._determine_lap_state(ip, [0, 1], [30000, 60000], 90000, "PRACTICE")
-        
-        assert state == LapState.INVALID_SPLIT
+        ip.is_outlap = True
+        ip.physics_lap_num = 2
 
-    def test_determine_lap_state_insufficient_splits(self):
-        """Test single-split lap with split_end confirmed (e.g. Nurburgring Tourist)."""
-        parser = LogParser()
-        ip = InProgressLap()
-        ip.split_end_confirmed = True
-        ip.splits = {0: 30000}  # Only one split, but split_end confirmed
-        
-        # Single-split laps are valid when split_end is confirmed (e.g. tracks
-        # with only a finish line split like Nurburgring Tourist)
-        state = parser._determine_lap_state(ip, [0], [30000], 30000, "PRACTICE")
-        
-        assert state == LapState.PUSH
-
-    def test_determine_lap_state_single_split_no_confirmation(self):
-        """Test single-split lap without split_end confirmation remains invalid."""
-        parser = LogParser()
-        ip = InProgressLap()
-        ip.split_end_confirmed = False  # No split-end confirmation
-        ip.splits = {0: 30000}
-        
-        # Without split_end confirmation, single-split laps are invalid (partial lap)
-        state = parser._determine_lap_state(ip, [0], [30000], 30000, "PRACTICE")
-        
-        assert state == LapState.INVALID_SPLIT
-
-    def test_determine_lap_state_non_contiguous_splits(self):
-        """Test non-contiguous split keys."""
-        parser = LogParser()
-        ip = InProgressLap()
-        ip.split_end_confirmed = True
-        ip.splits = {0: 30000, 2: 60000}  # Missing key 1
-        
-        state = parser._determine_lap_state(ip, [0, 2], [30000, 60000], 90000, "PRACTICE")
-        
-        assert state == LapState.INVALID_SPLIT
-
-    def test_determine_lap_state_sector_inconsistency(self):
-        """Test sector sum inconsistency."""
-        parser = LogParser()
-        ip = InProgressLap()
-        ip.split_end_confirmed = True
-        ip.splits = {0: 30000, 1: 60000}  # Sum = 90s but lap = 100s
-        
-        state = parser._determine_lap_state(ip, [0, 1], [30000, 60000], 100000, "PRACTICE")
-        
-        assert state == LapState.INVALID_SECTORS
-
-    def test_determine_lap_state_practice_fallback(self):
-        """Test practice mode fallback for missing split-end."""
-        parser = LogParser()
-        ip = InProgressLap()
-        ip.split_end_confirmed = False
-        ip.splits = {0: 30000, 1: 30000, 2: 30000}  # Sum = 90s matches lap = 90s
-        
-        state = parser._determine_lap_state(ip, [0, 1, 2], [30000, 30000, 30000], 90000, "PRACTICE")
-        
-        # Should be valid in practice mode if sectors match
-        assert state == LapState.PUSH
+        state = parser._determine_lap_state(ip, "PRACTICE")
+        assert state == LapState.OUTLAP
 
     def test_determine_lap_state_practice_outlap_physics(self):
         """Test practice outlap detection via physics_lap_num."""
@@ -127,10 +67,21 @@ class TestDetermineLapStateEdgeCases:
         ip.is_outlap = False
         ip.physics_lap_num = 1  # First lap in practice
         ip.splits = {}  # No splits for outlap detection via physics counter
-        
-        state = parser._determine_lap_state(ip, [0, 1], [30000, 60000], 90000, "PRACTICE")
-        
+
+        state = parser._determine_lap_state(ip, "PRACTICE")
+
         assert state == LapState.OUTLAP
+
+    def test_determine_lap_state_practice_lap1_with_splits_is_valid(self):
+        """Practice lap 1 with splits is a flying lap → VALID."""
+        parser = LogParser()
+        ip = InProgressLap()
+        ip.is_outlap = False
+        ip.physics_lap_num = 1
+        ip.splits = {0: 30000, 1: 30000, 2: 38456}
+
+        state = parser._determine_lap_state(ip, "PRACTICE")
+        assert state == LapState.VALID
 
 
 class TestMaybeEmitAbortedLap:
@@ -176,14 +127,6 @@ class TestProcessLineHandlers:
         parser._handle_track_name(line)
         
         assert parser.context.current_track == "spa_francorchamps"
-
-    def test_handle_split_end(self):
-        """Test split end confirmation."""
-        parser = LogParser()
-        line = "[2024-01-01 12:00:00] On Split end with all splits"
-        parser._handle_split_end(line)
-        
-        assert parser._ip.split_end_confirmed is True
 
     def test_handle_connect_accepts_new_player_count_format(self):
         """Test connect lines with '(1)' still identify the player car."""
@@ -274,68 +217,6 @@ class TestHandleTyreCompoundLines:
         result = parser._handle_compound(line)
         
         assert result is None
-
-
-class TestHandlePenalty:
-    """Test penalty line handling."""
-
-    def test_handle_penalty_track_limit(self):
-        """Test track limit penalty detection."""
-        parser = LogParser()
-        parser.current_session = SessionData(track="spa", car="porsche")
-        line = "Track Limits Warning"
-        
-        result = parser._handle_penalty(line)
-        
-        # Just verify it runs without error
-        assert result is None
-
-    def test_handle_penalty_other(self):
-        """Test other penalty detection."""
-        parser = LogParser()
-        parser.current_session = SessionData(track="spa", car="porsche")
-        line = "Penalty Applied"
-        
-        result = parser._handle_penalty(line)
-        
-        assert result is None
-
-    def test_handle_penalty_added_sets_flag(self):
-        """Real PENALTY_ADDED log line must set has_penalty."""
-        parser = LogParser()
-        parser.current_session = SessionData(track="spa", car="porsche")
-        line = (
-            "[2026-04-24 23:09:20.998] [gameface] [warning] "
-            "true {PENALTY_ADDED_KEY} #0 "
-        )
-        parser._handle_penalty(line)
-        assert parser._ip.has_penalty is True
-
-    def test_handle_penalty_cleared_does_not_set_flag(self):
-        """Penalty CLEARED notifications must NOT mark the lap invalid.
-
-        AC Evo emits the same `UINotificationType_SessionPenalty` notification
-        for both additions and clearances; only the trailing warning line
-        differentiates them. Previously the parser matched the generic
-        notification line, so every clearance flipped `has_penalty=True` and
-        invalidated clean racing laps.
-        """
-        parser = LogParser()
-        parser.current_session = SessionData(track="spa", car="porsche")
-        # All three lines that fire when a penalty is cleared:
-        cleared_triplet = [
-            "[2026-04-24 23:07:24.120] [gameface] [info] "
-            "UINotification UINotificationType_SessionPenalty ",
-            "[2026-04-24 23:07:24.120] [gameface] [info] "
-            "Adding notification UINotificationType_SessionPenalty ",
-            "[2026-04-24 23:07:24.121] [gameface] [warning] "
-            "false {PENALTY_CLEARED_KEY} #0 ",
-        ]
-        for line in cleared_triplet:
-            parser._handle_penalty(line)
-        assert parser._ip.has_penalty is False, (
-            "Penalty CLEARED notifications must not be treated as additions."
-        )
 
 
 class TestHandleOutlap:

@@ -440,7 +440,7 @@ class TestLogParserEmitters:
             physics_lap_number=1,
             lap_time_ms=100000,
             lap_time_str="1:40.000",
-            lap_state=LapState.PUSH
+            lap_state=LapState.VALID
         )
         
         await parser._emit_lap(session, lap)
@@ -548,59 +548,45 @@ class TestLogParserLapState:
         parser = LogParser()
         ip = InProgressLap()
         ip.is_outlap = True
-        ip.splits = {0: 30000, 1: 60000}
-        
-        state = parser._determine_lap_state(ip, [0, 1], [30000, 60000], 90000, "PRACTICE")
-        
+        ip.physics_lap_num = 2
+
+        state = parser._determine_lap_state(ip, "PRACTICE")
         assert state == LapState.OUTLAP
 
-    def test_determine_lap_state_track_limit(self):
-        """Test track limit invalidation."""
-        from src.models import InProgressLap, LapState
-        parser = LogParser()
-        ip = InProgressLap()
-        ip.has_track_limit_violation = True
-        ip.splits = {0: 30000, 1: 60000}
-        
-        state = parser._determine_lap_state(ip, [0, 1], [30000, 60000], 90000, "PRACTICE")
-        
-        assert state == LapState.INVALID_TRACK_LIMIT
-
-    def test_determine_lap_state_penalty(self):
-        """Test penalty invalidation."""
-        from src.models import InProgressLap, LapState
-        parser = LogParser()
-        ip = InProgressLap()
-        ip.has_penalty = True
-        ip.splits = {0: 30000, 1: 60000}
-        
-        state = parser._determine_lap_state(ip, [0, 1], [30000, 60000], 90000, "PRACTICE")
-        
-        assert state == LapState.INVALID_PENALTY
-
-    def test_determine_lap_state_split_end_missing(self):
-        """Test split end missing in non-practice."""
-        from src.models import InProgressLap, LapState
-        parser = LogParser()
-        ip = InProgressLap()
-        ip.split_end_confirmed = False
-        ip.splits = {0: 30000, 1: 60000}
-        
-        state = parser._determine_lap_state(ip, [0, 1], [30000, 60000], 90000, "RACE")
-        
-        assert state == LapState.INVALID_SPLIT
-
     def test_determine_lap_state_valid(self):
-        """Test valid lap (PUSH state)."""
+        """Test non-outlap returns VALID."""
         from src.models import InProgressLap, LapState
         parser = LogParser()
         ip = InProgressLap()
-        ip.split_end_confirmed = True
+        ip.is_outlap = False
+        ip.physics_lap_num = 2
+
+        state = parser._determine_lap_state(ip, "PRACTICE")
+        assert state == LapState.VALID
+
+    def test_determine_lap_state_practice_outlap_fallback(self):
+        """Test practice lap 1 with no splits returns OUTLAP."""
+        from src.models import InProgressLap, LapState
+        parser = LogParser()
+        ip = InProgressLap()
+        ip.is_outlap = False
+        ip.physics_lap_num = 1
+        ip.splits = {}
+
+        state = parser._determine_lap_state(ip, "PRACTICE")
+        assert state == LapState.OUTLAP
+
+    def test_determine_lap_state_practice_lap1_with_splits(self):
+        """Test practice lap 1 with splits is VALID."""
+        from src.models import InProgressLap, LapState
+        parser = LogParser()
+        ip = InProgressLap()
+        ip.is_outlap = False
+        ip.physics_lap_num = 1
         ip.splits = {0: 30000, 1: 60000}
-        
-        state = parser._determine_lap_state(ip, [0, 1], [30000, 60000], 90000, "PRACTICE")
-        
-        assert state == LapState.PUSH
+
+        state = parser._determine_lap_state(ip, "PRACTICE")
+        assert state == LapState.VALID
 
 
 class TestLogParserParserState:

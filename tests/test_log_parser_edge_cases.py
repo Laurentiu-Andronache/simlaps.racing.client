@@ -57,7 +57,7 @@ class TestErrorHandling:
             physics_lap_number=1,
             lap_time_ms=100000,
             lap_time_str="1:40.000",
-            lap_state=LapState.PUSH
+            lap_state=LapState.VALID
         )
         
         # Should not raise even if callback fails
@@ -304,7 +304,7 @@ class TestOutlapFlagClearing:
     def test_single_split_tourist_lap_is_valid(self):
         """Nurburgring Tourist emits a zero-time start marker (id 0) and a
         finish split (id 1) carrying the full lap time. The lap must validate
-        as PUSH, not INVALID_SPLIT/OUTLAP."""
+        as VALID, not INVALID_SPLIT/OUTLAP."""
         parser = LogParser()
         parser.current_session = SessionData(
             track="nurburgring touristenfahrten",
@@ -320,19 +320,11 @@ class TestOutlapFlagClearing:
             f"[t] [gameplay] [info] On Split start false end true id 1 splittime {lap_time_ms}",
         ):
             parser._handle_splits_practice(line)
-        parser._handle_split_end(
-            "[t] [gameplay] [info] On Split end with all splits, id 1"
-        )
-
         ip = parser._ip
         split_keys = sorted(ip.splits.keys())
-        split_times = [ip.splits[k] for k in split_keys]
 
         assert split_keys == [0, 1]
         assert ip.is_outlap is False
-        assert ip.split_end_confirmed is True
 
-        state = parser._determine_lap_state(
-            ip, split_keys, split_times, lap_time_ms, "PRACTICE"
-        )
-        assert state == LapState.PUSH
+        state = parser._determine_lap_state(ip, "PRACTICE")
+        assert state == LapState.VALID
