@@ -165,6 +165,18 @@ class TestBuildTrackProfile:
         assert profile["corners"] is not None
         assert isinstance(profile["corners"], list)
 
+    def test_build_profile_confidence_profiled(self):
+        """Profile with no estimated corners reports profiled confidence."""
+        profile = build_track_profile("monza", "v0_4")
+
+        assert profile["confidence"] == "profiled"
+
+    def test_build_profile_confidence_estimated(self):
+        """Profile with any estimated corner reports estimated confidence."""
+        profile = build_track_profile("silverstone", "gp")
+
+        assert profile["confidence"] == "estimated"
+
 
 class TestTrackCatalog:
     """Test TRACK_CATALOG structure."""

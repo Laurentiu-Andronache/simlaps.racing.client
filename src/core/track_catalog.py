@@ -66,17 +66,34 @@ def _validate_catalog(catalog: dict) -> None:
 TRACK_CATALOG = _load_catalog()
 
 
+def _corner_confidence(corner: dict) -> str:
+    """Extract confidence from a corner dict, defaulting to 'profiled'."""
+    return corner.get("_confidence", "profiled")
+
+
 def build_track_profile(track_key: str, config_key: str) -> dict:
-    """Build a track profile dictionary."""
+    """Build a track profile dictionary.
+
+    Returns a dict with keys:
+        track_key, track_name, config_key, config_name, display_name,
+        corners (list), confidence (str) — the overall profile confidence
+        is "estimated" if ANY corner in the profile is estimated.
+    """
     track = TRACK_CATALOG[track_key]
     config = track["configs"][config_key]
+    corners = config.get("corners", [])
+    # Overall profile confidence: "estimated" if any corner is estimated
+    overall_confidence = "estimated" if any(
+        _corner_confidence(c) == "estimated" for c in corners
+    ) else "profiled"
     return {
         "track_key": track_key,
         "track_name": track["name"],
         "config_key": config_key,
         "config_name": config["name"],
         "display_name": f"{track['name']} ({config['name']})",
-        "corners": config.get("corners", []),
+        "corners": corners,
+        "confidence": overall_confidence,
     }
 
 

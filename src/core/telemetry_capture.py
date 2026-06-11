@@ -528,7 +528,16 @@ class TelemetryCapture:
         physics_data = frame.get("physics") or {}
         if isinstance(physics_data, dict) and not physics_data.get("error"):
             self._session_manager.update_from_physics_shm(physics_data)
-        
+
+        # Raw hex blobs are only needed for the debug dump paths
+        # (save_raw_dump / export_to_jsonl), which are gated on _debug_logs.
+        # Drop them from in-memory frames otherwise — they are the largest
+        # per-frame memory consumers (~2-5 KB/frame at 20Hz).
+        if not self._debug_logs:
+            frame["physics_raw"] = None
+            frame["graphics_raw"] = None
+            frame["static_raw"] = None
+
         return FrameData(**frame)
 
     async def start_capture(self) -> bool:

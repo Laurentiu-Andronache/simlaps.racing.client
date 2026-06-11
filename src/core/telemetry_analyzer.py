@@ -10,7 +10,7 @@ import math
 import os
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.core.car_tuning_catalog import format_tuning_block
@@ -1626,6 +1626,231 @@ def analyze_electronics_per_lap(laps: List[Dict]) -> List[Dict]:
 
 
 
+def analyze_brake_thermals(laps: List[Dict]) -> Dict[str, Any]:
+    """Analyze brake temperatures across laps for imbalance and fade.
+
+    Returns a dict with:
+        per_lap: list of {lap_num, front_avg, rear_avg, peak_front} where the
+            averages are taken over heavy-braking frames (brake > 0.4) and
+            ``None`` when no valid temperature samples exist.
+        imbalance_note: front/rear thermal-bias warning string or None.
+        fade_note: lap-over-lap rising-temperature warning string or None.
+    """
+    def _avg_temp(points: List[Dict], keys: List[str]) -> Optional[float]:
+        values = [
+            pt.get(key, 0) for pt in points for key in keys
+            if isinstance(pt.get(key, 0), (int, float)) and pt.get(key, 0) > 0
+        ]
+        return sum(values) / len(values) if values else None
+
+    per_lap: List[Dict[str, Any]] = []
+    for lap in laps:
+        track_pts = lap.get("track", [])
+        braking_pts = [pt for pt in track_pts if (pt.get("brake") or 0) > 0.4]
+        front_peaks = [
+            pt.get(key, 0) for pt in track_pts for key in ("brake_temp_fl", "brake_temp_fr")
+            if isinstance(pt.get(key, 0), (int, float)) and pt.get(key, 0) > 0
+        ]
+        per_lap.append({
+            "lap_num": lap["lap_num"],
+            "front_avg": _avg_temp(braking_pts, ["brake_temp_fl", "brake_temp_fr"]),
+            "rear_avg": _avg_temp(braking_pts, ["brake_temp_rl", "brake_temp_rr"]),
+            "peak_front": max(front_peaks) if front_peaks else None,
+        })
+
+    imbalance_note: Optional[str] = None
+    front_avgs = [e["front_avg"] for e in per_lap if e["front_avg"] is not None]
+    rear_avgs = [e["rear_avg"] for e in per_lap if e["rear_avg"] is not None]
+    if front_avgs and rear_avgs:
+        front_mean = sum(front_avgs) / len(front_avgs)
+        rear_mean = sum(rear_avgs) / len(rear_avgs)
+        if rear_mean > 0 and front_mean > 1.5 * rear_mean:
+            imbalance_note = (
+                f"Front brakes run {front_mean / rear_mean:.1f}x hotter than rears under heavy braking "
+                f"({front_mean:.0f}C vs {rear_mean:.0f}C) - brake bias may be too far forward, "
+                "or the rears are underworked."
+            )
+        elif front_mean > 0 and rear_mean > front_mean:
+            imbalance_note = (
+                f"Rear brakes run hotter than fronts under heavy braking "
+                f"({rear_mean:.0f}C vs {front_mean:.0f}C) - rear bias or rear-duct issue."
+            )
+
+    fade_note: Optional[str] = None
+    peaks = [e["peak_front"] for e in per_lap if e["peak_front"] is not None]
+    if len(peaks) >= 3:
+        rising = all(later >= earlier for earlier, later in zip(peaks, peaks[1:]))
+        total_rise = peaks[-1] - peaks[0]
+        if rising and total_rise > 60:
+            fade_note = (
+                f"Peak front brake temps climbing every lap ({peaks[0]:.0f}C -> {peaks[-1]:.0f}C, "
+                f"+{total_rise:.0f}C) - heat is not recovering between braking zones; "
+                "consider more brake duct or earlier/shorter braking before fade sets in."
+            )
+
+    return {"per_lap": per_lap, "imbalance_note": imbalance_note, "fade_note": fade_note}
+
+
+def analyze_suspension(laps: List[Dict], ref_corners: List[Dict]) -> Dict[str, Any]:
+    """Analyze suspension travel and camber for setup hints.
+
+    Returns dict with keys:
+        bottoming_notes: list of strings
+        travel_delta_notes: list of strings
+        camber_notes: list of strings
+    """
+    notes: Dict[str, List[str]] = {
+        "bottoming_notes": [],
+        "travel_delta_notes": [],
+        "camber_notes": [],
+    }
+
+    # Guard: skip if all suspension values are zero (decoder fallback)
+    _any_sus = any(
+        pt.get(f"sus_{w}", 0) != 0
+        for lap in laps for pt in lap.get("track", []) for w in ("fl", "fr", "rl", "rr")
+    )
+    if not _any_sus:
+        return notes
+
+    # Session max travel per wheel for bottoming detection
+    _max_per_wheel = {w: 0.0 for w in ("fl", "fr", "rl", "rr")}
+    for lap in laps:
+        for pt in lap.get("track", []):
+            for w in ("fl", "fr", "rl", "rr"):
+                v = pt.get(f"sus_{w}", 0)
+                if isinstance(v, (int, float)) and v > _max_per_wheel[w]:
+                    _max_per_wheel[w] = v
+
+    # Bottoming: within 2% of max for >2 consecutive frames inside a corner window
+    for spec in ref_corners:
+        cid = spec["id"]
+        name = spec.get("name") or f"Corner {cid}"
+        for w in ("fl", "fr", "rl", "rr"):
+            for lap in laps:
+                corner_pts = [
+                    pt for pt in lap.get("track", [])
+                    if spec["start"] <= pt.get("lap_progress", -1) < spec["end"]
+                ]
+                if len(corner_pts) < 3:
+                    continue
+                streak = 0
+                max_streak = 0
+                threshold = _max_per_wheel[w] * 0.98
+                for pt in corner_pts:
+                    v = pt.get(f"sus_{w}", 0)
+                    if isinstance(v, (int, float)) and v >= threshold:
+                        streak += 1
+                        max_streak = max(max_streak, streak)
+                    else:
+                        streak = 0
+                if max_streak > 2:
+                    notes["bottoming_notes"].append(
+                        f"{w.upper()} bottoming at {name} "
+                        f"({max_streak} frames near max travel)"
+                    )
+
+    # Apex travel delta best-vs-worst lap per corner (>5mm)
+    for spec in ref_corners:
+        cid = spec["id"]
+        name = spec.get("name") or f"Corner {cid}"
+        apex_sus: Dict[int, Dict[str, float]] = {}
+        for lap in laps:
+            for pt in lap.get("track", []):
+                if spec["start"] <= pt.get("lap_progress", -1) < spec["end"]:
+                    for w in ("fl", "fr", "rl", "rr"):
+                        v = pt.get(f"sus_{w}", 0)
+                        if isinstance(v, (int, float)) and v > 0:
+                            apex_sus.setdefault(lap["lap_num"], {})[w] = v
+                    break
+        if len(apex_sus) >= 2:
+            for w in ("fl", "fr", "rl", "rr"):
+                vals = [
+                    apex_sus[ln].get(w, 0)
+                    for ln in apex_sus
+                    if apex_sus[ln].get(w, 0) > 0
+                ]
+                if vals and max(vals) - min(vals) > 0.005:
+                    notes["travel_delta_notes"].append(
+                        f"{name} {w.upper()} apex travel varies "
+                        f"{min(vals)*1000:.0f}-{max(vals)*1000:.0f}mm "
+                        f"({(max(vals)-min(vals))*1000:.1f}mm spread) - line/curb usage tip"
+                    )
+
+    # Camber mismatch at apex: |camber_fl - camber_fr| > 0.5 deg (0.0087 rad)
+    for spec in ref_corners:
+        cid = spec["id"]
+        name = spec.get("name") or f"Corner {cid}"
+        for lap in laps:
+            for pt in lap.get("track", []):
+                if spec["start"] <= pt.get("lap_progress", -1) < spec["end"]:
+                    cfl = pt.get("camber_fl", 0)
+                    cfr = pt.get("camber_fr", 0)
+                    if isinstance(cfl, (int, float)) and isinstance(cfr, (int, float)):
+                        if abs(cfl - cfr) > 0.0087:
+                            deg = abs(cfl - cfr) * (180 / 3.14159)
+                            notes["camber_notes"].append(
+                                f"{name}: front camber mismatch {deg:.1f}deg at apex - "
+                                "excessive body roll for camber setting"
+                            )
+                    break
+
+    return notes
+
+
+
+
+def _session_summary_path(output_dir: str) -> str:
+    return os.path.join(output_dir, "session_history.jsonl")
+
+
+def _write_session_summary(
+    output_dir: str,
+    track: str,
+    car: str,
+    best_lap_time_s: float,
+    top_speed: float,
+    lap_count: int,
+    avg_fuel_per_lap: Optional[float],
+) -> None:
+    path = _session_summary_path(output_dir)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    entry = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "track": track,
+        "car": car,
+        "best_lap_time_s": best_lap_time_s,
+        "best_lap_time_str": f"{int(best_lap_time_s // 60)}:{best_lap_time_s % 60:05.2f}",
+        "top_speed": top_speed,
+        "laps": lap_count,
+        "avg_fuel_per_lap": avg_fuel_per_lap,
+    }
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry) + "\n")
+
+
+def _load_previous_summary(output_dir: str, track: str, car: str) -> Optional[Dict[str, Any]]:
+    path = _session_summary_path(output_dir)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+    except OSError:
+        return None
+    for line in reversed(lines):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if entry.get("track") == track and entry.get("car") == car:
+            return entry
+    return None
+
+
 class TelemetryAnalyzer:
     """Analyzes telemetry data and generates reports."""
 
@@ -1690,6 +1915,12 @@ class TelemetryAnalyzer:
             authoritative_progress_ratio, plausible_frame_ratio,
         )
         analysis_notes: List[str] = []
+
+        if track_profile and track_profile.get("confidence") == "estimated":
+            analysis_notes.append(
+                "Track profile corner windows are estimated from public track maps, "
+                "not verified telemetry - treat per-corner segment deltas as directional only."
+            )
 
         log_info(Component.ANALYZER, "Data quality assessed",
                 progress_ratio=f"{authoritative_progress_ratio:.1%}",
@@ -1971,6 +2202,32 @@ class TelemetryAnalyzer:
             "authoritative_progress_ratio": authoritative_progress_ratio,
             "plausible_frame_ratio": plausible_frame_ratio,
         }
+
+        # ── Session-over-session comparison
+        _track_label = data.get("track_label") or data.get("track_name") or ""
+        _car = data.get("car") or ""
+        _laps_with_fuel = [lap for lap in laps if lap.get("fuel_used") is not None]
+        _avg_fuel = (
+            sum(lap["fuel_used"] for lap in _laps_with_fuel) / len(_laps_with_fuel)
+            if _laps_with_fuel else None
+        )
+        _write_session_summary(
+            self._output_dir,
+            _track_label,
+            _car,
+            best_lap["lap_time_s"],
+            max((lap.get("max_speed") or 0.0) for lap in laps),
+            len(laps),
+            _avg_fuel,
+        )
+        _prev = _load_previous_summary(self._output_dir, _track_label, _car)
+        if _prev:
+            _delta = best_lap["lap_time_s"] - _prev["best_lap_time_s"]
+            _delta_str = f"+{_delta:.2f}s" if _delta > 0 else f"{_delta:.2f}s"
+            analysis_notes.append(
+                f"Last session best: {_prev['best_lap_time_str']} "
+                f"(today {best_lap['lap_time_str']}, {_delta_str})."
+            )
 
         telemetry_summary = {
             "max_speed": max((lap.get("max_speed") or 0.0) for lap in laps),
@@ -2889,6 +3146,40 @@ window.addEventListener('DOMContentLoaded', () => {
             lines.append("      Treat corner speed deltas as directional only, not exact comparisons.")
         lines.append("")
 
+        # Rank corners by time lost (compare - ref segment delta) so the prompt
+        # only carries full breakdowns for the biggest opportunities. SUSPECT
+        # deltas (low confidence and >3s) are excluded from the ranking.
+        _corner_seg_deltas: Dict[int, float] = {}
+        for spec in ref_corners:
+            cid = spec["id"]
+            rc = lap_corner_map.get(reference_lap_num, {}).get(cid)
+            cc = lap_corner_map.get(comparison_lap_num, {}).get(cid)
+            if not rc or not cc:
+                continue
+            seg_delta = corner_segment_time(cc, hz) - corner_segment_time(rc, hz)
+            is_low_conf = (
+                rc.get("confidence_label") == "low" or
+                cc.get("confidence_label") == "low"
+            )
+            if is_low_conf and abs(seg_delta) > 3.0:
+                continue
+            _corner_seg_deltas[cid] = seg_delta
+        _TOP_CORNER_COUNT = 5
+        top_corner_ids = {
+            cid for cid, _ in sorted(
+                _corner_seg_deltas.items(), key=lambda item: item[1], reverse=True
+            )[:_TOP_CORNER_COUNT]
+        }
+        # Only truncate when ranking produced data and there are more corners
+        # than the cutoff; otherwise emit full breakdowns for everything.
+        truncate_corners = bool(top_corner_ids) and len(ref_corners) > _TOP_CORNER_COUNT
+        if truncate_corners:
+            lines.append(f"NOTE: Full breakdowns below cover only the {_TOP_CORNER_COUNT} corners with the")
+            lines.append("      largest time loss (compare - ref). Remaining corners are summarized in one line each.")
+            lines.append("")
+
+        compact_corner_lines: List[str] = []
+
         for spec in ref_corners:
             cid = spec["id"]
             name = spec.get("name") or f"Corner {cid}"
@@ -2913,6 +3204,19 @@ window.addEventListener('DOMContentLoaded', () => {
             reference_corner = lap_corner_map.get(reference_lap_num, {}).get(cid)
             comparison_corner = lap_corner_map.get(comparison_lap_num, {}).get(cid)
             if not reference_corner or not comparison_corner:
+                continue
+
+            if truncate_corners and cid not in top_corner_ids:
+                _seg = (
+                    corner_segment_time(comparison_corner, hz) -
+                    corner_segment_time(reference_corner, hz)
+                )
+                _apex_d = comparison_corner["apex_speed"] - reference_corner["apex_speed"]
+                compact_corner_lines.append(
+                    f"  C{cid} {name}: apex {reference_corner['apex_speed']:.1f} vs "
+                    f"{comparison_corner['apex_speed']:.1f} (D {_apex_d:+.1f} km/h), "
+                    f"seg D {_seg:+.2f}s"
+                )
                 continue
 
             best_apex_lap_num, _ = max(corners_for_lap, key=lambda item: item[1]["apex_speed"])
@@ -3008,6 +3312,11 @@ window.addEventListener('DOMContentLoaded', () => {
                     f"{balance_hint(slowest_apex_st)}"
                 )
 
+            lines.append("")
+
+        if compact_corner_lines:
+            lines.append("OTHER CORNERS (compact, ref vs compare):")
+            lines.extend(compact_corner_lines)
             lines.append("")
 
         # ── Braking, turn-in, and throttle timing analysis
@@ -3511,7 +3820,26 @@ window.addEventListener('DOMContentLoaded', () => {
                         lines.append(f"    Lap {ln}: {bias:.2f} ({bias*100:.0f}% front){bias_hint}")
                     lines.append("")
 
-        # ── Coaching request (concise)
+        # ── Brake thermal analysis (front/rear imbalance, fade, extremes)
+        _brake_thermals = analyze_brake_thermals(laps)
+        _bt_rows = [
+            e for e in _brake_thermals["per_lap"]
+            if e["front_avg"] is not None or e["rear_avg"] is not None
+        ]
+        if _bt_rows:
+            lines.append("BRAKE THERMAL ANALYSIS:")
+            lines.append("(averages over heavy-braking frames, brake > 40%)")
+            for e in _bt_rows:
+                _f = f"{e['front_avg']:.0f}C" if e["front_avg"] is not None else "n/a"
+                _r = f"{e['rear_avg']:.0f}C" if e["rear_avg"] is not None else "n/a"
+                _p = f"  peak front {e['peak_front']:.0f}C" if e["peak_front"] is not None else ""
+                lines.append(f"  Lap {e['lap_num']}: front avg {_f}  rear avg {_r}{_p}")
+            if _brake_thermals["imbalance_note"]:
+                lines.append(f"  >> IMBALANCE: {_brake_thermals['imbalance_note']}")
+            if _brake_thermals["fade_note"]:
+                lines.append(f"  >> FADE RISK: {_brake_thermals['fade_note']}")
+            lines.append("")
+
         # ── Brake temperature extreme flag
         _max_brake_temps: List[float] = []
         for lap in laps:
@@ -3526,6 +3854,21 @@ window.addEventListener('DOMContentLoaded', () => {
                 lines.append("")
                 lines.append(f"BRAKE THERMAL WARNING: Peak brake temperature {_peak_bt:.0f}C detected.")
                 lines.append("  Consider shorter braking zones or adjusting brake bias to avoid fade.")
+
+        # ── Suspension / alignment analysis
+        _suspension = analyze_suspension(laps, ref_corners)
+        _has_sus = any(
+            _suspension[k] for k in ("bottoming_notes", "travel_delta_notes", "camber_notes")
+        )
+        if _has_sus:
+            lines.append("SUSPENSION & ALIGNMENT ANALYSIS:")
+            for note in _suspension["bottoming_notes"]:
+                lines.append(f"  >> BOTTOMING: {note}")
+            for note in _suspension["travel_delta_notes"]:
+                lines.append(f"  >> TRAVEL: {note}")
+            for note in _suspension["camber_notes"]:
+                lines.append(f"  >> CAMBER: {note}")
+            lines.append("")
 
         lines.append("=" * 60)
         lines.append("RESPONSE FORMAT — FOLLOW EXACTLY. NO DEVIATION.")

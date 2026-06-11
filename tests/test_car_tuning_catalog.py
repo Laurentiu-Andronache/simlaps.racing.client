@@ -53,7 +53,8 @@ class TestCarTuningCatalog:
         assert "- Front tyre pressure  [16 selectable settings]" in block
         assert "- Rear tyre pressure  [16 selectable settings]" in block
         assert "- Fuel load  [55 selectable settings]" in block
-        assert "Rear camber" not in block
+        # Rear camber is present in the verified catalog with 11 settings
+        assert "- Rear camber  [11 selectable settings]" in block
 
     def test_unknown_car_returns_empty_tuning_block(self):
         assert get_tuning_params("Unknown Car") is None

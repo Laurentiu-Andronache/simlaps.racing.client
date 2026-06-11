@@ -157,6 +157,38 @@ class TestTelemetryCapture:
         assert frame.frame_number == 0
         assert frame.physics is not None or frame.physics == {}
 
+    @patch('src.core.telemetry_capture.kernel32')
+    def test_capture_frame_prunes_raw_when_debug_logs_off(self, mock_kernel32):
+        """Raw hex blobs are dropped from in-memory frames when debug logs disabled."""
+        mock_reader = MagicMock()
+        mock_reader.size = 1024
+        mock_reader.read_raw.return_value = b'\x01' * 1024
+
+        capture = TelemetryCapture(hz=10.0, debug_logs=False)
+        capture._readers = {"physics": mock_reader}
+
+        frame = capture._capture_frame(0)
+
+        assert frame is not None
+        assert frame.physics_raw is None
+        assert frame.graphics_raw is None
+        assert frame.static_raw is None
+
+    @patch('src.core.telemetry_capture.kernel32')
+    def test_capture_frame_keeps_raw_when_debug_logs_on(self, mock_kernel32):
+        """Raw hex blobs are retained when debug logs are enabled."""
+        mock_reader = MagicMock()
+        mock_reader.size = 1024
+        mock_reader.read_raw.return_value = b'\x01' * 1024
+
+        capture = TelemetryCapture(hz=10.0, debug_logs=True)
+        capture._readers = {"physics": mock_reader}
+
+        frame = capture._capture_frame(0)
+
+        assert frame is not None
+        assert frame.physics_raw == (b'\x01' * 1024).hex()
+
     @patch('src.core.telemetry_decoder.decode_static')
     @patch('src.core.telemetry_decoder.decode_graphics')
     @patch('src.core.telemetry_decoder.decode_physics')
