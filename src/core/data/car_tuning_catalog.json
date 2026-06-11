@@ -9,6 +9,14 @@
       "settings_count": 16
     },
     {
+      "label": "Front camber",
+      "settings_count": 16
+    },
+    {
+      "label": "Rear camber",
+      "settings_count": 11
+    },
+    {
       "label": "Front toe",
       "settings_count": 41
     },
@@ -31,6 +39,14 @@
       "settings_count": 14
     },
     {
+      "label": "Front camber",
+      "settings_count": 16
+    },
+    {
+      "label": "Rear camber",
+      "settings_count": 16
+    },
+    {
       "label": "Front toe",
       "settings_count": 41
     },
@@ -47,6 +63,14 @@
     {
       "label": "Rear tyre pressure",
       "settings_count": 21
+    },
+    {
+      "label": "Front camber",
+      "settings_count": 16
+    },
+    {
+      "label": "Rear camber",
+      "settings_count": 16
     },
     {
       "label": "Front ride height",
@@ -68,6 +92,14 @@
     },
     {
       "label": "Rear tyre pressure",
+      "settings_count": 21
+    },
+    {
+      "label": "Front camber",
+      "settings_count": 21
+    },
+    {
+      "label": "Rear camber",
       "settings_count": 21
     },
     {
@@ -93,6 +125,14 @@
       "settings_count": 16
     },
     {
+      "label": "Front camber",
+      "settings_count": 16
+    },
+    {
+      "label": "Rear camber",
+      "settings_count": 16
+    },
+    {
       "label": "Front toe",
       "settings_count": 41
     },
@@ -113,6 +153,14 @@
     {
       "label": "Rear tyre pressure",
       "settings_count": 16
+    },
+    {
+      "label": "Front camber",
+      "settings_count": 16
+    },
+    {
+      "label": "Rear camber",
+      "settings_count": 11
     },
     {
       "label": "Front toe",
@@ -201,6 +249,14 @@
       "settings_count": 16
     },
     {
+      "label": "Front camber",
+      "settings_count": 16
+    },
+    {
+      "label": "Rear camber",
+      "settings_count": 11
+    },
+    {
       "label": "Front toe",
       "settings_count": 61
     },
@@ -221,6 +277,14 @@
     {
       "label": "Rear tyre pressure",
       "settings_count": 13
+    },
+    {
+      "label": "Front camber",
+      "settings_count": 21
+    },
+    {
+      "label": "Rear camber",
+      "settings_count": 21
     },
     {
       "label": "Rear toe",
@@ -249,6 +313,14 @@
       "settings_count": 21
     },
     {
+      "label": "Front camber",
+      "settings_count": 16
+    },
+    {
+      "label": "Rear camber",
+      "settings_count": 16
+    },
+    {
       "label": "Front toe",
       "settings_count": 41
     },
@@ -269,6 +341,14 @@
     {
       "label": "Rear tyre pressure",
       "settings_count": 21
+    },
+    {
+      "label": "Front camber",
+      "settings_count": 16
+    },
+    {
+      "label": "Rear camber",
+      "settings_count": 16
     },
     {
       "label": "Front toe",
@@ -421,6 +501,14 @@
       "settings_count": 151
     },
     {
+      "label": "Front camber",
+      "settings_count": 21
+    },
+    {
+      "label": "Rear camber",
+      "settings_count": 21
+    },
+    {
       "label": "Front toe",
       "settings_count": 26
     },
@@ -448,6 +536,14 @@
     },
     {
       "label": "Rear tyre pressure",
+      "settings_count": 21
+    },
+    {
+      "label": "Front camber",
+      "settings_count": 21
+    },
+    {
+      "label": "Rear camber",
       "settings_count": 21
     },
     {
@@ -659,6 +755,14 @@
       "settings_count": 11
     },
     {
+      "label": "Front camber",
+      "settings_count": 16
+    },
+    {
+      "label": "Rear camber",
+      "settings_count": 16
+    },
+    {
       "label": "Front toe",
       "settings_count": 9
     },
@@ -747,6 +851,14 @@
     {
       "label": "Rear tyre pressure",
       "settings_count": 181
+    },
+    {
+      "label": "Front camber",
+      "settings_count": 21
+    },
+    {
+      "label": "Rear camber",
+      "settings_count": 21
     },
     {
       "label": "Front toe",
@@ -851,6 +963,10 @@
       "settings_count": 21
     },
     {
+      "label": "Rear camber",
+      "settings_count": 21
+    },
+    {
       "label": "Front toe",
       "settings_count": 61
     },
@@ -911,6 +1027,14 @@
       "settings_count": 16
     },
     {
+      "label": "Front camber",
+      "settings_count": 16
+    },
+    {
+      "label": "Rear camber",
+      "settings_count": 16
+    },
+    {
       "label": "Rear toe",
       "settings_count": 31
     },
@@ -967,6 +1091,14 @@
       "settings_count": 13
     },
     {
+      "label": "Front camber",
+      "settings_count": 16
+    },
+    {
+      "label": "Rear camber",
+      "settings_count": 16
+    },
+    {
       "label": "Front toe",
       "settings_count": 41
     },
@@ -987,6 +1119,10 @@
     {
       "label": "Rear tyre pressure",
       "settings_count": 16
+    },
+    {
+      "label": "Front camber",
+      "settings_count": 24
     },
     {
       "label": "Rear camber",
@@ -1011,6 +1147,14 @@
       "settings_count": 26
     },
     {
+      "label": "Front camber",
+      "settings_count": 16
+    },
+    {
+      "label": "Rear camber",
+      "settings_count": 11
+    },
+    {
       "label": "Front toe",
       "settings_count": 61
     },
@@ -1030,6 +1174,14 @@
     },
     {
       "label": "Rear tyre pressure",
+      "settings_count": 16
+    },
+    {
+      "label": "Front camber",
+      "settings_count": 16
+    },
+    {
+      "label": "Rear camber",
       "settings_count": 16
     },
     {
@@ -1053,6 +1205,14 @@
     {
       "label": "Rear tyre pressure",
       "settings_count": 131
+    },
+    {
+      "label": "Front camber",
+      "settings_count": 21
+    },
+    {
+      "label": "Rear camber",
+      "settings_count": 21
     },
     {
       "label": "Front toe",
@@ -1120,6 +1280,14 @@
     },
     {
       "label": "Rear tyre pressure",
+      "settings_count": 21
+    },
+    {
+      "label": "Front camber",
+      "settings_count": 21
+    },
+    {
+      "label": "Rear camber",
       "settings_count": 21
     },
     {
@@ -1248,6 +1416,14 @@
     },
     {
       "label": "Rear tyre pressure",
+      "settings_count": 16
+    },
+    {
+      "label": "Front camber",
+      "settings_count": 16
+    },
+    {
+      "label": "Rear camber",
       "settings_count": 16
     },
     {
@@ -1391,6 +1567,14 @@
       "settings_count": 21
     },
     {
+      "label": "Front camber",
+      "settings_count": 16
+    },
+    {
+      "label": "Rear camber",
+      "settings_count": 11
+    },
+    {
       "label": "Front toe",
       "settings_count": 41
     },
@@ -1411,6 +1595,14 @@
     {
       "label": "Rear tyre pressure",
       "settings_count": 21
+    },
+    {
+      "label": "Front camber",
+      "settings_count": 16
+    },
+    {
+      "label": "Rear camber",
+      "settings_count": 16
     },
     {
       "label": "Front toe",
@@ -1467,6 +1659,14 @@
     {
       "label": "Rear tyre pressure",
       "settings_count": 19
+    },
+    {
+      "label": "Front camber",
+      "settings_count": 16
+    },
+    {
+      "label": "Rear camber",
+      "settings_count": 16
     },
     {
       "label": "Front toe",
@@ -1643,6 +1843,14 @@
       "settings_count": 21
     },
     {
+      "label": "Front camber",
+      "settings_count": 16
+    },
+    {
+      "label": "Rear camber",
+      "settings_count": 11
+    },
+    {
       "label": "Fuel load",
       "settings_count": 50
     }
@@ -1655,6 +1863,14 @@
     {
       "label": "Rear tyre pressure",
       "settings_count": 21
+    },
+    {
+      "label": "Front camber",
+      "settings_count": 16
+    },
+    {
+      "label": "Rear camber",
+      "settings_count": 16
     },
     {
       "label": "Front toe",
@@ -1673,6 +1889,14 @@
     {
       "label": "Rear tyre pressure",
       "settings_count": 26
+    },
+    {
+      "label": "Front camber",
+      "settings_count": 16
+    },
+    {
+      "label": "Rear camber",
+      "settings_count": 16
     },
     {
       "label": "Front toe",
@@ -1735,6 +1959,14 @@
       "settings_count": 21
     },
     {
+      "label": "Front camber",
+      "settings_count": 16
+    },
+    {
+      "label": "Rear camber",
+      "settings_count": 11
+    },
+    {
       "label": "Fuel load",
       "settings_count": 45
     }
@@ -1747,6 +1979,14 @@
     {
       "label": "Rear tyre pressure",
       "settings_count": 16
+    },
+    {
+      "label": "Front camber",
+      "settings_count": 16
+    },
+    {
+      "label": "Rear camber",
+      "settings_count": 11
     },
     {
       "label": "Front toe",
