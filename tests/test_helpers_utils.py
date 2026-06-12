@@ -36,6 +36,13 @@ def test_truncate_string_respects_max_length() -> None:
 
 
 def test_format_track_name_known_and_fallback() -> None:
-    assert format_track_name("spa_francorchamps") == "Spa-Francorchamps"
-    assert format_track_name("NURBURGRING_GP") == "Nürburgring"
+    """Track names resolve from the authoritative catalog, unknown use fallback."""
+    # Known tracks resolved via catalog
+    assert format_track_name("spa_francorchamps") == "Circuit de Spa-Francorchamps"
+    assert format_track_name("nurburgring_gp") == "Nurburgring GP"
+    assert format_track_name("monza") == "Monza"
+    assert format_track_name("imola") == "Imola"
+    assert format_track_name("brands_hatch") == "Brands Hatch"
+
+    # Unknown track uses fallback cleanup
     assert format_track_name("my_custom_track") == "My Custom Track"

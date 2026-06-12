@@ -34,7 +34,7 @@ from src.core.discord_notifier import DiscordNotifier
 from src.core.pb_cache import get_pb_cache
 from src.core.telemetry_capture import TelemetryCapture
 from src.core.track_catalog import TRACK_CATALOG
-from src.core.telemetry_analyzer import TelemetryAnalyzer
+from src.core.analyzer import TelemetryAnalyzer
 from src.utils.structured_logger import log_debug, log_info, log_warning, log_exception, Component
 from src.utils.config import AppConfig, get_config_manager
 

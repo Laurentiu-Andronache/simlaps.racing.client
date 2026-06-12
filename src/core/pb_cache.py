@@ -10,6 +10,14 @@ from dataclasses import dataclass
 from typing import Dict, Tuple, Optional
 from datetime import datetime
 
+from src.utils.structured_logger import (
+    Component,
+    log_debug,
+    log_info,
+    log_warning,
+    log_error,
+)
+
 
 @dataclass
 class PersonalBest:
@@ -72,16 +80,15 @@ class PBCache:
                 "includeAll": "false"  # Only valid laps for PB comparison
             }
             
-            print(f"[PB_CACHE] Fetching from: {url}")
-            print(f"[PB_CACHE] Params: {params}")
+            log_debug(Component.PB_CACHE, "Fetching PBs from API", url=url, params=params)
 
             async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
                 response = await client.get(url, params=params)
 
-                print(f"[PB_CACHE] Response status: {response.status_code}")
+                log_debug(Component.PB_CACHE, "PB preload response", status_code=response.status_code)
 
                 if response.status_code != 200:
-                    print(f"[PB_CACHE] Failed to preload PBs: HTTP {response.status_code}")
+                    log_warning(Component.PB_CACHE, "Failed to preload PBs", status_code=response.status_code)
                     return False
 
                 data = response.json()
@@ -117,17 +124,17 @@ class PBCache:
                 self._steam_id = steam_id
                 self._loaded = True
 
-                print(f"Preloaded {len(self._cache)} personal bests for Steam ID {steam_id}")
+                log_info(Component.PB_CACHE, "Preloaded personal bests", count=len(self._cache), steam_id=steam_id)
                 return True
                 
         except httpx.TimeoutException:
-            print("PB preload request timed out")
+            log_warning(Component.PB_CACHE, "PB preload request timed out")
             return False
         except httpx.RequestError as e:
-            print(f"PB preload request failed: {e}")
+            log_warning(Component.PB_CACHE, "PB preload request failed", error=str(e))
             return False
         except Exception as e:
-            print(f"Unexpected error during PB preload: {e}")
+            log_error(Component.PB_CACHE, "Unexpected error during PB preload", error=str(e))
             return False
     
     def check_and_update_pb(self, track_id: str, car_id: str, lap_time_ms: int) -> bool:
@@ -136,28 +143,25 @@ class PBCache:
         
         Args:
             track_id: Track identifier
-            car_id: Car identifier  
+            car_id: Car identifier
             lap_time_ms: Lap time in milliseconds
             
         Returns:
             True if this is a new personal best, False otherwise
         """
-        print(f"[PB_CACHE] check_and_update_pb: track={track_id}, car={car_id}, time={lap_time_ms}ms")
-        print(f"[PB_CACHE] Cache loaded: {self._loaded}, size: {len(self._cache)}")
+        log_debug(Component.PB_CACHE, "Checking PB", track=track_id, car=car_id, time_ms=lap_time_ms)
         
         key = self._normalize_key(track_id, car_id)
         current = self._cache.get(key)
-        
-        print(f"[PB_CACHE] Key: {key}, current PB: {current}")
         
         # If no existing PB or new time is faster, update and return True
         if current is None or lap_time_ms < current.best_time_ms:
             new_pb = PersonalBest(best_time_ms=lap_time_ms, updated_at=datetime.now())
             self._cache[key] = new_pb
-            print(f"[PB_CACHE] NEW PB! Updated cache: {key} -> {lap_time_ms}ms")
+            log_info(Component.PB_CACHE, "New personal best!", track=track_id, car=car_id, time_ms=lap_time_ms)
             return True
         
-        print(f"[PB_CACHE] Not a PB (current: {current.best_time_ms}ms, new: {lap_time_ms}ms)")
+        log_debug(Component.PB_CACHE, "Not a PB", current_ms=current.best_time_ms, new_ms=lap_time_ms)
         return False
     
     def get_personal_best(self, track_id: str, car_id: str) -> Optional[PersonalBest]:

@@ -6,7 +6,8 @@ shared-memory decoding, telemetry analysis, and API submission code.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from copy import deepcopy
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Dict, Optional, Set
 import threading
 import uuid
@@ -197,11 +198,11 @@ class SharedSessionManager:
 
     def get_fuel_data(self) -> FuelData:
         with self._lock:
-            return self._session_data.fuel_data
+            return replace(self._session_data.fuel_data)
 
     def get_player_identification(self) -> PlayerIdentificationData:
         with self._lock:
-            return self._session_data.player_identification
+            return replace(self._session_data.player_identification)
 
     def get_sector_split_data(self, lap_num: int) -> Optional[SectorSplitData]:
         with self._lock:
@@ -209,7 +210,7 @@ class SharedSessionManager:
 
     def get_session_metadata_data(self) -> SessionMetadataData:
         with self._lock:
-            return self._session_data.session_metadata
+            return replace(self._session_data.session_metadata)
 
     # Legacy accessors
     def get_lap_time(self, lap_num: int) -> Optional[float]:
@@ -687,6 +688,8 @@ class SharedSessionManager:
             self._session_data.player_name = old_ident.player_name
             self._session_data.car_uuid = old_ident.car_uuid
 
+        self.notify_observers()
+
     # Observer pattern
     def subscribe(self, callback: Callable[[SharedSessionData], None]) -> None:
         with self._lock:
@@ -710,6 +713,39 @@ class SharedSessionManager:
 
     def get_legacy_wrapper(self) -> "LegacySessionDataWrapper":
         return LegacySessionDataWrapper(self)
+
+
+    def _get_lap_snapshot(self) -> Dict[str, Any]:
+        """Atomically snapshot all lap-related data for legacy conversion.
+
+        Acquires the lock *once* so callers see a consistent view across
+        lap-times, lap-validity, sector-times, and per-lap metadata.
+        """
+        with self._lock:
+            sd = self._session_data
+            return {
+                "lap_times": dict(sd.lap_times),
+                "lap_times_graphics": dict(sd.lap_times_graphics),
+                "lap_times_logs": dict(sd.lap_times_logs),
+                "calc_lap_times": dict(sd.calc_lap_times),
+                "lap_validity_flat": dict(sd.lap_validity_flat),
+                "lap_validity": {
+                    k: LapValidityData(
+                        lap_number=v.lap_number,
+                        is_valid=v.is_valid,
+                        lap_state=v.lap_state,
+                        invalidation_reason=v.invalidation_reason,
+                        invalidation_timestamp=v.invalidation_timestamp,
+                        source=v.source,
+                        penalty_count=v.penalty_count,
+                        track_limit_violations=v.track_limit_violations,
+                    )
+                    for k, v in sd.lap_validity.items()
+                },
+                "sector_times": {k: dict(v) for k, v in sd.sector_times.items()},
+                "lap_completion_timestamps": dict(sd.lap_completion_timestamps),
+                "fuel_consumption": dict(sd.fuel_consumption),
+            }
 
 
 class LegacySessionDataWrapper:
@@ -747,22 +783,31 @@ class LegacySessionDataWrapper:
         )
 
     def _convert_to_legacy_laps(self) -> list[LapData]:
-        lap_times = self._shared.get_all_lap_times()
-        lap_validity = self._shared.get_all_lap_validity()
+        snap = self._shared._get_lap_snapshot()
+        lap_times: Dict[int, float] = snap["lap_times"]
+        lap_validity_flat: Dict[int, bool] = snap["lap_validity_flat"]
+        lap_validity: Dict[int, LapValidityData] = snap["lap_validity"]
+        sector_times_map: Dict[int, Dict[int, int]] = snap["sector_times"]
 
-        lap_numbers = sorted(set(lap_times) | set(lap_validity))
+        lap_numbers = sorted(set(lap_times) | set(lap_validity_flat))
         laps: list[LapData] = []
         for lap_num in lap_numbers:
             lap_time_value = lap_times.get(lap_num)
             lap_time_ms = int(lap_time_value) if isinstance(lap_time_value, (int, float)) else 0
-            sector_times = self._shared.get_sector_times(lap_num) or {}
-            lap_state_value = self._shared.get_lap_state(lap_num) or (
-                "VALID" if lap_validity.get(lap_num, True) else "INVALID_GAME"
-            )
+            sector_times = sector_times_map.get(lap_num) or {}
+
+            lap_validity_data = lap_validity.get(lap_num)
+            if lap_validity_data is not None:
+                lap_state_value = lap_validity_data.lap_state or (
+                    "VALID" if lap_validity_data.is_valid else "INVALID_GAME"
+                )
+            else:
+                lap_state_value = "VALID" if lap_validity_flat.get(lap_num, True) else "INVALID_GAME"
+
             try:
                 lap_state = LapState(lap_state_value)
             except ValueError:
-                lap_state = LapState.VALID if lap_validity.get(lap_num, True) else LapState.INVALID_GAME
+                lap_state = LapState.VALID if lap_validity_flat.get(lap_num, True) else LapState.INVALID_GAME
             laps.append(
                 LapData(
                     lap_number=lap_num,
@@ -774,7 +819,7 @@ class LegacySessionDataWrapper:
                     sector3_ms=sector_times.get(3),
                     lap_state=lap_state,
                     lap_type=lap_state.value,
-                    is_valid=lap_validity.get(lap_num, True),
+                    is_valid=lap_validity_flat.get(lap_num, True),
                 )
             )
 

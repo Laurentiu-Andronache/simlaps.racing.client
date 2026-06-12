@@ -1446,11 +1446,34 @@ class LogParser:
     # ── Master line processor ─────────────────────────────────────────────────
 
     def _process_line(self, line: str) -> Optional[LapData]:
-        """Process one raw log line. Returns LapData when a lap completes."""
+        """Process one raw log line. Returns LapData when a lap completes.
+
+        Delegates to focused phase methods for clarity:
+          1. Pre-processing (timestamp, buffer, activity)
+          2. Metadata (always-evaluated handlers)
+          3. Session lifecycle (start/end detection)
+          4. Setup values
+          5. In-session events (fuel, splits, physics)
+          6. Lap completion / validity
+        """
         line = line.strip()
         if not line:
             return None
 
+        self._preprocess_line(line)
+        self._process_metadata(line)
+        if self._process_session_lifecycle(line):
+            return None
+        self._process_setup(line)
+        if not self.current_session:
+            return None
+        self._process_session_events(line)
+        return self._process_lap_completion(line)
+
+    # ── Phase helpers ─────────────────────────────────────────────────────────
+
+    def _preprocess_line(self, line: str) -> None:
+        """Extract timestamp, flush pending compound batch, add to buffer."""
         line_ts = self._extract_line_timestamp(line)
         if (
             self._pending_compound_ts
@@ -1458,12 +1481,12 @@ class LogParser:
             and line_ts != self._pending_compound_ts
         ):
             self._flush_pending_compound_batch()
-
         self._add_to_log_buffer(line)
         self._last_activity_ts = time.time()
         self._update_session_activity_from_line(line)
 
-        # ── Metadata (order-independent, always evaluated) ────────────────────
+    def _process_metadata(self, line: str) -> None:
+        """Order-independent metadata handlers (always evaluated)."""
         self._handle_version(line)
         self._handle_track_name(line)
         self._handle_connect(line)
@@ -1473,35 +1496,38 @@ class LogParser:
         self._handle_compound(line)
         self._handle_weather(line)
 
-        # ── Session lifecycle ─────────────────────────────────────────────────
+    def _process_session_lifecycle(self, line: str) -> bool:
+        """Handle session start/end detection. Returns True if a new session started."""
         if self._handle_session_start(line):
-            return None
-
+            return True
         if "END_SESSION car" in line and self.context.car_uuid:
             if self.context.car_uuid in line:
                 log_debug(Component.LOG_PARSER, "[SESSION] END_SESSION for player car — finalising")
+        return False
 
-        # ── Setup values (captured regardless of session state) ─────────────────
+    def _process_setup(self, line: str) -> None:
+        """Handle setup group values (captured regardless of session state)."""
         self._handle_setup_group(line)
 
-        if not self.current_session:
-            return None
-
-        # ── In-session events ─────────────────────────────────────────────────
+    def _process_session_events(self, line: str) -> None:
+        """Handle in-session events (fuel, sector splits, physics lap)."""
         self._handle_fuel(line)
         self._handle_splits_race(line)
         self._handle_splits_practice(line)
         self._handle_outlap_signals(line)
         self._handle_physics_lap(line)
 
-        # ── Lap completion ────────────────────────────────────────────────────
-        # Two paths can produce an emittable lap on a single line:
-        #   * `_handle_lap_complete` builds a fresh lap and may flush a
-        #     previously-buffered lap (when no authoritative validity arrived).
-        #   * `_handle_lap_validity` finalises the buffered lap with the
-        #     game's authoritative valid/invalid flag.
-        # At most one fires per line, so returning whichever is non-None is
-        # sufficient.
+    def _process_lap_completion(self, line: str) -> Optional[LapData]:
+        """Handle lap completion and authoritative validity lines.
+
+        Two paths can produce an emittable lap on a single line:
+          * ``_handle_lap_complete`` builds a fresh lap and may flush a
+            previously-buffered lap (when no authoritative validity arrived).
+          * ``_handle_lap_validity`` finalises the buffered lap with the
+            game's authoritative valid/invalid flag.
+        At most one fires per line, so returning whichever is non-None is
+        sufficient.
+        """
         completed = self._handle_lap_complete(line)
         if completed is not None:
             return completed

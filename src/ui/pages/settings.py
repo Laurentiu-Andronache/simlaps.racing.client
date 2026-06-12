@@ -7,8 +7,6 @@ Simplified: No API key required (uses signed payloads).
 import flet as ft
 from typing import Optional, Callable
 
-from pathlib import Path
-
 from ...utils.config import AppConfig, DEFAULT_SERVER_URL
 
 
@@ -394,21 +392,25 @@ class SettingsPage(ft.Container):
         self.page.update()
     
     def _reset_settings(self, e):
-        """Reset settings to defaults."""
-        self._server_url_field.value = DEFAULT_SERVER_URL
-        self._submit_invalid_switch.value = False
-        
+        """Reset settings to defaults and persist immediately."""
+        # Reset config to factory defaults
+        self.config = AppConfig()
+
+        # Update UI fields from the new default config
+        self._server_url_field.value = self.config.server_url
+        self._submit_invalid_switch.value = self.config.submit_invalid_laps
+
         # Reset Discord fields
-        self._discord_webhook_field.value = ""
-        self._discord_enabled_switch.value = False
-        self._discord_pb_only_switch.value = True
+        self._discord_webhook_field.value = self.config.discord_webhook_url or ""
+        self._discord_enabled_switch.value = self.config.discord_enabled
+        self._discord_pb_only_switch.value = self.config.discord_pb_only
         self._discord_test_status.value = ""
-        
+
         # Reset Telemetry fields
-        self._telemetry_enabled_switch.value = False
-        self._telemetry_output_path_field.value = str(Path.home() / "Documents" / "SimLaps" / "Telemetry")
-        self._telemetry_debug_logs_switch.value = False
-        
+        self._telemetry_enabled_switch.value = self.config.telemetry_enabled
+        self._telemetry_output_path_field.value = self.config.telemetry_output_path
+        self._telemetry_debug_logs_switch.value = self.config.telemetry_debug_logs
+
         self._server_url_field.update()
         self._submit_invalid_switch.update()
         self._discord_webhook_field.update()
@@ -418,6 +420,18 @@ class SettingsPage(ft.Container):
         self._telemetry_enabled_switch.update()
         self._telemetry_output_path_field.update()
         self._telemetry_debug_logs_switch.update()
+
+        # Persist the default config immediately (same path as Save button)
+        if self.on_save:
+            self.on_save(self.config)
+
+        # Show feedback
+        self.page.snack_bar = ft.SnackBar(
+            content=ft.Text("Settings reset to defaults", color="#ffffff"),
+            bgcolor="#7c3aed",
+        )
+        self.page.snack_bar.open = True
+        self.page.update()
     
     def update_config(self, config: AppConfig):
         """Update form with new config."""

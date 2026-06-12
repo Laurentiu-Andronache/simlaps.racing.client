@@ -4,6 +4,8 @@ Helper utilities for SimLaps Client.
 
 from typing import Optional
 
+from src.core.track_catalog import find_track_by_name
+
 
 def format_lap_time(time_ms: int) -> str:
     """
@@ -78,7 +80,11 @@ def truncate_string(text: str, max_length: int = 30) -> str:
 
 def format_track_name(track_id: str) -> str:
     """
-    Convert track ID to display name.
+    Convert track ID to display name using the authoritative track catalog.
+    
+    Looks up the track in ``TRACK_CATALOG`` (loaded from
+    ``track_catalog.json``) by key or alias. Falls back to a simple
+    title-cased cleanup for unknown tracks.
     
     Args:
         track_id: Internal track identifier
@@ -86,33 +92,15 @@ def format_track_name(track_id: str) -> str:
     Returns:
         Human-readable track name
     """
-    # Common track name mappings
-    track_names = {
-        "spa": "Spa-Francorchamps",
-        "spa_francorchamps": "Spa-Francorchamps",
-        "monza": "Monza",
-        "imola": "Imola",
-        "barcelona": "Barcelona",
-        "silverstone": "Silverstone",
-        "nurburgring": "Nürburgring",
-        "brands_hatch": "Brands Hatch",
-        "paul_ricard": "Paul Ricard",
-        "misano": "Misano",
-        "zandvoort": "Zandvoort",
-        "hungaroring": "Hungaroring",
-        "kyalami": "Kyalami",
-        "laguna_seca": "Laguna Seca",
-        "suzuka": "Suzuka",
-        "mount_panorama": "Mount Panorama",
-    }
+    if not track_id:
+        return track_id
+
+    # Look up in the authoritative track catalog
+    _, profile = find_track_by_name(track_id)
+    if profile is not None:
+        return profile["track_name"]
     
-    # Try direct lookup
-    lower_track = track_id.lower()
-    for key, name in track_names.items():
-        if key in lower_track:
-            return name
-    
-    # Fallback: clean up the track ID
+    # Fallback: clean up the track ID for unknown tracks
     return track_id.replace("_", " ").title()
 
 
