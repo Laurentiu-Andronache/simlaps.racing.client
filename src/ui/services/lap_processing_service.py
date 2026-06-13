@@ -4,8 +4,12 @@ Owns lap-complete orchestration for telemetry lap boundary recording,
 submission eligibility, history/card synchronization, and auto-submit trigger.
 """
 
-from typing import Any, Callable, Optional
+from typing import Awaitable, Callable, Optional
 
+from src.core.pb_cache import PBCache
+from src.core.telemetry_capture import TelemetryCapture
+from src.models import LapData, SessionData, SharedSessionManager
+from src.utils.config import AppConfig
 from src.utils.structured_logger import (
     Component,
     log_debug,
@@ -13,6 +17,8 @@ from src.utils.structured_logger import (
     log_exception,
 )
 from ..components.lap_card import LapCardStatus
+from ..pages.history import HistoryEntry
+from ..pages.home import HomePage
 
 
 class LapProcessingService:
@@ -21,33 +27,45 @@ class LapProcessingService:
     async def handle_lap_complete(
         self,
         *,
-        app: Any,
-        session: Any,
-        lap: Any,
-        create_history_entry: Callable[..., Any],
-    ) -> None:
-        """Process lap completion, update UI/history, and optionally auto-submit."""
+        session: SessionData,
+        lap: LapData,
+        home_page: HomePage,
+        telemetry_capture: Optional[TelemetryCapture],
+        config: AppConfig,
+        session_manager: SharedSessionManager,
+        pb_cache: PBCache,
+        history_entries: list[HistoryEntry],
+        submit_lap: Callable[..., Awaitable[None]],
+        create_history_entry: Callable[..., HistoryEntry],
+    ) -> Optional[str]:
+        """Process lap completion, update UI/history, and optionally auto-submit.
+
+        Returns the track name if it was updated (caller should sync
+        ``current_track_name``), otherwise ``None``.
+        """
+        updated_track: Optional[str] = None
+
         # Update detected user in UI
         if session.player_id:
             log_debug(Component.APP, "Updating detected user", steam_id=session.player_id)
-            app._home_page.set_detected_user(session.player_id, session.player_name)
+            home_page.set_detected_user(session.player_id, session.player_name)
 
-        # Update current track name for telemetry
+        # Return updated track name for telemetry (caller sets it on the app)
         if session.track and session.track != "Unknown":
-            app._current_track_name = session.track
+            updated_track = session.track
 
         # Record lap boundary so the analyzer can use authoritative lap splits.
         # Fuel per lap is owned entirely by the log parser (Physics SHM + spike
         # detection) and is already set on lap.fuel_used before this point.
-        if app._telemetry_capture and app._telemetry_capture.is_capturing():
+        if telemetry_capture and telemetry_capture.is_capturing():
             lap_type = getattr(lap, "lap_type", None) or getattr(getattr(lap, "lap_state", None), "value", None)
             if lap_type != "OUTLAP":
-                app._telemetry_capture.record_lap_boundary(
+                telemetry_capture.record_lap_boundary(
                     lap.lap_time_ms,
                     lap.lap_number,
                 )
 
-        elif app._config.telemetry_enabled and app._telemetry_capture:
+        elif config.telemetry_enabled and telemetry_capture:
             # A lap-complete event is too late to begin a useful capture
             # for that lap and can fire during post-session shutdown.
             log_debug(
@@ -57,14 +75,14 @@ class LapProcessingService:
             )
 
         # Determine if we should submit this lap (prefer authoritative shared validity)
-        shared_lap_validity = app._session_manager.get_lap_validity_data(lap.lap_number)
+        shared_lap_validity = session_manager.get_lap_validity_data(lap.lap_number)
         effective_is_valid = (
             shared_lap_validity.is_valid
             if shared_lap_validity is not None
             else lap.is_valid
         )
-        should_submit = app._config.auto_submit and (
-            effective_is_valid or app._config.submit_invalid_laps
+        should_submit = config.auto_submit and (
+            effective_is_valid or config.submit_invalid_laps
         )
         log_debug(
             Component.APP,
@@ -97,7 +115,7 @@ class LapProcessingService:
         pb_was_new: Optional[bool] = None
         if effective_is_valid and lap.lap_time_ms > 0:
             if session.track and session.track != "Unknown" and session.car and session.car != "Unknown":
-                pb_was_new = app._pb_cache.check_and_update_pb(
+                pb_was_new = pb_cache.check_and_update_pb(
                     session.track,
                     session.car,
                     lap.lap_time_ms,
@@ -114,7 +132,7 @@ class LapProcessingService:
                 log_debug(Component.APP, "Skipping PB cache update: missing track/car")
 
         # Determine initial status
-        if not effective_is_valid and not app._config.submit_invalid_laps:
+        if not effective_is_valid and not config.submit_invalid_laps:
             status = LapCardStatus.INVALID
         else:
             status = LapCardStatus.SUBMITTING if should_submit else LapCardStatus.PENDING
@@ -128,40 +146,42 @@ class LapProcessingService:
             was_submitted=False,
             was_valid=lap.is_valid,
         )
-        app._history_entries.append(history_entry)
+        history_entries.append(history_entry)
 
         # Add to home page (this increments the counter)
         try:
-            card = app._home_page.add_lap(session, lap, status)
+            card = home_page.add_lap(session, lap, status)
             log_debug(Component.APP, "Lap card added", lap_number=lap.lap_number)
         except Exception as exc:
             # If home page add fails, remove the history entry to maintain sync
             log_exception(Component.APP, "Failed to add lap card to home page", exc)
-            app._history_entries.pop()  # Remove the entry we just added
+            history_entries.pop()  # Remove the entry we just added
             raise
 
         # Debug: Check synchronization
         log_debug(
             Component.APP,
             "Lap/history synchronization state",
-            home_lap_count=app._home_page._lap_count,
-            history_entries=len(app._history_entries),
+            home_lap_count=home_page._lap_count,
+            history_entries=len(history_entries),
             was_submitted=history_entry.was_submitted,
             was_valid=history_entry.was_valid,
         )
 
         # Verify synchronization
-        if app._home_page._lap_count != len(app._history_entries):
+        if home_page._lap_count != len(history_entries):
             log_error(
                 Component.APP,
                 "Synchronization mismatch",
-                home_lap_count=app._home_page._lap_count,
-                history_entries=len(app._history_entries),
+                home_lap_count=home_page._lap_count,
+                history_entries=len(history_entries),
             )
             # This should never happen now, but if it does, we have a serious issue
 
         # Auto-submit if enabled
         if should_submit:
             log_debug(Component.APP, "Auto-submitting lap", lap_number=lap.lap_number)
-            await app._submit_lap(card, session, lap, history_entry, pb_was_new=pb_was_new)
+            await submit_lap(card, session, lap, history_entry, pb_was_new=pb_was_new)
             log_debug(Component.APP, "Auto-submit complete", lap_number=lap.lap_number)
+
+        return updated_track

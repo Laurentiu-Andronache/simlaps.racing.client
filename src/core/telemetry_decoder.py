@@ -340,66 +340,103 @@ def _sanitize_float_list(value: Any, invalid_reasons: List[str], field: str, low
     return cleaned
 
 
-def _sanitize_physics_payload(result: Dict[str, Any]) -> Dict[str, Any]:
+# ── Data-driven field specs ──────────────────────────────────────────────────
+# Format: (field_name, sanitizer_fn_or_name, *bounds)
+# Using the existing helper functions keeps the code lean — no OOP overhead.
+
+_FLOAT = "float"     # _sanitize_float_field(result, name, reasons, lo, hi)
+_INT = "int"         # _sanitize_int_field(result, name, reasons, lo, hi)
+_COORDS = "coords"   # _sanitize_coords(result.get(name), reasons, name, abs_max)
+_FLIST = "flist"     # _sanitize_float_list(result.get(name), reasons, name, lo, hi)
+
+# (name, type, lo, hi)  — coords use abs_max as "lo"
+_PHYSICS_FIELDS = [
+    ("gas", _FLOAT, 0.0, 1.05),
+    ("brake", _FLOAT, 0.0, 1.05),
+    ("clutch", _FLOAT, 0.0, 1.05),
+    ("speed_kmh", _FLOAT, 0.0, 450.0),
+    ("steer_angle", _FLOAT, -10.0, 10.0),
+    ("air_temp", _FLOAT, -50.0, 100.0),
+    ("road_temp", _FLOAT, -50.0, 120.0),
+    ("water_temp", _FLOAT, 0.0, 150.0),
+    ("gear", _INT, -1, 12),
+    ("rpms", _INT, 0, 20000),
+    ("current_max_rpm", _INT, 0, 25000),
+    ("velocity", _COORDS, 200.0),
+    ("acc_g", _COORDS, 20.0),
+    ("local_velocity", _COORDS, 200.0),
+    ("local_angular_velocity", _COORDS, 50.0),
+    ("wheel_slip", _FLIST, 0.0, 5.0),
+    ("wheel_load", _FLIST, 0.0, 50000.0),
+    ("wheels_pressure", _FLIST, 0.0, 80.0),
+    ("tyre_core_temp", _FLIST, 0.0, 200.0),
+    ("brake_temp", _FLIST, 0.0, 2000.0),
+    ("tyre_temp_i", _FLIST, 0.0, 200.0),
+    ("tyre_temp_m", _FLIST, 0.0, 200.0),
+    ("tyre_temp_o", _FLIST, 0.0, 200.0),
+    ("fx", _FLIST, -50000.0, 50000.0),
+    ("fy", _FLIST, -50000.0, 50000.0),
+    ("mz", _FLIST, -10000.0, 10000.0),
+    ("slip_ratio", _FLIST, -5.0, 5.0),
+    ("slip_angle", _FLIST, -1.6, 1.6),
+    ("brake_torque", _FLIST, 0.0, 50000.0),
+    ("suspension_damage", _FLIST, 0.0, 1.0),
+    ("pad_life", _FLIST, 0.0, 1.0),
+    ("disc_life", _FLIST, 0.0, 1.0),
+]
+
+_GRAPHICS_FIELDS = [
+    ("completed_laps", _INT, 0, 10000),
+    ("position", _INT, 0, 200),
+    ("current_time_ms", _INT, 0, 10000000),
+    ("last_time_ms", _INT, 0, 10000000),
+    ("best_time_ms", _INT, 0, 10000000),
+    ("number_of_laps", _INT, 0, 10000),
+    ("active_cars", _INT, 0, 60),
+    ("distance_traveled", _FLOAT, 0.0, 1000000.0),
+    ("normalized_car_position", _FLOAT, 0.0, 1.0),
+]
+
+
+def _apply_field_specs(result: Dict[str, Any], specs: list) -> List[str]:
+    """Apply a list of ``(name, type, lo, hi)`` specs to *result* in place.
+
+    Returns accumulated ``invalid_reasons``.
+    """
     invalid_reasons: List[str] = []
+    for spec in specs:
+        name = spec[0]
+        kind = spec[1]
+        if name not in result:
+            continue
+        if kind is _FLOAT:
+            _sanitize_float_field(result, name, invalid_reasons, spec[2], spec[3])
+        elif kind is _INT:
+            _sanitize_int_field(result, name, invalid_reasons, spec[2], spec[3])
+        elif kind is _COORDS:
+            result[name] = _sanitize_coords(result.get(name), invalid_reasons, name, spec[2])
+        elif kind is _FLIST:
+            result[name] = _sanitize_float_list(result.get(name), invalid_reasons, name, spec[2], spec[3])
+    return invalid_reasons
 
+
+def _sanitize_physics_payload(result: Dict[str, Any]) -> Dict[str, Any]:
     result["decode_source"] = result.get("_decoder")
-    _sanitize_float_field(result, "gas", invalid_reasons, 0.0, 1.05)
-    _sanitize_float_field(result, "brake", invalid_reasons, 0.0, 1.05)
-    _sanitize_float_field(result, "clutch", invalid_reasons, 0.0, 1.05)
-    _sanitize_float_field(result, "speed_kmh", invalid_reasons, 0.0, 450.0)
-    _sanitize_float_field(result, "steer_angle", invalid_reasons, -10.0, 10.0)
-    _sanitize_float_field(result, "air_temp", invalid_reasons, -50.0, 100.0)
-    _sanitize_float_field(result, "road_temp", invalid_reasons, -50.0, 120.0)
-    _sanitize_int_field(result, "gear", invalid_reasons, -1, 12)
-    _sanitize_int_field(result, "rpms", invalid_reasons, 0, 20000)
-
-    result["velocity"] = _sanitize_coords(result.get("velocity"), invalid_reasons, "velocity", abs_max=200.0)
-    result["acc_g"] = _sanitize_coords(result.get("acc_g"), invalid_reasons, "acc_g", abs_max=20.0)
-    result["local_velocity"] = _sanitize_coords(result.get("local_velocity"), invalid_reasons, "local_velocity", abs_max=200.0)
-    result["local_angular_velocity"] = _sanitize_coords(result.get("local_angular_velocity"), invalid_reasons, "local_angular_velocity", abs_max=50.0)
-
-    result["wheel_slip"] = _sanitize_float_list(result.get("wheel_slip"), invalid_reasons, "wheel_slip", 0.0, 5.0)
-    result["wheel_load"] = _sanitize_float_list(result.get("wheel_load"), invalid_reasons, "wheel_load", 0.0, 50000.0)
-    result["wheels_pressure"] = _sanitize_float_list(result.get("wheels_pressure"), invalid_reasons, "wheels_pressure", 0.0, 80.0)
-    result["tyre_core_temp"] = _sanitize_float_list(result.get("tyre_core_temp"), invalid_reasons, "tyre_core_temp", 0.0, 200.0)
-    result["brake_temp"] = _sanitize_float_list(result.get("brake_temp"), invalid_reasons, "brake_temp", 0.0, 2000.0)
-    result["tyre_temp_i"] = _sanitize_float_list(result.get("tyre_temp_i"), invalid_reasons, "tyre_temp_i", 0.0, 200.0)
-    result["tyre_temp_m"] = _sanitize_float_list(result.get("tyre_temp_m"), invalid_reasons, "tyre_temp_m", 0.0, 200.0)
-    result["tyre_temp_o"] = _sanitize_float_list(result.get("tyre_temp_o"), invalid_reasons, "tyre_temp_o", 0.0, 200.0)
-    
-    # AC Evo precision fields
-    result["fx"] = _sanitize_float_list(result.get("fx"), invalid_reasons, "fx", -50000.0, 50000.0)
-    result["fy"] = _sanitize_float_list(result.get("fy"), invalid_reasons, "fy", -50000.0, 50000.0)
-    result["mz"] = _sanitize_float_list(result.get("mz"), invalid_reasons, "mz", -10000.0, 10000.0)
-    result["slip_ratio"] = _sanitize_float_list(result.get("slip_ratio"), invalid_reasons, "slip_ratio", -5.0, 5.0)
-    result["slip_angle"] = _sanitize_float_list(result.get("slip_angle"), invalid_reasons, "slip_angle", -1.6, 1.6)
-    result["brake_torque"] = _sanitize_float_list(result.get("brake_torque"), invalid_reasons, "brake_torque", 0.0, 50000.0)
-    result["suspension_damage"] = _sanitize_float_list(result.get("suspension_damage"), invalid_reasons, "suspension_damage", 0.0, 1.0)
-    result["pad_life"] = _sanitize_float_list(result.get("pad_life"), invalid_reasons, "pad_life", 0.0, 1.0)
-    result["disc_life"] = _sanitize_float_list(result.get("disc_life"), invalid_reasons, "disc_life", 0.0, 1.0)
-    _sanitize_float_field(result, "water_temp", invalid_reasons, 0.0, 150.0)
-    _sanitize_int_field(result, "current_max_rpm", invalid_reasons, 0, 25000)
+    invalid_reasons = _apply_field_specs(result, _PHYSICS_FIELDS)
 
     # Calculate normalized_car_position from tyre_contact_point Z coordinates
-    # This is the primary position source since graphics region is disabled
     tyre_contact_points = result.get("tyre_contact_point")
     if isinstance(tyre_contact_points, list) and len(tyre_contact_points) > 0:
-        # Use the first tyre's Z coordinate (all should be similar)
         first_tyre = tyre_contact_points[0]
         if isinstance(first_tyre, dict):
             z_coord = first_tyre.get("z", 0.0)
             if isinstance(z_coord, (int, float)) and z_coord != 0.0:
-                # Normalize Z coordinate to 0-1 range
-                # Most tracks have Z in range -2000 to 2000
                 estimated_norm = (z_coord + 2000) / 4000
                 estimated_norm = max(0.0, min(1.0, estimated_norm))
                 result["normalized_car_position"] = estimated_norm
                 result["normalized_position_source"] = "physics_tyre_z"
 
-    # Physics-derived position is NOT authoritative (only graphics position is)
     result["has_authoritative_progress"] = False
-
     core_fields = ["speed_kmh", "gas", "brake", "gear", "rpms", "steer_angle"]
     valid_core_fields = sum(1 for field in core_fields if result.get(field) is not None)
     result["quality_score"] = round(valid_core_fields / len(core_fields), 3)
@@ -409,35 +446,19 @@ def _sanitize_physics_payload(result: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _sanitize_graphics_payload(result: Dict[str, Any]) -> Dict[str, Any]:
-    invalid_reasons: List[str] = []
-
     result["decode_source"] = result.get("_decoder")
-    _sanitize_int_field(result, "completed_laps", invalid_reasons, 0, 10000)
-    _sanitize_int_field(result, "position", invalid_reasons, 0, 200)
-    _sanitize_int_field(result, "current_time_ms", invalid_reasons, 0, 10000000)
-    _sanitize_int_field(result, "last_time_ms", invalid_reasons, 0, 10000000)
-    _sanitize_int_field(result, "best_time_ms", invalid_reasons, 0, 10000000)
-    _sanitize_int_field(result, "number_of_laps", invalid_reasons, 0, 10000)
-    _sanitize_int_field(result, "active_cars", invalid_reasons, 0, MAX_GRAPHICS_CARS)
-    _sanitize_float_field(result, "distance_traveled", invalid_reasons, 0.0, 1000000.0)
+    invalid_reasons = _apply_field_specs(result, _GRAPHICS_FIELDS)
 
     # Calculate normalized_car_position from Z coordinates if not provided
     if result.get("normalized_car_position") == 0.0 and "car_coordinates" in result and result["car_coordinates"]:
-        # Use player car's Z coordinate to estimate position
         player_car_id = result.get("player_car_id", 0)
         if player_car_id < len(result["car_coordinates"]):
             z_coord = result["car_coordinates"][player_car_id].get("z", 0.0)
-            # Simple normalization: map Z range to 0-1
-            # This is a rough estimate - track bounds would be better
             if z_coord != 0.0:
-                # Scale Z coordinate to roughly 0-1 range
-                # Most tracks have Z in range -1000 to 1000
                 estimated_norm = (z_coord + 1000) / 2000
                 estimated_norm = max(0.0, min(1.0, estimated_norm))
                 result["normalized_car_position"] = estimated_norm
                 result["normalized_position_source"] = "calculated_from_z"
-
-    _sanitize_float_field(result, "normalized_car_position", invalid_reasons, 0.0, 1.0)
 
     active_cars = result.get("active_cars") or 0
     if isinstance(result.get("car_coordinates"), list):
@@ -445,19 +466,15 @@ def _sanitize_graphics_payload(result: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(result.get("car_ids"), list):
         result["car_ids"] = result["car_ids"][:active_cars]
 
-    core_fields = [
-        "normalized_car_position",
-        "completed_laps",
-        "current_time_ms",
-        "distance_traveled",
-        "current_sector_index",
-        "is_valid_lap",
-    ]
+    core_fields = ["normalized_car_position", "completed_laps", "current_time_ms",
+                   "distance_traveled", "current_sector_index", "is_valid_lap"]
     valid_core_fields = sum(1 for field in core_fields if result.get(field) is not None)
     result["quality_score"] = round(valid_core_fields / len(core_fields), 3)
     result["invalid_reasons"] = sorted(dict.fromkeys(invalid_reasons))
     result["has_authoritative_progress"] = result.get("normalized_car_position") is not None
     return result
+
+
 
 
 def decode_physics_ac(data: bytes) -> Optional[Physics]:
@@ -733,6 +750,43 @@ def _read_cstring(data: bytes, offset: int, max_length: int) -> str:
         return ""
 
 
+def _sanity_check_graphics_evo(
+    *,
+    npos: float,
+    gear_int: int,
+    rpm: int,
+    display_speed_kmh: int,
+    total_drivers: int,
+    max_gears: int,
+    best_laptime_ms: int,
+    last_laptime_ms: int,
+) -> bool:
+    """Cross-check decoded graphics fields against known physical ranges.
+
+    If any of these well-bounded values lands far outside its expected range,
+    the offset layout is probably wrong (game struct changed).  Returns
+    ``False`` to signal ``decode_graphics_evo`` to bail out and let a legacy
+    or fallback decoder try instead.
+    """
+    if not (math.isfinite(npos) and -0.05 <= npos <= 1.05):
+        return False
+    if not (-1 <= gear_int <= 12):
+        return False
+    if not (0 <= rpm <= 20_000):
+        return False
+    if not (0 <= display_speed_kmh <= 450):
+        return False
+    if not (1 <= total_drivers <= 60):
+        return False
+    if not (1 <= max_gears <= 12):
+        return False
+    if best_laptime_ms < -1:          # -1 = not set, otherwise must be >= 0
+        return False
+    if last_laptime_ms < -1:
+        return False
+    return True
+
+
 def decode_graphics_evo(data: bytes) -> Optional[Dict[str, Any]]:
     """Decode the AC Evo ``SPageFileGraphicEvo`` shared-memory region.
 
@@ -947,6 +1001,21 @@ def decode_graphics_evo(data: bytes) -> Optional[Dict[str, Any]]:
             electronics_pitlimiter_modifiable = None
             electronics_perf_mode_modifiable = None
     except (struct.error, IndexError):
+        return None
+
+    # ── Post-decode sanity check — if the game struct layout changed, some
+    # well-bounded fields will land outside their physical range, and we
+    # reject the result rather than emitting corrupted data.
+    if not _sanity_check_graphics_evo(
+        npos=npos,
+        gear_int=gear_int,
+        rpm=rpm,
+        display_speed_kmh=display_speed_kmh,
+        total_drivers=total_drivers,
+        max_gears=max_gears,
+        best_laptime_ms=best_laptime_ms,
+        last_laptime_ms=last_laptime_ms,
+    ):
         return None
 
     return {

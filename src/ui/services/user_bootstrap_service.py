@@ -4,9 +4,13 @@ Owns startup/log-driven user detection handling: UI identity projection,
 Discord notifier initialization, and PB cache preload orchestration.
 """
 
-from typing import Any, Callable, Optional
+from typing import Callable, Optional, TYPE_CHECKING
 
 from src.utils.structured_logger import Component, log_debug, log_info, log_warning
+
+if TYPE_CHECKING:
+    from ..app import SimLapsApp
+    from src.core.discord_notifier import DiscordNotifier
 
 
 class UserBootstrapService:
@@ -15,10 +19,10 @@ class UserBootstrapService:
     async def handle_detected_user(
         self,
         *,
-        app: Any,
+        app: "SimLapsApp",
         steam_id: str,
         player_name: Optional[str],
-        create_discord_notifier: Callable[[str], Any],
+        create_discord_notifier: "Callable[[str], DiscordNotifier]",
     ) -> None:
         """Handle user detection from log parser callback path."""
         if app._home_page:
@@ -46,10 +50,10 @@ class UserBootstrapService:
     async def handle_startup_user(
         self,
         *,
-        app: Any,
+        app: "SimLapsApp",
         steam_id: Optional[str],
         steam_name: Optional[str],
-        create_discord_notifier: Callable[[str], Any],
+        create_discord_notifier: "Callable[[str], DiscordNotifier]",
     ) -> None:
         """Handle startup-time Steam user bootstrap from registry detection."""
         if not steam_id:

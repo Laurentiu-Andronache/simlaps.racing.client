@@ -79,7 +79,7 @@ Thumbs.db
 obfuscated/
 
 # Local AST/RAG artifacts
-.windsurf/rag/
+.clinerules
 
 # game files
 extracted.7z

@@ -6,17 +6,21 @@ Owns parser/game-monitor background task lifecycle and status transitions.
 import asyncio
 import os
 import re
-from typing import Awaitable, Callable, Optional, Any
+from typing import Awaitable, Callable, Optional
 
+import flet as ft
+
+from src.core.log_parser import LogParser
 from src.core.security import is_game_running, GameProcessStatus
 from src.utils.structured_logger import log_info, Component
 from ..components.status_bar import ConnectionStatus
+from ..pages.home import HomePage
 
 
 class MonitoringService:
     """Encapsulates log monitoring lifecycle for the UI app."""
 
-    def __init__(self, page: Any):
+    def __init__(self, page: ft.Page):
         self._page = page
         self._parser_task: Optional[asyncio.Task] = None
         self._game_monitor_task: Optional[asyncio.Task] = None
@@ -28,8 +32,8 @@ class MonitoringService:
     async def start(
         self,
         *,
-        log_parser: Any,
-        home_page: Any,
+        log_parser: LogParser,
+        home_page: HomePage,
         log_path: str,
         on_game_status_change: Callable[[bool], Awaitable[None]],
         is_telemetry_capturing: Callable[[], bool],
@@ -55,7 +59,7 @@ class MonitoringService:
             is_telemetry_capturing,
         )
 
-    def stop(self, *, log_parser: Any, home_page: Any) -> None:
+    def stop(self, *, log_parser: LogParser, home_page: HomePage) -> None:
         """Stop parser + game monitor tasks and update UI status."""
         if log_parser:
             log_parser.stop()
@@ -90,7 +94,7 @@ class MonitoringService:
         except asyncio.CancelledError:
             pass
 
-    async def _run_parser(self, log_parser: Any, home_page: Any) -> None:
+    async def _run_parser(self, log_parser: LogParser, home_page: HomePage) -> None:
         """Run parser task and project errors to UI status."""
         try:
             await log_parser.follow()

@@ -8,6 +8,17 @@ from typing import List, Optional
 _CATALOG: dict | None = None
 _CATALOG_PATH = os.path.join(os.path.dirname(__file__), "data", "car_tuning_catalog.json")
 
+# Category ordering and display labels for grouped parameter output
+_CATEGORY_ORDER = ["basic", "brakes", "suspension", "dampers", "aero", "drivetrain"]
+_CATEGORY_LABELS = {
+    "basic": "Basic",
+    "brakes": "Brakes",
+    "suspension": "Suspension",
+    "dampers": "Dampers",
+    "aero": "Aero",
+    "drivetrain": "Drivetrain",
+}
+
 
 def _load_catalog() -> dict:
     global _CATALOG
@@ -31,6 +42,7 @@ def get_tuning_params(car_model: str) -> Optional[List[dict]]:
     Each dict has:
         label          – human-readable parameter name
         settings_count – number of discrete settings available
+        category       – logical group (basic, brakes, suspension, dampers, aero, drivetrain)
     """
     if not car_model or car_model == "Unknown Car":
         return None
@@ -51,8 +63,18 @@ def get_tuning_params(car_model: str) -> Optional[List[dict]]:
     return None
 
 
+def _params_by_category(params: List[dict]) -> dict:
+    """Group parameters by their category field."""
+    grouped: dict[str, list] = {}
+    for p in params:
+        cat = p.get("category", "basic")
+        grouped.setdefault(cat, []).append(p)
+    return grouped
+
+
 def format_tuning_block(car_model: str) -> str:
-    """Return a formatted multi-line string listing all tunable parameters.
+    """Return a formatted multi-line string listing all tunable parameters,
+    grouped by category for readability.
 
     Returns an empty string if the car is unknown.
     """
@@ -60,12 +82,20 @@ def format_tuning_block(car_model: str) -> str:
     if not params:
         return ""
 
+    grouped = _params_by_category(params)
+
     lines = ["CAR SETUP PARAMETERS (available on this car in AC Evo):"]
-    for p in params:
-        count = p.get("settings_count", 0)
-        label = p.get("label", "")
-        suffix = f"  [{count} selectable settings]" if count > 1 else ""
-        lines.append(f"- {label}{suffix}")
+    for cat in _CATEGORY_ORDER:
+        cat_params = grouped.get(cat)
+        if not cat_params:
+            continue
+        if cat != "basic":
+            lines.append(f"--- {_CATEGORY_LABELS.get(cat, cat)} ---")
+        for p in cat_params:
+            count = p.get("settings_count", 0)
+            label = p.get("label", "")
+            suffix = f"  [{count} selectable settings]" if count > 1 else ""
+            lines.append(f"- {label}{suffix}")
     lines.append(
         "When recommending setup changes, only suggest adjustments from the above list."
     )

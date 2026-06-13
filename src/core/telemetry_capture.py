@@ -46,21 +46,41 @@ if sys.platform == "win32":
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
     kernel32.CloseHandle.restype = wintypes.BOOL
 
-REGIONS = {
-    # AC Evo renamed the shared-memory objects from the ACC-era
-    # "acpmf_*" names to "acevo_pmf_*" (see SharedFileOut.h /
-    # ACE_SharedFileOut_Documentation_v1.md). Keep the new name primary.
-    #
-    # Sizes are generous bounds based on the documented AC Evo struct
-    # layouts so we can capture the full mapping for reverse engineering
-    # even before a typed decoder exists for graphics/static. If the
-    # actual mapping is smaller, OpenFileMappingW + MapViewOfFile will
-    # surface that and the region will simply fail to open — capture
-    # continues with whichever regions did connect.
-    "physics":  ("acevo_pmf_physics",  1024),
-    "graphics": ("acevo_pmf_graphics", 4096),
-    "static":   ("acevo_pmf_static",   2048),
+
+# ── Shared Memory Configuration ──────────────────────────────────────────
+# AC Evo publishes telemetry via three Windows shared-memory objects.
+# These names come from the game's SharedFileOut.h /
+# ACE_SharedFileOut_Documentation_v1.md.
+#
+# If a future game update renames the objects, update SHM_NAME_PREFIX
+# (or the full names in REGIONS) and the candidate path templates below.
+
+SHM_NAME_PREFIX: str = "acevo_pmf_"
+
+SHM_PHYSICS_NAME: str = f"{SHM_NAME_PREFIX}physics"
+SHM_GRAPHICS_NAME: str = f"{SHM_NAME_PREFIX}graphics"
+SHM_STATIC_NAME: str = f"{SHM_NAME_PREFIX}static"
+
+# Sizes are generous bounds based on the documented AC Evo struct layouts
+# so we can capture the full mapping for reverse engineering even before a
+# typed decoder exists for graphics/static. If the actual mapping is smaller,
+# OpenFileMappingW + MapViewOfFile will surface that and the region will
+# simply fail to open — capture continues with whichever regions did connect.
+REGIONS: Dict[str, tuple[str, int]] = {
+    "physics":  (SHM_PHYSICS_NAME,  1024),
+    "graphics": (SHM_GRAPHICS_NAME, 4096),
+    "static":   (SHM_STATIC_NAME,   2048),
 }
+
+# Candidate Win32 object-manager paths for OpenFileMappingW.
+# AC Evo creates the mapping in the caller's session (Local\), we also try
+# the bare name (same namespace via default resolution) and fall back to
+# Global\ in case the game ever publishes it there.
+SHM_PATH_CANDIDATE_TEMPLATES: list[str] = [
+    r"Local\{name}",
+    "{name}",
+    r"Global\{name}",
+]
 
 
 @dataclass
@@ -126,18 +146,9 @@ class RegionReader:
         if sys.platform != "win32":
             return False
 
-        # Only Win32-style names are valid for OpenFileMappingW.
-        # Prior versions also tried NT Object Manager paths like
-        # "\Sessions\N\BaseNamedObjects\<name>" — those always fail with
-        # ERROR_BAD_PATHNAME (161) and are pure log noise, so they are gone.
-        # AC Evo creates the mapping in the caller's session (Local\), we
-        # also try the bare name (same namespace via default resolution) and
-        # fall back to Global\ in case the game ever publishes it there.
-        candidates = [
-            f"Local\\{self.name}",
-            self.name,
-            f"Global\\{self.name}",
-        ]
+        # Build candidate paths from the module-level templates.
+        # See SHM_PATH_CANDIDATE_TEMPLATES for the path resolution strategy.
+        candidates = [tmpl.format(name=self.name) for tmpl in SHM_PATH_CANDIDATE_TEMPLATES]
 
         self._log(f"[TELEMETRY] Trying to open {self.name}, candidates: {candidates}")
         seen = set()

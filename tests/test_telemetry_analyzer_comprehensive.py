@@ -242,49 +242,117 @@ class TestGetPhysics:
 class TestHelperFunctions:
     """Test helper utility functions."""
 
-    def test_safe_4_with_list(self):
-        """Test _safe_4 with list input."""
-        result = _safe_4([1, 2, 3, 4, 5])
-        
+    # --- _safe_4 ---
+
+    def test_safe_4_with_list_longer_than_4(self):
+        """_safe_4 truncates a list > 4 elements to the first 4."""
+        result = _safe_4([1, 2, 3, 4, 5, 6])
+        assert result == [1, 2, 3, 4]
+
+    def test_safe_4_with_list_exactly_4(self):
+        """_safe_4 passes through exactly 4 elements unchanged."""
+        result = _safe_4([1, 2, 3, 4])
         assert result == [1, 2, 3, 4]
 
     def test_safe_4_with_short_list(self):
-        """Test _safe_4 with list shorter than 4 elements pads with 0.0."""
-        result = _safe_4([1, 2, 3])
-        
-        assert result == [1, 2, 3, 0.0]
+        """_safe_4 pads a list < 4 elements with the default value."""
+        result = _safe_4([1, 2])
+        assert result == [1, 2, 0.0, 0.0]
+
+    def test_safe_4_with_empty_list(self):
+        """_safe_4 returns all-defaults for an empty list."""
+        result = _safe_4([])
+        assert result == [0.0, 0.0, 0.0, 0.0]
+
+    def test_safe_4_with_tuple(self):
+        """_safe_4 accepts a tuple and returns a list."""
+        result = _safe_4((1, 2, 3, 4, 5))
+        assert result == [1, 2, 3, 4]
 
     def test_safe_4_with_dict(self):
-        """Test _safe_4 with dict input."""
+        """_safe_4 treats a dict as invalid and returns all-defaults."""
         result = _safe_4({"a": 1, "b": 2, "c": 3, "d": 4, "e": 5})
-        
-        assert len(result) == 4
+        assert result == [0.0, 0.0, 0.0, 0.0]
 
-    def test_sanitize_slip_valid(self):
-        """Test _sanitize_slip with valid slip value."""
+    def test_safe_4_with_string(self):
+        """_safe_4 treats a string as invalid and returns all-defaults."""
+        result = _safe_4("test")
+        assert result == [0.0, 0.0, 0.0, 0.0]
+
+    def test_safe_4_with_none(self):
+        """_safe_4 treats None as invalid and returns all-defaults."""
+        result = _safe_4(None)
+        assert result == [0.0, 0.0, 0.0, 0.0]
+
+    def test_safe_4_with_custom_default(self):
+        """_safe_4 uses the supplied default when padding."""
+        result = _safe_4([1], default=5.0)
+        assert result == [1, 5.0, 5.0, 5.0]
+
+    # --- _sanitize_slip ---
+
+    def test_sanitize_slip_valid_positive(self):
+        """_sanitize_slip passes through a valid positive value."""
         result = _sanitize_slip(0.5)
-        
         assert result == 0.5
 
-    def test_sanitize_slip_negative(self):
-        """Test _sanitize_slip with negative slip."""
-        result = _sanitize_slip(-0.5)
-        
+    def test_sanitize_slip_zero(self):
+        """_sanitize_slip accepts zero."""
+        result = _sanitize_slip(0.0)
         assert result == 0.0
 
-    def test_sanitize_slip_too_large(self):
-        """Test _sanitize_slip with slip > 1.0 is not clamped."""
+    def test_sanitize_slip_negative(self):
+        """_sanitize_slip clamps negative values to 0.0."""
+        result = _sanitize_slip(-0.5)
+        assert result == 0.0
+
+    def test_sanitize_slip_clamps_above_5(self):
+        """_sanitize_slip clamps values above 5.0 to 5.0."""
+        result = _sanitize_slip(10.0)
+        assert result == 5.0
+
+    def test_sanitize_slip_at_5(self):
+        """_sanitize_slip accepts 5.0 (the upper bound) unchanged."""
+        result = _sanitize_slip(5.0)
+        assert result == 5.0
+
+    def test_sanitize_slip_below_5(self):
+        """_sanitize_slip passes through values between 0 and 5 unchanged."""
         result = _sanitize_slip(1.5)
-        
-        # Function doesn't clamp, just validates not negative
         assert result == 1.5
 
+    def test_sanitize_slip_with_string(self):
+        """_sanitize_slip converts a numeric string."""
+        result = _sanitize_slip("0.5")
+        assert result == 0.5
+
+    def test_sanitize_slip_with_invalid_string(self):
+        """_sanitize_slip returns 0.0 for a non-numeric string."""
+        result = _sanitize_slip("invalid")
+        assert result == 0.0
+
+    def test_sanitize_slip_with_none(self):
+        """_sanitize_slip returns 0.0 for None."""
+        result = _sanitize_slip(None)
+        assert result == 0.0
+
+    def test_sanitize_slip_infinity(self):
+        """_sanitize_slip returns 0.0 for positive infinity."""
+        import math
+        result = _sanitize_slip(float('inf'))
+        assert result == 0.0
+
+    def test_sanitize_slip_negative_infinity(self):
+        """_sanitize_slip returns 0.0 for negative infinity."""
+        import math
+        result = _sanitize_slip(float('-inf'))
+        assert result == 0.0
+
     def test_sanitize_slip_nan(self):
-        """Test _sanitize_slip with NaN."""
+        """_sanitize_slip returns 0.0 for NaN."""
         import math
         result = _sanitize_slip(float('nan'))
-        
-        assert math.isnan(result) or result == 0.0
+        assert result == 0.0
 
 
 class TestExtractCarState:
@@ -1304,8 +1372,12 @@ class TestFixedMeasurementWindow:
         assert "suspect" in prompt.lower() or "SUSPECT" in prompt
 
     @pytest.mark.asyncio
-    async def test_ai_prompt_excludes_brake_bias_when_not_in_catalog(self):
-        """When tuning catalog exists for a car but lacks brake bias, prompt must forbid it."""
+    async def test_ai_prompt_catalog_car_generates_proper_rules(self):
+        """When tuning catalog exists for a car, prompt must reference it and enforce catalog-only rules.
+
+        All cars now list brake bias, so the catalog-exists-with-brake-bias scenario
+        validates that the prompt correctly defers to the catalog.
+        """
         from src.core.telemetry_analyzer import TelemetryAnalyzer
         from src.core.car_tuning_catalog import get_tuning_params
 
@@ -1313,7 +1385,7 @@ class TestFixedMeasurementWindow:
         params = get_tuning_params(car_model)
         assert params is not None, "M2 should match catalog"
         param_labels = [p["label"].lower() for p in params]
-        assert not any("brake bias" in l for l in param_labels), "M2 catalog must not list brake bias"
+        assert any("brake bias" in l for l in param_labels), "M2 catalog should now list brake bias"
 
         corner = {
             "id": 1, "name": "T1", "apex_speed": 80.0, "entry_speed": 100.0,
@@ -1337,13 +1409,13 @@ class TestFixedMeasurementWindow:
             "car": car_model,
         }
         analyzer = TelemetryAnalyzer(output_dir="tests/output", session_manager=SharedSessionManager())
-        path = await analyzer._generate_ai_prompt(data, output_prefix="test_brake_bias_catalog")
+        path = await analyzer._generate_ai_prompt(data, output_prefix="test_catalog_car_rules")
         with open(path, "r", encoding="utf-8") as fh:
             prompt = fh.read()
 
         assert "CAR SETUP PARAMETERS" in prompt, "Tuning block should be present"
         assert "ONLY recommend parameters listed in the CAR SETUP PARAMETERS" in prompt
-        assert "move bias" not in prompt, "Brake bias example should be removed from rules"
+        assert "If a parameter is NOT in that list, the car cannot adjust it" in prompt
         assert "Parameter and Signal MUST describe the same subsystem" in prompt
         assert "Tyre pressure rows MUST use tyre pressure evidence in psi only" in prompt
         assert "Brake temperature evidence may only support brake-related parameters" in prompt
@@ -1382,3 +1454,27 @@ class TestFixedMeasurementWindow:
         assert "CAR SETUP" in prompt
         assert "SKIPPED" in prompt
         assert "Do NOT recommend brake bias" in prompt
+
+    def test_analyze_suspension_with_detected_corners_no_keyerror(self):
+        """Regression: analyze_suspension must not crash on detected lap corners
+        that lack 'start'/'end' keys (they have 'start_frame'/'end_frame' instead).
+        Profile corners (with start/end) should be used."""
+        from src.core.analyzer.metrics import analyze_suspension
+
+        # Detected lap corners — no 'start'/'end' progress keys
+        detected_corners = [
+            {"id": 1, "name": "T1", "start_frame": 10, "end_frame": 30,
+             "apex_frame": 20, "apex_speed": 80, "lap_pos": 0.15},
+        ]
+        # Should not raise KeyError — empty list means no analysis, no crash
+        result = analyze_suspension([], detected_corners)
+        assert result == {"bottoming_notes": [], "travel_delta_notes": [], "camber_notes": []}
+
+        # Profile corners — have 'start'/'end' progress keys
+        profile_corners = [
+            {"id": 1, "name": "T1", "start": 0.10, "end": 0.20},
+        ]
+        laps = [{"lap_num": 1, "track": [{"lap_progress": 0.15, "sus_fl": 5.0,
+                             "sus_fr": 5.0, "sus_rl": 5.0, "sus_rr": 5.0}]}]
+        result = analyze_suspension(laps, profile_corners)
+        assert isinstance(result, dict)

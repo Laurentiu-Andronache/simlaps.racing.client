@@ -3,7 +3,7 @@
 Owns telemetry capture start/stop transitions and post-capture analysis flow.
 """
 
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Optional
 
 from src.utils.structured_logger import (
     Component,
@@ -14,6 +14,11 @@ from src.utils.structured_logger import (
 )
 from ..components.status_bar import ConnectionStatus
 from ..components.telemetry_status import TelemetryStatus
+from ..pages.home import HomePage
+from src.core.telemetry_capture import TelemetryCapture
+
+if TYPE_CHECKING:
+    from src.core.analyzer import TelemetryAnalyzer
 
 
 class TelemetryLifecycleService:
@@ -22,8 +27,8 @@ class TelemetryLifecycleService:
     async def start_capture(
         self,
         *,
-        telemetry_capture: Any,
-        home_page: Any,
+        telemetry_capture: TelemetryCapture | None,
+        home_page: HomePage | None,
         telemetry_enabled: bool,
     ) -> None:
         """Start telemetry capture when a session becomes active."""
@@ -68,9 +73,9 @@ class TelemetryLifecycleService:
         self,
         *,
         reason: str,
-        telemetry_capture: Any,
-        telemetry_analyzer: Any,
-        home_page: Any,
+        telemetry_capture: TelemetryCapture | None,
+        telemetry_analyzer: "TelemetryAnalyzer | None",
+        home_page: HomePage | None,
         current_track_name: Optional[str],
     ) -> None:
         """Handle automatic stop event (crash/quit) and run analysis if frames exist."""
@@ -131,9 +136,9 @@ class TelemetryLifecycleService:
         *,
         reason: str,
         discard: bool,
-        telemetry_capture: Any,
-        telemetry_analyzer: Any,
-        home_page: Any,
+        telemetry_capture: TelemetryCapture | None,
+        telemetry_analyzer: "TelemetryAnalyzer | None",
+        home_page: HomePage | None,
         current_track_name: Optional[str],
     ) -> None:
         """Stop telemetry capture and run analysis unless discarded."""

@@ -9,32 +9,38 @@ from src.ui.services.lap_processing_service import LapProcessingService
 from src.utils.config import AppConfig
 
 
-def _make_app(*, auto_submit: bool = False, submit_invalid_laps: bool = False, telemetry_enabled: bool = False) -> SimpleNamespace:
-    app = SimpleNamespace()
-    app._config = AppConfig(
+def _make_deps(*, auto_submit: bool = False, submit_invalid_laps: bool = False, telemetry_enabled: bool = False) -> dict:
+    config = AppConfig(
         auto_submit=auto_submit,
         submit_invalid_laps=submit_invalid_laps,
         telemetry_enabled=telemetry_enabled,
     )
-    app._session_manager = MagicMock()
-    app._pb_cache = MagicMock()
-    app._telemetry_capture = None
-    app._history_entries = []
-    app._submit_lap = AsyncMock()
-    app._home_page = MagicMock()
-    app._home_page._lap_count = 1
-    app._current_track_name = None
-    return app
+    session_manager = MagicMock()
+    pb_cache = MagicMock()
+    telemetry_capture = None
+    history_entries: list = []
+    submit_lap = AsyncMock()
+    home_page = MagicMock()
+    home_page._lap_count = 1
+    return dict(
+        config=config,
+        session_manager=session_manager,
+        pb_cache=pb_cache,
+        telemetry_capture=telemetry_capture,
+        history_entries=history_entries,
+        submit_lap=submit_lap,
+        home_page=home_page,
+    )
 
 
 @pytest.mark.asyncio
 async def test_handle_lap_complete_auto_submits_when_shared_validity_overrides_parser_invalid():
-    app = _make_app(auto_submit=True, submit_invalid_laps=False)
-    app._session_manager.get_lap_validity_data.return_value = MagicMock(is_valid=True)
-    app._pb_cache.check_and_update_pb.return_value = True
+    deps = _make_deps(auto_submit=True, submit_invalid_laps=False)
+    deps["session_manager"].get_lap_validity_data.return_value = MagicMock(is_valid=True)
+    deps["pb_cache"].check_and_update_pb.return_value = True
 
     card = MagicMock()
-    app._home_page.add_lap.return_value = card
+    deps["home_page"].add_lap.return_value = card
 
     session = SessionData(track="Laguna Seca", car="Ferrari 296 GT3")
     lap = SessionLapData(
@@ -48,23 +54,23 @@ async def test_handle_lap_complete_auto_submits_when_shared_validity_overrides_p
 
     service = LapProcessingService()
     await service.handle_lap_complete(
-        app=app,
         session=session,
         lap=lap,
         create_history_entry=lambda **kwargs: SimpleNamespace(**kwargs),
+        **deps,
     )
 
-    app._home_page.add_lap.assert_called_once_with(session, lap, LapCardStatus.SUBMITTING)
-    app._submit_lap.assert_awaited_once()
+    deps["home_page"].add_lap.assert_called_once_with(session, lap, LapCardStatus.SUBMITTING)
+    deps["submit_lap"].assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_handle_lap_complete_uses_invalid_status_when_not_submitting_invalid_laps():
-    app = _make_app(auto_submit=False, submit_invalid_laps=False)
-    app._session_manager.get_lap_validity_data.return_value = None
+    deps = _make_deps(auto_submit=False, submit_invalid_laps=False)
+    deps["session_manager"].get_lap_validity_data.return_value = None
 
     card = MagicMock()
-    app._home_page.add_lap.return_value = card
+    deps["home_page"].add_lap.return_value = card
 
     session = SessionData(track="Laguna Seca", car="Ferrari 296 GT3")
     lap = SessionLapData(
@@ -78,21 +84,21 @@ async def test_handle_lap_complete_uses_invalid_status_when_not_submitting_inval
 
     service = LapProcessingService()
     await service.handle_lap_complete(
-        app=app,
         session=session,
         lap=lap,
         create_history_entry=lambda **kwargs: SimpleNamespace(**kwargs),
+        **deps,
     )
 
-    app._home_page.add_lap.assert_called_once_with(session, lap, LapCardStatus.INVALID)
-    app._submit_lap.assert_not_awaited()
+    deps["home_page"].add_lap.assert_called_once_with(session, lap, LapCardStatus.INVALID)
+    deps["submit_lap"].assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_handle_lap_complete_rolls_back_history_if_card_creation_fails():
-    app = _make_app(auto_submit=False)
-    app._session_manager.get_lap_validity_data.return_value = None
-    app._home_page.add_lap.side_effect = RuntimeError("ui add failed")
+    deps = _make_deps(auto_submit=False)
+    deps["session_manager"].get_lap_validity_data.return_value = None
+    deps["home_page"].add_lap.side_effect = RuntimeError("ui add failed")
 
     session = SessionData(track="Laguna Seca", car="Ferrari 296 GT3")
     lap = SessionLapData(
@@ -107,21 +113,21 @@ async def test_handle_lap_complete_rolls_back_history_if_card_creation_fails():
     service = LapProcessingService()
     with pytest.raises(RuntimeError, match="ui add failed"):
         await service.handle_lap_complete(
-            app=app,
             session=session,
             lap=lap,
             create_history_entry=lambda **kwargs: SimpleNamespace(**kwargs),
+            **deps,
         )
 
-    assert app._history_entries == []
+    assert deps["history_entries"] == []
 
 
 @pytest.mark.asyncio
 async def test_handle_lap_complete_updates_detected_user_when_player_id_present():
-    app = _make_app(auto_submit=False)
-    app._session_manager.get_lap_validity_data.return_value = None
+    deps = _make_deps(auto_submit=False)
+    deps["session_manager"].get_lap_validity_data.return_value = None
     card = MagicMock()
-    app._home_page.add_lap.return_value = card
+    deps["home_page"].add_lap.return_value = card
 
     session = SessionData(track="Laguna Seca", car="Ferrari 296 GT3", player_id="123", player_name="Driver")
     lap = SessionLapData(
@@ -135,23 +141,23 @@ async def test_handle_lap_complete_updates_detected_user_when_player_id_present(
 
     service = LapProcessingService()
     await service.handle_lap_complete(
-        app=app,
         session=session,
         lap=lap,
         create_history_entry=lambda **kwargs: SimpleNamespace(**kwargs),
+        **deps,
     )
 
-    app._home_page.set_detected_user.assert_called_once_with("123", "Driver")
+    deps["home_page"].set_detected_user.assert_called_once_with("123", "Driver")
 
 
 @pytest.mark.asyncio
 async def test_handle_lap_complete_logs_telemetry_missed_boundary():
-    app = _make_app(telemetry_enabled=True)
-    app._telemetry_capture = MagicMock()
-    app._telemetry_capture.is_capturing.return_value = False
-    app._session_manager.get_lap_validity_data.return_value = None
+    deps = _make_deps(telemetry_enabled=True)
+    deps["telemetry_capture"] = MagicMock()
+    deps["telemetry_capture"].is_capturing.return_value = False
+    deps["session_manager"].get_lap_validity_data.return_value = None
     card = MagicMock()
-    app._home_page.add_lap.return_value = card
+    deps["home_page"].add_lap.return_value = card
 
     session = SessionData(track="Laguna Seca", car="Ferrari 296 GT3")
     lap = SessionLapData(
@@ -165,23 +171,23 @@ async def test_handle_lap_complete_logs_telemetry_missed_boundary():
 
     service = LapProcessingService()
     await service.handle_lap_complete(
-        app=app,
         session=session,
         lap=lap,
         create_history_entry=lambda **kwargs: SimpleNamespace(**kwargs),
+        **deps,
     )
 
-    app._telemetry_capture.record_lap_boundary.assert_not_called()
+    deps["telemetry_capture"].record_lap_boundary.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_handle_lap_complete_records_telemetry_boundary_when_capturing():
-    app = _make_app(telemetry_enabled=True)
-    app._telemetry_capture = MagicMock()
-    app._telemetry_capture.is_capturing.return_value = True
-    app._session_manager.get_lap_validity_data.return_value = None
+    deps = _make_deps(telemetry_enabled=True)
+    deps["telemetry_capture"] = MagicMock()
+    deps["telemetry_capture"].is_capturing.return_value = True
+    deps["session_manager"].get_lap_validity_data.return_value = None
     card = MagicMock()
-    app._home_page.add_lap.return_value = card
+    deps["home_page"].add_lap.return_value = card
 
     session = SessionData(track="Laguna Seca", car="Ferrari 296 GT3")
     lap = SessionLapData(
@@ -195,23 +201,23 @@ async def test_handle_lap_complete_records_telemetry_boundary_when_capturing():
 
     service = LapProcessingService()
     await service.handle_lap_complete(
-        app=app,
         session=session,
         lap=lap,
         create_history_entry=lambda **kwargs: SimpleNamespace(**kwargs),
+        **deps,
     )
 
-    app._telemetry_capture.record_lap_boundary.assert_called_once_with(90000, 1)
+    deps["telemetry_capture"].record_lap_boundary.assert_called_once_with(90000, 1)
 
 
 @pytest.mark.asyncio
 async def test_handle_lap_complete_does_not_record_telemetry_boundary_for_outlap():
-    app = _make_app(telemetry_enabled=True)
-    app._telemetry_capture = MagicMock()
-    app._telemetry_capture.is_capturing.return_value = True
-    app._session_manager.get_lap_validity_data.return_value = None
+    deps = _make_deps(telemetry_enabled=True)
+    deps["telemetry_capture"] = MagicMock()
+    deps["telemetry_capture"].is_capturing.return_value = True
+    deps["session_manager"].get_lap_validity_data.return_value = None
     card = MagicMock()
-    app._home_page.add_lap.return_value = card
+    deps["home_page"].add_lap.return_value = card
 
     session = SessionData(track="Laguna Seca", car="Ferrari 296 GT3")
     lap = SessionLapData(
@@ -226,21 +232,21 @@ async def test_handle_lap_complete_does_not_record_telemetry_boundary_for_outlap
 
     service = LapProcessingService()
     await service.handle_lap_complete(
-        app=app,
         session=session,
         lap=lap,
         create_history_entry=lambda **kwargs: SimpleNamespace(**kwargs),
+        **deps,
     )
 
-    app._telemetry_capture.record_lap_boundary.assert_not_called()
+    deps["telemetry_capture"].record_lap_boundary.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_handle_lap_complete_skips_pb_cache_when_unknown_track_or_car():
-    app = _make_app(auto_submit=False)
-    app._session_manager.get_lap_validity_data.return_value = None
+    deps = _make_deps(auto_submit=False)
+    deps["session_manager"].get_lap_validity_data.return_value = None
     card = MagicMock()
-    app._home_page.add_lap.return_value = card
+    deps["home_page"].add_lap.return_value = card
 
     session = SessionData(track="Unknown", car="Ferrari 296 GT3")
     lap = SessionLapData(
@@ -254,22 +260,22 @@ async def test_handle_lap_complete_skips_pb_cache_when_unknown_track_or_car():
 
     service = LapProcessingService()
     await service.handle_lap_complete(
-        app=app,
         session=session,
         lap=lap,
         create_history_entry=lambda **kwargs: SimpleNamespace(**kwargs),
+        **deps,
     )
 
-    app._pb_cache.check_and_update_pb.assert_not_called()
+    deps["pb_cache"].check_and_update_pb.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_handle_lap_complete_logs_sync_mismatch():
-    app = _make_app(auto_submit=False)
-    app._session_manager.get_lap_validity_data.return_value = None
+    deps = _make_deps(auto_submit=False)
+    deps["session_manager"].get_lap_validity_data.return_value = None
     card = MagicMock()
-    app._home_page.add_lap.return_value = card
-    app._home_page._lap_count = 999  # Force mismatch
+    deps["home_page"].add_lap.return_value = card
+    deps["home_page"]._lap_count = 999  # Force mismatch
 
     session = SessionData(track="Laguna Seca", car="Ferrari 296 GT3")
     lap = SessionLapData(
@@ -283,10 +289,10 @@ async def test_handle_lap_complete_logs_sync_mismatch():
 
     service = LapProcessingService()
     await service.handle_lap_complete(
-        app=app,
         session=session,
         lap=lap,
         create_history_entry=lambda **kwargs: SimpleNamespace(**kwargs),
+        **deps,
     )
 
-    assert len(app._history_entries) == 1
+    assert len(deps["history_entries"]) == 1

@@ -163,6 +163,12 @@ class SharedSessionData:
     tyre_compound: str = "Unknown"
     stint_number: int = 1
 
+    # Powertrain flags decoded from the static SHM region.
+    # Used to detect hybrid/electric cars dynamically instead of
+    # relying solely on a hardcoded model-name list.
+    has_ers: Optional[bool] = None
+    has_kers: Optional[bool] = None
+
     starting_ambient_temp_c: Optional[float] = None
     starting_ground_temp_c: Optional[float] = None
     starting_grip: Optional[str] = None
@@ -254,6 +260,15 @@ class SharedSessionManager:
     def get_car(self) -> str:
         with self._lock:
             return self._session_data.car
+
+    def get_hybrid_flags(self) -> tuple[Optional[bool], Optional[bool]]:
+        """Return ``(has_ers, has_kers)`` from the static SHM region.
+
+        Both values are ``None`` until the telemetry capture decodes the
+        first static frame.
+        """
+        with self._lock:
+            return self._session_data.has_ers, self._session_data.has_kers
 
     def get_session_metadata(self) -> Dict[str, Any]:
         with self._lock:
@@ -506,6 +521,13 @@ class SharedSessionManager:
             self._session_data.starting_ground_temp_c = metadata.get(
                 "starting_ground_temperature_c", self._session_data.starting_ground_temp_c
             )
+
+            # Powertrain flags from SHM static region — primary hybrid
+            # detection source (covers any car without manual list updates).
+            if "has_ers" in metadata:
+                self._session_data.has_ers = bool(metadata["has_ers"])
+            if "has_kers" in metadata:
+                self._session_data.has_kers = bool(metadata["has_kers"])
             starting_grip = metadata.get("starting_grip_name") or metadata.get("starting_grip")
             self._session_data.starting_grip = starting_grip
 

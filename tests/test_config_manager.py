@@ -163,3 +163,65 @@ def test_get_config_manager_returns_singleton() -> None:
 def test_config_path_returns_path() -> None:
     path = get_config_path()
     assert path.name == "config.json"
+
+
+def test_default_config_has_current_version() -> None:
+    """Default AppConfig should carry the latest CONFIG_VERSION."""
+    from src.utils.config import CONFIG_VERSION
+    config = AppConfig()
+    assert config.config_version == CONFIG_VERSION
+
+
+def test_from_dict_stamps_config_version_on_old_config() -> None:
+    """Loading a dict without config_version should stamp the current version."""
+    from src.utils.config import CONFIG_VERSION
+    data = {"theme": "light", "auto_submit": False}
+    config = AppConfig.from_dict(data)
+    assert config.config_version == CONFIG_VERSION
+    assert config.theme == "light"
+    assert config.auto_submit is False
+
+
+def test_from_dict_logs_warning_for_unknown_fields(capsys) -> None:
+    """Unknown/legacy fields in the loaded dict should trigger a log warning."""
+    data = {"theme": "dark", "unknown_field_xyz": "should_warn"}
+    AppConfig.from_dict(data)
+    captured = capsys.readouterr()
+    assert "unknown_field_xyz" in captured.out
+    assert "WARNING" in captured.out
+
+
+def test_from_dict_migrates_legacy_field(capsys) -> None:
+    """Legacy field renames via _LEGACY_FIELD_MAP should be applied during load."""
+    import src.utils.config as config_mod
+
+    # Temporarily add a legacy mapping to test the migration
+    original_map = dict(config_mod._LEGACY_FIELD_MAP)
+    try:
+        config_mod._LEGACY_FIELD_MAP["old_discord_field"] = "discord_webhook_url"
+        data = {"old_discord_field": "https://hook.example.com", "theme": "dark"}
+        config = AppConfig.from_dict(data)
+        assert config.discord_webhook_url == "https://hook.example.com"
+        assert not hasattr(config, "old_discord_field")
+        captured = capsys.readouterr()
+        assert "Migrating" in captured.out
+    finally:
+        config_mod._LEGACY_FIELD_MAP.clear()
+        config_mod._LEGACY_FIELD_MAP.update(original_map)
+
+
+def test_to_dict_includes_config_version() -> None:
+    """to_dict() output should include config_version."""
+    from src.utils.config import CONFIG_VERSION
+    config = AppConfig()
+    d = config.to_dict()
+    assert d["config_version"] == CONFIG_VERSION
+
+
+def test_from_dict_does_not_mutate_caller_dict() -> None:
+    """from_dict should not modify the caller's original dict."""
+    original = {"theme": "light", "unknown_legacy": "val"}
+    copy_for_call = dict(original)
+    AppConfig.from_dict(copy_for_call)
+    # Caller's dict should be unmodified
+    assert copy_for_call == original

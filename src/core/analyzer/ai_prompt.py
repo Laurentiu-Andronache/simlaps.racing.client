@@ -1062,7 +1062,8 @@ async def generate_ai_prompt(
             lines.append("  Consider shorter braking zones or adjusting brake bias to avoid fade.")
 
     # ── Suspension / alignment analysis
-    _suspension = analyze_suspension(laps, ref_corners)
+    profile_corners = data.get("profile_corners", [])
+    _suspension = analyze_suspension(laps, profile_corners)
     _has_sus = any(
         _suspension[k] for k in ("bottoming_notes", "travel_delta_notes", "camber_notes")
     )

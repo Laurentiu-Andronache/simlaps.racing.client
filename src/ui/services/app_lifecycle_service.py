@@ -4,9 +4,12 @@ Owns app close-path orchestration: telemetry stop trigger, monitor shutdown,
 and API client closure scheduling.
 """
 
-from typing import Any
+from typing import TYPE_CHECKING
 
 from src.utils.structured_logger import Component, log_debug, log_info
+
+if TYPE_CHECKING:
+    from ..app import SimLapsApp
 
 
 class AppLifecycleService:
@@ -15,7 +18,7 @@ class AppLifecycleService:
     def __init__(self) -> None:
         self._cleanup_started = False
 
-    def cleanup(self, *, app: Any) -> None:
+    def cleanup(self, *, app: "SimLapsApp") -> None:
         """Run app shutdown sequence once in a safe, repeatable manner."""
         if self._cleanup_started:
             log_debug(Component.APP, "Cleanup already executed; skipping duplicate call")

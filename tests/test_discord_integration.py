@@ -13,6 +13,7 @@ from src.core.discord_notifier import DiscordNotifier, LapData, create_discord_n
 from src.core.pb_cache import PBCache, PersonalBest
 from src.models import LapData as SessionLapData, SessionData
 from src.ui.components.lap_card import LapCardStatus
+from src.ui.pages.history import HistoryEntry
 from src.ui.app import SimLapsApp
 from src.utils.config import AppConfig
 
@@ -394,6 +395,7 @@ class TestAppDiscordPosting:
             discord_webhook_url="https://discord.com/api/webhooks/123/abc",
         )
         app._pb_cache = MagicMock()
+        app._lap_submission_service = AsyncMock()
         app._discord_notifier = MagicMock()
         app._discord_notifier.post_lap = AsyncMock(return_value=True)
 
@@ -415,7 +417,15 @@ class TestAppDiscordPosting:
             pb_was_new=True,
         )
 
-        app._discord_notifier.post_lap.assert_awaited_once()
+        app._lap_submission_service.post_to_discord.assert_awaited_once_with(
+            config=app._config,
+            discord_notifier=app._discord_notifier,
+            session=session,
+            lap=lap,
+            steam_id="steam123",
+            steam_name="Driver",
+            pb_was_new=True,
+        )
         app._pb_cache.check_and_update_pb.assert_not_called()
 
     @pytest.mark.asyncio
@@ -428,6 +438,7 @@ class TestAppDiscordPosting:
         app._pb_cache.check_and_update_pb.return_value = True
         app._telemetry_capture = None
         app._history_entries = []
+        app._lap_processing_service = AsyncMock()
         app._submit_lap = AsyncMock()
 
         card = MagicMock()
@@ -447,7 +458,18 @@ class TestAppDiscordPosting:
 
         await app._on_lap_complete(session, lap)
 
-        app._submit_lap.assert_awaited_once()
+        app._lap_processing_service.handle_lap_complete.assert_awaited_once_with(
+            session=session,
+            lap=lap,
+            home_page=app._home_page,
+            telemetry_capture=app._telemetry_capture,
+            config=app._config,
+            session_manager=app._session_manager,
+            pb_cache=app._pb_cache,
+            history_entries=app._history_entries,
+            submit_lap=app._submit_lap,
+            create_history_entry=HistoryEntry,
+        )
 
     @pytest.mark.asyncio
     async def test_on_lap_complete_missed_boundary_does_not_create_dead_telemetry_state(self):
@@ -460,6 +482,7 @@ class TestAppDiscordPosting:
         app._telemetry_capture = MagicMock()
         app._telemetry_capture.is_capturing.return_value = False
         app._history_entries = []
+        app._lap_processing_service = AsyncMock()
         app._submit_lap = AsyncMock()
 
         card = MagicMock()
@@ -479,13 +502,25 @@ class TestAppDiscordPosting:
 
         await app._on_lap_complete(session, lap)
 
-        assert not hasattr(app, "_telemetry_session_incomplete")
+        app._lap_processing_service.handle_lap_complete.assert_awaited_once_with(
+            session=session,
+            lap=lap,
+            home_page=app._home_page,
+            telemetry_capture=app._telemetry_capture,
+            config=app._config,
+            session_manager=app._session_manager,
+            pb_cache=app._pb_cache,
+            history_entries=app._history_entries,
+            submit_lap=app._submit_lap,
+            create_history_entry=HistoryEntry,
+        )
 
     @pytest.mark.asyncio
     async def test_start_telemetry_capture_does_not_call_private_prefix_method(self):
         app = SimLapsApp.__new__(SimLapsApp)
         app._config = AppConfig(telemetry_enabled=True)
         app._home_page = MagicMock()
+        app._telemetry_lifecycle_service = AsyncMock()
 
         telemetry_capture = MagicMock()
         telemetry_capture.get_output_prefix.side_effect = [None, "05-10-20-12-00"]
@@ -496,8 +531,11 @@ class TestAppDiscordPosting:
 
         await app._start_telemetry_capture()
 
-        telemetry_capture.start_capture.assert_awaited_once()
-        telemetry_capture._make_output_prefix.assert_not_called()
+        app._telemetry_lifecycle_service.start_capture.assert_awaited_once_with(
+            telemetry_capture=telemetry_capture,
+            home_page=app._home_page,
+            telemetry_enabled=app._config.telemetry_enabled,
+        )
 
     def test_retry_lap_schedules_submit_task_for_matching_history_entry(self):
         app = SimLapsApp.__new__(SimLapsApp)
@@ -595,12 +633,7 @@ class TestAppDiscordPosting:
         app._home_page = MagicMock()
         app._log_parser = MagicMock()
         app._log_parser.is_running = False
-
-        def init_telemetry_services():
-            app._telemetry_capture = MagicMock()
-
-        app._init_telemetry_services = MagicMock(side_effect=init_telemetry_services)
-        app._attach_telemetry_ui = MagicMock()
+        app._settings_service = MagicMock()
 
         with patch("src.ui.app.APIClient") as mock_api_client_cls, patch("src.ui.app.LogParser"):
             mock_api_client_cls.return_value = MagicMock()
@@ -613,9 +646,15 @@ class TestAppDiscordPosting:
                 )
             )
 
-        app._init_telemetry_services.assert_called_once()
-        app._attach_telemetry_ui.assert_called_once()
-        app.page.run_task.assert_called_once_with(app._start_telemetry_capture)
+        app._settings_service.apply.assert_called_once()
+        call_args = app._settings_service.apply.call_args
+        assert call_args.kwargs["app"] is app
+        assert call_args.kwargs["config"] == AppConfig(
+            server_url="https://simlaps.racing",
+            telemetry_enabled=True,
+            telemetry_output_path="telemetry",
+        )
+        assert call_args.kwargs["create_discord_notifier"] is DiscordNotifier
 
 
 if __name__ == "__main__":

@@ -8,13 +8,27 @@ import os
 import json
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
-from typing import Optional
+from typing import ClassVar, Optional
+
+from src.utils.structured_logger import Component, log_warning
 
 
 # Default configuration values
 DEFAULT_LOG_PATH = str(Path.home() / "Saved Games" / "ACE" / "Logs")
 DEFAULT_SERVER_URL = "https://simlaps.racing"
 APP_NAME = "SimLapsClient"
+
+# Config version for schema migration support.
+# Increment when fields are renamed, removed, or have breaking changes.
+CONFIG_VERSION = 1
+
+# Maps legacy (old) field names to their current replacements.
+# When a config dict contains a legacy key, it is transparently renamed
+# to the current key during load. Remove entries once the oldest supported
+# config version no longer emits them.
+_LEGACY_FIELD_MAP: dict[str, str] = {
+    # Example: "discord_post_invalid": "submit_invalid_laps",
+}
 
 
 def get_config_dir() -> Path:
@@ -37,6 +51,10 @@ def get_config_path() -> Path:
 @dataclass
 class AppConfig:
     """Application configuration settings."""
+    
+    # Schema version — incremented when fields are added/renamed/removed.
+    # Persisted in the JSON file so from_dict() can run migrations.
+    config_version: int = CONFIG_VERSION
     
     # Paths
     log_path: str = field(default_factory=lambda: DEFAULT_LOG_PATH)
@@ -84,12 +102,39 @@ class AppConfig:
     def from_dict(cls, data: dict) -> "AppConfig":
         """Create config from dictionary.
         
-        Note: Legacy auth fields (steam_id, steam_name, api_key) are automatically
-        ignored when loading from old config files due to field filtering.
+        Applies schema migrations for legacy field renames and logs warnings
+        when unrecognised fields are encountered so they can be cleaned up
+        in a future config version.
         """
-        # Filter to only valid fields
+        data = dict(data)  # shallow copy so we don't mutate the caller's dict
+        
+        # --- Step 1: Apply legacy field renames ---
+        for old_key, new_key in _LEGACY_FIELD_MAP.items():
+            if old_key in data and new_key not in data:
+                log_warning(
+                    Component.CONFIG,
+                    "Migrating legacy config field",
+                    old=old_key,
+                    new=new_key,
+                )
+                data[new_key] = data.pop(old_key)
+        
+        # --- Step 2: Collect unknown / legacy fields for warning ---
         valid_fields = {f.name for f in cls.__dataclass_fields__.values()}
+        legacy_fields = [k for k in data if k not in valid_fields]
+        if legacy_fields:
+            log_warning(
+                Component.CONFIG,
+                "Ignoring unknown config field(s) — consider cleaning up old config file",
+                fields=legacy_fields,
+            )
+        
+        # --- Step 3: Filter to only valid fields ---
         filtered = {k: v for k, v in data.items() if k in valid_fields}
+        
+        # --- Step 4: Stamp current version so the next load is clean ---
+        filtered["config_version"] = CONFIG_VERSION
+        
         return cls(**filtered)
     
 

@@ -31,11 +31,39 @@ HYBRID_SPIKE_SESSION_THRESHOLD: int = 2
 MIN_FULL_LAP_HUNDREDM: int = 20
 
 # Car models with broken ERS/PHEV fuel accounting.
-KNOWN_HYBRID_CARS: frozenset[str] = frozenset({
+# This is a static fallback list — the primary detection mechanism uses
+# SHM static-region flags (has_ers / has_kers) decoded from the game at
+# runtime, which covers any car without manual updates.
+FALLBACK_HYBRID_CARS: frozenset[str] = frozenset({
     "ks_ferrari_296_gtb",
     "ks_ferrari_sf90_stradale",
     "ks_mclaren_artura",
 })
+
+# Export under the original name for backward compatibility.
+KNOWN_HYBRID_CARS: frozenset[str] = FALLBACK_HYBRID_CARS
+
+
+def is_hybrid_car(
+    car_name: str,
+    has_ers_from_shm: Optional[bool] = None,
+    has_kers_from_shm: Optional[bool] = None,
+) -> bool:
+    """Determine whether *car_name* is a hybrid electric vehicle.
+
+    Detection priority:
+    1. **SHM static-region flags** (``has_ers`` / ``has_kers``) — set by
+       :meth:`TelemetryCapture._capture_frame` from the game's static
+       shared memory.  Covers any car the game recognises as hybrid.
+    2. **Fallback static list** (``FALLBACK_HYBRID_CARS``) — hardcoded
+       model identifiers for cars whose ERS fuel accounting we know to be
+       unreliable, used when SHM data is not yet available.
+
+    Returns ``True`` if the car is likely a hybrid, ``False`` otherwise.
+    """
+    if has_ers_from_shm or has_kers_from_shm:
+        return True
+    return car_name in FALLBACK_HYBRID_CARS
 
 # Raw GameModeType → normalised session label.
 SESSION_TYPE_MAP: dict[str, str] = {

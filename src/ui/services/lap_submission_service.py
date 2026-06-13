@@ -3,10 +3,12 @@
 Owns lap submit result mapping and optional Discord post flow.
 """
 
-from typing import Any, Awaitable, Callable, Optional
+from typing import Awaitable, Callable, Optional
 
-from src.core.api_client import SubmissionStatus
-from src.core.discord_notifier import LapData as DiscordLapData
+from src.core.api_client import APIClient, SubmissionStatus
+from src.core.discord_notifier import DiscordNotifier, LapData as DiscordLapData
+from src.models import LapData, SessionData
+from src.utils.config import AppConfig
 from src.utils.structured_logger import (
     Component,
     log_debug,
@@ -15,7 +17,8 @@ from src.utils.structured_logger import (
     log_info,
     log_warning,
 )
-from ..components.lap_card import LapCardStatus
+from ..components.lap_card import LapCard, LapCardStatus
+from ..pages.history import HistoryEntry
 
 
 class LapSubmissionService:
@@ -24,12 +27,12 @@ class LapSubmissionService:
     async def submit_lap(
         self,
         *,
-        api_client: Any,
-        config: Any,
-        card: Any,
-        session: Any,
-        lap: Any,
-        history_entry: Any,
+        api_client: APIClient,
+        config: AppConfig,
+        card: LapCard,
+        session: SessionData,
+        lap: LapData,
+        history_entry: HistoryEntry,
         pb_was_new: Optional[bool],
         post_to_discord: Callable[..., Awaitable[None]],
     ) -> None:
@@ -105,10 +108,10 @@ class LapSubmissionService:
     async def post_to_discord(
         self,
         *,
-        config: Any,
-        discord_notifier: Any,
-        session: Any,
-        lap: Any,
+        config: AppConfig,
+        discord_notifier: DiscordNotifier,
+        session: SessionData,
+        lap: LapData,
         steam_id: str,
         steam_name: Optional[str] = None,
         pb_was_new: Optional[bool] = None,

@@ -30,6 +30,7 @@ from ..models import (
     HYBRID_SPIKE_SESSION_THRESHOLD,
     MIN_FULL_LAP_HUNDREDM,
     KNOWN_HYBRID_CARS,
+    is_hybrid_car,
     SESSION_TYPE_MAP,
     PRACTICE_LIKE,
     RACE_LIKE,
@@ -98,7 +99,7 @@ class LogParser:
         self.on_session_end = on_session_end
         self.on_session_restart = on_session_restart
         self._session_manager = session_manager or SharedSessionManager()
-        
+
         # Track last emitted game status to prevent duplicate events
         self._last_emitted_game_status: Optional[bool] = None
         self._session_active_from_logs: bool = False
@@ -140,6 +141,16 @@ class LogParser:
         self._pending_compound_confirmed: set[int] = set()
 
         self._compile_patterns()
+
+    # ── Private helpers ─────────────────────────────────────────────────
+
+    def _get_shm_hybrid_flags(self) -> tuple[Optional[bool], Optional[bool]]:
+        """Read ``has_ers`` / ``has_kers`` from the shared session, if set.
+
+        Returns ``(has_ers, has_kers)`` — both ``None`` when SHM static
+        data has not yet been captured.
+        """
+        return self._session_manager.get_hybrid_flags()
 
     # ── Pattern compilation ───────────────────────────────────────────────────
 
@@ -567,7 +578,8 @@ class LogParser:
             self.context.current_car = car
             self.context.car_uuid = car_uuid
             self.context.player_car_uuids.add(car_uuid)
-            self.context.car_is_hybrid = car in KNOWN_HYBRID_CARS
+            ers, kers = self._get_shm_hybrid_flags()
+            self.context.car_is_hybrid = is_hybrid_car(car, has_ers_from_shm=ers, has_kers_from_shm=kers)
 
             if car_uuid in self.context.car_meta:
                 meta = self.context.car_meta[car_uuid]
@@ -870,8 +882,9 @@ class LogParser:
         self.context.current_track = track
         self.context.current_car = raw_car
         self.context.weather = raw_weather
-        self.context.car_is_hybrid = raw_car in KNOWN_HYBRID_CARS
-        
+        ers, kers = self._get_shm_hybrid_flags()
+        self.context.car_is_hybrid = is_hybrid_car(raw_car, has_ers_from_shm=ers, has_kers_from_shm=kers)
+
         # Preserve setup values across session reset
         preserved_setup_values = self.context.setup_values.copy()
         self.context.reset_for_new_session()

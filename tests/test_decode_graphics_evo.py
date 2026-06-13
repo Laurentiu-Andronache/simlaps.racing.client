@@ -67,20 +67,16 @@ class TestDecodeGraphicsEvoStructure:
 
         assert decode_graphics_evo(small) is None
 
-    def test_zero_buffer_rejected_via_npos_sanity(self):
-        """All-zero buffer reads npos=0.0 which is technically in range,
-        so the decoder still returns a dict — but every other field is 0
-        and the analyzer sees has_authoritative_progress=True with
-        npos=0.0. This is acceptable; bigger sanity is enforced by the
-        struct's ``status`` field downstream. Test documents current
-        behaviour so refactors don't accidentally tighten the gate.
+    def test_zero_buffer_rejected_via_sanity(self):
+        """All-zero buffer is rejected because sanity checks require
+        total_drivers >= 1 and max_gears >= 1 (both read as 0 from zeros).
+        This ensures garbage/uninitialized buffers don't produce results.
         """
         zeros = b"\x00" * GRAPHICS_EVO_MIN_SIZE
 
         result = decode_graphics_evo(zeros)
 
-        assert result is not None
-        assert result["npos"] == 0.0
+        assert result is None
 
     def test_garbage_npos_rejected(self):
         """A buffer with NaN at the npos offset is rejected so analyzer

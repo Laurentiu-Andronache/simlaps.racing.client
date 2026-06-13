@@ -57,16 +57,18 @@ class SimLapsApp:
     def __init__(self, page: ft.Page):
         self.page = page
         log_info(Component.APP, "Initializing SimLapsApp")
-        self._setup_page()
         
-        # Store app instance reference for components
-        page._app_instance = self
-        
-        # Core services
+        # Core services — load config BEFORE page setup so it can use settings
         log_info(Component.APP, "Loading configuration")
         self._config_manager = get_config_manager()
         self._config = self._config_manager.load()
         log_info(Component.APP, "Configuration loaded", server=self._config.server_url)
+
+        # Page setup (uses self._config for window size)
+        self._setup_page()
+        
+        # Store app instance reference for components
+        page._app_instance = self
         
         self._api_client: Optional[APIClient] = None
         self._log_parser: Optional[LogParser] = None
@@ -113,50 +115,41 @@ class SimLapsApp:
         log_info(Component.APP, "Initialization complete")
     
     def _setup_page(self):
-        """Configure Flet page."""
+        """Configure Flet page.
+
+        Uses config values for window size (user-configurable via Settings).
+        Fails fast on errors — a broken page config should surface immediately
+        rather than letting the app limp along in a partially-configured state.
+        """
         log_debug(Component.APP, "Setting up Flet page")
-        try:
-            self.page.title = "SimLaps Telemetry"
-            self.page.width = 500
-            self.page.height = 700
-            self.page.bgcolor = "#0f0f1a"
-            self.page.padding = 0
-            self.page.spacing = 0
-            log_debug(Component.APP, "Flet page properties set")
-        except Exception as e:
-            log_exception(Component.APP, "Error setting up Flet page", e)
-        
-        # Set window close handler
-        log_debug(Component.APP, "Setting up window close handler")
-        try:
-            self.page.on_close = self._on_window_close
-            log_debug(Component.APP, "Window close handler set")
-        except Exception as e:
-            log_exception(Component.APP, "Error setting window close handler", e)
-        
-        # Set window icon
-        log_debug(Component.APP, "Setting up window icon")
-        try:
-            icon_path = self._get_icon_path()
-            if icon_path:
-                self.page.window.icon = icon_path
-                log_debug(Component.APP, "Window icon set", icon_path=icon_path)
-            else:
-                log_debug(Component.APP, "No icon file found")
-        except Exception as e:
-            log_exception(Component.APP, "Error setting window icon", e)
-        
+
+        self.page.title = "SimLaps Telemetry"
+        self.page.width = self._config.window_width
+        self.page.height = self._config.window_height
+        self.page.bgcolor = "#0f0f1a"
+        self.page.padding = 0
+        self.page.spacing = 0
+        log_debug(Component.APP, "Flet page properties set")
+
+        # Window close handler
+        self.page.on_close = self._on_window_close
+        log_debug(Component.APP, "Window close handler set")
+
+        # Window icon (best-effort — icon file is optional)
+        icon_path = self._get_icon_path()
+        if icon_path:
+            self.page.window.icon = icon_path
+            log_debug(Component.APP, "Window icon set", icon_path=icon_path)
+        else:
+            log_debug(Component.APP, "No icon file found")
+
         # Dark theme
-        log_debug(Component.APP, "Setting up dark theme")
-        try:
-            self.page.theme_mode = ft.ThemeMode.DARK
-            self.page.theme = ft.Theme(
-                color_scheme_seed="#7c3aed",
-            )
-            log_debug(Component.APP, "Dark theme applied")
-        except Exception as e:
-            log_exception(Component.APP, "Error setting up theme", e)
-        
+        self.page.theme_mode = ft.ThemeMode.DARK
+        self.page.theme = ft.Theme(
+            color_scheme_seed="#7c3aed",
+        )
+        log_debug(Component.APP, "Dark theme applied")
+
         log_info(Component.APP, "Flet page setup complete")
     
     def _get_icon_path(self) -> Optional[str]:
@@ -371,14 +364,6 @@ class SimLapsApp:
             return self._history_entries[index]
         return None
 
-    def _get_or_create_service(self, attr_name: str, factory):
-        """Get a lazily initialized service instance (supports __new__-based tests)."""
-        service = getattr(self, attr_name, None)
-        if service is None:
-            service = factory()
-            setattr(self, attr_name, service)
-        return service
-
     def _on_retry_lap(self, card: LapCard):
         """Retry submission for a failed lap card."""
         if not card.data.lap.is_valid and not self._config.submit_invalid_laps:
@@ -407,17 +392,20 @@ class SimLapsApp:
             lap_number=lap.lap_number,
         )
         try:
-            processing_service = self._get_or_create_service(
-                "_lap_processing_service",
-                LapProcessingService,
-            )
-
-            await processing_service.handle_lap_complete(
-                app=self,
+            updated_track = await self._lap_processing_service.handle_lap_complete(
                 session=session,
                 lap=lap,
+                home_page=self._home_page,
+                telemetry_capture=self._telemetry_capture,
+                config=self._config,
+                session_manager=self._session_manager,
+                pb_cache=self._pb_cache,
+                history_entries=self._history_entries,
+                submit_lap=self._submit_lap,
                 create_history_entry=HistoryEntry,
             )
+            if updated_track is not None:
+                self._current_track_name = updated_track
         except Exception as e:
             log_exception(Component.APP, "_on_lap_complete failed", e)
     
@@ -430,12 +418,7 @@ class SimLapsApp:
         pb_was_new: Optional[bool] = None,
     ):
         """Submit a lap to the server."""
-        submission_service = self._get_or_create_service(
-            "_lap_submission_service",
-            LapSubmissionService,
-        )
-
-        await submission_service.submit_lap(
+        await self._lap_submission_service.submit_lap(
             api_client=self._api_client,
             config=self._config,
             card=card,
@@ -455,12 +438,7 @@ class SimLapsApp:
         pb_was_new: Optional[bool] = None,
     ):
         """Post lap to Discord if configured and meets criteria."""
-        submission_service = self._get_or_create_service(
-            "_lap_submission_service",
-            LapSubmissionService,
-        )
-
-        await submission_service.post_to_discord(
+        await self._lap_submission_service.post_to_discord(
             config=self._config,
             discord_notifier=self._discord_notifier,
             session=session,
@@ -528,12 +506,7 @@ class SimLapsApp:
     
     async def _start_telemetry_capture(self):
         """Start telemetry capture when game session begins."""
-        lifecycle_service = self._get_or_create_service(
-            "_telemetry_lifecycle_service",
-            TelemetryLifecycleService,
-        )
-
-        await lifecycle_service.start_capture(
+        await self._telemetry_lifecycle_service.start_capture(
             telemetry_capture=self._telemetry_capture,
             home_page=self._home_page,
             telemetry_enabled=self._config.telemetry_enabled,
@@ -541,12 +514,7 @@ class SimLapsApp:
     
     async def _on_telemetry_auto_stop(self, reason: str):
         """Handle automatic stop of telemetry capture (game crash/quit detected)."""
-        lifecycle_service = self._get_or_create_service(
-            "_telemetry_lifecycle_service",
-            TelemetryLifecycleService,
-        )
-
-        await lifecycle_service.handle_auto_stop(
+        await self._telemetry_lifecycle_service.handle_auto_stop(
             reason=reason,
             telemetry_capture=self._telemetry_capture,
             telemetry_analyzer=self._telemetry_analyzer,
@@ -563,12 +531,7 @@ class SimLapsApp:
                 Used when the buffer is known to be contaminated (e.g. session
                 restart while a previous run was still being recorded).
         """
-        lifecycle_service = self._get_or_create_service(
-            "_telemetry_lifecycle_service",
-            TelemetryLifecycleService,
-        )
-
-        await lifecycle_service.stop_capture(
+        await self._telemetry_lifecycle_service.stop_capture(
             reason=reason,
             discard=discard,
             telemetry_capture=self._telemetry_capture,
@@ -579,12 +542,7 @@ class SimLapsApp:
     
     async def _on_user_detected(self, steam_id: str, player_name: Optional[str]):
         """Handle user detection from log parser."""
-        bootstrap_service = self._get_or_create_service(
-            "_user_bootstrap_service",
-            UserBootstrapService,
-        )
-
-        await bootstrap_service.handle_detected_user(
+        await self._user_bootstrap_service.handle_detected_user(
             app=self,
             steam_id=steam_id,
             player_name=player_name,
@@ -593,12 +551,7 @@ class SimLapsApp:
 
     async def _bootstrap_startup_user(self, steam_id: Optional[str], steam_name: Optional[str]) -> None:
         """Handle startup-time user bootstrap from registry detection."""
-        bootstrap_service = self._get_or_create_service(
-            "_user_bootstrap_service",
-            UserBootstrapService,
-        )
-
-        await bootstrap_service.handle_startup_user(
+        await self._user_bootstrap_service.handle_startup_user(
             app=self,
             steam_id=steam_id,
             steam_name=steam_name,
@@ -635,12 +588,7 @@ class SimLapsApp:
     
     def _save_settings(self, config: AppConfig):
         """Save settings and apply changes."""
-        settings_service = self._get_or_create_service(
-            "_settings_service",
-            SettingsService,
-        )
-
-        settings_service.apply(
+        self._settings_service.apply(
             app=self,
             config=config,
             create_discord_notifier=DiscordNotifier,
@@ -686,12 +634,7 @@ class SimLapsApp:
     
     def _cleanup(self):
         """Cleanup resources before exit."""
-        lifecycle_service = self._get_or_create_service(
-            "_app_lifecycle_service",
-            AppLifecycleService,
-        )
-
-        lifecycle_service.cleanup(app=self)
+        self._app_lifecycle_service.cleanup(app=self)
 
 
 async def main(page: ft.Page):

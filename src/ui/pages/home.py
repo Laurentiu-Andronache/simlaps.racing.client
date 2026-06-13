@@ -16,6 +16,12 @@ from ..components.telemetry_status import TelemetryStatusIndicator, TelemetrySta
 from ...models import SessionData, LapData
 from ...core.api_client import SubmissionStatus
 from ...utils.config import AppConfig
+from ...utils.structured_logger import (
+    Component,
+    log_debug,
+    log_info,
+    log_exception,
+)
 from ...version import GAME_DISPLAY_NAME
 
 
@@ -399,28 +405,28 @@ class HomePage(ft.Column):
     
     def _handle_settings_click(self, e):
         """Handle Settings button click."""
-        print(f"Settings button clicked! Callback exists: {self.on_settings_click is not None}")
+        log_debug(Component.HOME, "Settings button clicked", callback_exists=self.on_settings_click is not None)
         if self.on_settings_click:
             self.on_settings_click()
         else:
-            print("No callback registered for Settings")
+            log_debug(Component.HOME, "No callback registered for Settings")
     
     def _handle_history_click(self, e):
         """Handle Submission History button click."""
-        print(f"History button clicked! Callback exists: {self.on_history_click is not None}")
+        log_debug(Component.HOME, "History button clicked", callback_exists=self.on_history_click is not None)
         if self.on_history_click:
             self.on_history_click()
         else:
-            print("No callback registered for History")
+            log_debug(Component.HOME, "No callback registered for History")
     
     def _handle_pb_cache_click(self, e):
         """Handle View PB Cache button click."""
-        print(f"PB Cache button clicked! Callback exists: {self.on_pb_cache_click is not None}")
+        log_debug(Component.HOME, "PB Cache button clicked", callback_exists=self.on_pb_cache_click is not None)
         if self.on_pb_cache_click:
-            print("Calling callback...")
+            log_debug(Component.HOME, "Calling PB Cache callback...")
             self.on_pb_cache_click()
         else:
-            print("No callback registered for PB Cache")
+            log_debug(Component.HOME, "No callback registered for PB Cache")
             # Show a message to user if no callback is set
             if self.page:
                 self.page.show_snack_bar(
@@ -432,8 +438,6 @@ class HomePage(ft.Column):
     
     def _handle_logs_click(self, e):
         """Handle Logs button click."""
-        from ...utils.structured_logger import log_info, log_exception, Component
-        
         log_info(Component.HOME, "Logs button clicked")
         try:
             from ..components.debug_logs import show_debug_logs

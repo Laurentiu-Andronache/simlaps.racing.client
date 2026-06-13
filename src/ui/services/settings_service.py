@@ -4,9 +4,17 @@ Owns apply-settings orchestration: runtime service refresh, telemetry toggles,
 and parser restart behavior.
 """
 
-from typing import Any, Callable
+from typing import Callable, TYPE_CHECKING
 
 from src.utils.structured_logger import Component, log_info
+from src.utils.config import AppConfig
+
+if TYPE_CHECKING:
+    from ..app import SimLapsApp
+    from src.core.discord_notifier import DiscordNotifier
+    from src.core.pb_cache import PBCache
+    from src.core.api_client import APIClient
+    from src.core.log_parser import LogParser
 
 
 class SettingsService:
@@ -15,12 +23,12 @@ class SettingsService:
     def apply(
         self,
         *,
-        app: Any,
-        config: Any,
-        create_discord_notifier: Callable[[str], Any],
-        get_pb_cache_for_server: Callable[[str], Any],
-        create_api_client: Callable[..., Any],
-        create_log_parser: Callable[[str], Any],
+        app: "SimLapsApp",
+        config: AppConfig,
+        create_discord_notifier: "Callable[[str], DiscordNotifier]",
+        get_pb_cache_for_server: "Callable[[str], PBCache]",
+        create_api_client: "Callable[..., APIClient]",
+        create_log_parser: "Callable[[str], LogParser]",
     ) -> None:
         """Apply new config and reconcile dependent runtime services."""
         app._config = config

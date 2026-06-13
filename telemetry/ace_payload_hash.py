@@ -88,14 +88,14 @@ def submit_payload(payload: dict, token: str) -> dict:
 # ==================== PASTE YOUR PAYLOAD & TOKEN HERE ====================
 
 payload = {
-    "testID": "A-3",
-    "replayDate": "2026-06-10",
-    "replayTime": "21:34:30",
-    "carID": "ks_ferrari_296_gtb",
-    "carPreset": "preset_gtb_mech_1",
-    "trackID": "ks_suzuka",
+    "testID": "A-4",
+    "replayDate": "2026-06-11",
+    "replayTime": "21:38:30",
+    "carID": "ks_ferrari_f40_lm",
+    "carPreset": "preset_f40lm_mech_3",
+    "trackID": "ks_imola",
     "layout": "gp",
-    "bestTimeMs": 138500,
+    "bestTimeMs": 112040,
     "steamId": "76561198321627695"
 }
 

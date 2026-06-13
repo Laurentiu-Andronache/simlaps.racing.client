@@ -2192,6 +2192,7 @@ class TelemetryAnalyzer:
             "reference_lap_num": ref_lap["lap_num"],
             "comparison_lap_num": comparison_lap["lap_num"],
             "ref_corners": ref_corners,
+            "profile_corners": track_profile.get("corners", []) if track_profile else [],
             "corner_data": corner_data,
             "corner_speeds": corner_speeds,
             "telem": track,
