@@ -15,7 +15,10 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 
 from src.core.security import is_game_running, GameProcessStatus
-from src.core.telemetry_decoder import decode_physics, decode_graphics, decode_static
+from src.core.telemetry_decoder import (
+    decode_physics, decode_graphics, decode_static,
+    PHYSICS_SHM_SIZE, GRAPHICS_SHM_SIZE, STATIC_SHM_SIZE,
+)
 from src.models import SharedSessionManager
 from src.utils.structured_logger import log_debug, log_info, log_warning, log_error, log_exception, Component
 from pathlib import Path
@@ -68,9 +71,9 @@ SHM_STATIC_NAME: str = f"{SHM_NAME_PREFIX}static"
 # OpenFileMappingW + MapViewOfFile will surface that and the region will
 # simply fail to open — capture continues with whichever regions did connect.
 REGIONS: Dict[str, tuple[str, int]] = {
-    "physics":  (SHM_PHYSICS_NAME,  1024),
-    "graphics": (SHM_GRAPHICS_NAME, 4096),
-    "static":   (SHM_STATIC_NAME,   2048),
+    "physics":  (SHM_PHYSICS_NAME,  PHYSICS_SHM_SIZE),
+    "graphics": (SHM_GRAPHICS_NAME, GRAPHICS_SHM_SIZE),
+    "static":   (SHM_STATIC_NAME,   STATIC_SHM_SIZE),
 }
 
 # Candidate Win32 object-manager paths for OpenFileMappingW.

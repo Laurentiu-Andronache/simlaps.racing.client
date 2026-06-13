@@ -42,6 +42,11 @@ class AC_FLAG_TYPE(Enum):
     AC_PENALTY_FLAG = 6
 
 
+# ── Shared-memory region sizes (used by both decoder and capture)
+PHYSICS_SHM_SIZE = 1024
+GRAPHICS_SHM_SIZE = 4096
+STATIC_SHM_SIZE = 2048
+
 GRAPHICS_STRUCT_SIZE = 2048
 STATIC_HEADER_SIZE = 404
 STATIC_STRUCT_SIZE = 820
@@ -397,6 +402,30 @@ _GRAPHICS_FIELDS = [
     ("normalized_car_position", _FLOAT, 0.0, 1.0),
 ]
 
+_STATIC_FIELDS = [
+    # ── Int fields
+    ("session", _INT, 0, 6),
+    ("starting_grip", _INT, 0, 6),
+    ("number_of_sessions", _INT, 0, 100),
+    ("num_cars", _INT, 0, 200),
+    ("sector_count", _INT, 0, 10),
+    ("max_rpm", _INT, 0, 25000),
+    # ── Float fields
+    ("amb_temp_c", _FLOAT, -50.0, 100.0),
+    ("starting_ambient_temperature_c", _FLOAT, -50.0, 100.0),
+    ("ground_temp_c", _FLOAT, -50.0, 120.0),
+    ("starting_ground_temperature_c", _FLOAT, -50.0, 120.0),
+    ("longitude", _FLOAT, -180.0, 180.0),
+    ("latitude", _FLOAT, -90.0, 90.0),
+    ("track_length_m", _FLOAT, 1.0, 30000.0),
+    ("track_spline_length", _FLOAT, 1.0, 30000.0),
+    ("max_torque", _FLOAT, 0.0, 10000.0),
+    ("max_power", _FLOAT, 0.0, 5000.0),
+    ("max_fuel", _FLOAT, 0.0, 500.0),
+    ("max_turbo_boost", _FLOAT, 0.0, 10.0),
+    ("ers_max_j", _FLOAT, 0.0, 1e9),
+]
+
 
 def _apply_field_specs(result: Dict[str, Any], specs: list) -> List[str]:
     """Apply a list of ``(name, type, lo, hi)`` specs to *result* in place.
@@ -472,6 +501,14 @@ def _sanitize_graphics_payload(result: Dict[str, Any]) -> Dict[str, Any]:
     result["quality_score"] = round(valid_core_fields / len(core_fields), 3)
     result["invalid_reasons"] = sorted(dict.fromkeys(invalid_reasons))
     result["has_authoritative_progress"] = result.get("normalized_car_position") is not None
+    return result
+
+
+def _sanitize_static_payload(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Apply field-level sanitization to a decoded static result."""
+    result["decode_source"] = result.get("_decoder")
+    invalid_reasons = _apply_field_specs(result, _STATIC_FIELDS)
+    result["invalid_reasons"] = sorted(dict.fromkeys(invalid_reasons))
     return result
 
 
@@ -1674,10 +1711,10 @@ def decode_static(data: bytes) -> Dict[str, Any]:
     """
     evo = decode_static_evo(data)
     if evo:
-        return evo
+        return _sanitize_static_payload(evo)
     legacy = decode_static_ac(data)
     if legacy:
-        return legacy
+        return _sanitize_static_payload(legacy)
     return decode_static_fallback(data)
 
 
