@@ -15,6 +15,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 
 from src.core.security import is_game_running, GameProcessStatus
+from src.core.telemetry_decoder import decode_physics, decode_graphics, decode_static
 from src.models import SharedSessionManager
 from src.utils.structured_logger import log_debug, log_info, log_warning, log_error, log_exception, Component
 from pathlib import Path
@@ -473,8 +474,6 @@ class TelemetryCapture:
 
     def _capture_frame(self, frame_num: int) -> Optional[FrameData]:
         """Capture a single frame from shared memory."""
-        from .telemetry_decoder import decode_physics, decode_graphics, decode_static
-
         frame = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "frame_number": frame_num,
@@ -695,7 +694,7 @@ class TelemetryCapture:
                     last_disconnect_check = now_mono
                     if not self._readers:
                         # All regions disconnected - check how long
-                        if hasattr(self, '_all_disconnected_since'):
+                        if self._all_disconnected_since is not None:
                             if now_mono - self._all_disconnected_since > self.DISCONNECT_TIMEOUT_SECONDS:
                                 log_warning(Component.TELEMETRY, "Disconnect timeout", timeout=f"{self.DISCONNECT_TIMEOUT_SECONDS:.1f}s")
                                 self._stop_reason = f"disconnect_timeout ({self.DISCONNECT_TIMEOUT_SECONDS:.1f}s)"

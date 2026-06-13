@@ -168,6 +168,8 @@ def detect_corners(track: List[Dict], lap_start_frame: int, lap_end_frame: int, 
         entry = window[0]
         exit_pt = window[-1]
 
+        # Average entry/exit speeds over a few frames to reduce
+        # single-point jitter on braking zones and acceleration zones.
         _N_AVG = min(3, max(1, len(window) // 3))
         entry_speed = sum(pt["speed"] for pt in window[:_N_AVG]) / _N_AVG
         exit_speed = sum(pt["speed"] for pt in window[-_N_AVG:]) / _N_AVG
@@ -222,10 +224,14 @@ def detect_profiled_corners(
         entry = window[0]
         exit_pt = window[-1]
 
+        # Average entry/exit speeds over a few frames to reduce
+        # single-point jitter on braking zones and acceleration zones.
         _N_AVG = min(3, max(1, len(window) // 3))
         entry_speed = sum(pt["speed"] for pt in window[:_N_AVG]) / _N_AVG
         exit_speed = sum(pt["speed"] for pt in window[-_N_AVG:]) / _N_AVG
 
+        # Measure segment time over a fixed lap_progress window so every lap
+        # is evaluated on the identical track section.
         m_start, m_end = _corner_measurement_window(spec)
         if has_norm_pos:
             measurement = [pt for pt in seg if m_start <= pt["lap_pos"] < m_end]

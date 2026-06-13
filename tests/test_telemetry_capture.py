@@ -189,9 +189,9 @@ class TestTelemetryCapture:
         assert frame is not None
         assert frame.physics_raw == (b'\x01' * 1024).hex()
 
-    @patch('src.core.telemetry_decoder.decode_static')
-    @patch('src.core.telemetry_decoder.decode_graphics')
-    @patch('src.core.telemetry_decoder.decode_physics')
+    @patch('src.core.telemetry_capture.decode_static')
+    @patch('src.core.telemetry_capture.decode_graphics')
+    @patch('src.core.telemetry_capture.decode_physics')
     def test_capture_frame_updates_shared_session_manager(
         self,
         mock_decode_physics,
@@ -399,7 +399,7 @@ class TestCaptureEdgeCases:
         # Reader should be removed on incomplete read
         assert "physics" not in capture._readers
 
-    @patch('src.core.telemetry_decoder.decode_physics', side_effect=Exception("Decode error"))
+    @patch('src.core.telemetry_capture.decode_physics', side_effect=Exception("Decode error"))
     def test_capture_with_decode_error(self, mock_decode):
         """Test capture when decoding fails."""
         mock_reader = MagicMock()

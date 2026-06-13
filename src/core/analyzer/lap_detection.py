@@ -7,6 +7,8 @@ from src.utils.structured_logger import log_debug, Component
 
 def _detect_laps_by_norm_pos(track: List[Dict], hz: float = 1.0) -> Optional[List[int]]:
     """Detect laps using normalized spline position."""
+    # Use a conservative minimum based on sample rate - 10 frames at 10Hz = 1 second minimum
+    # This prevents false positives from noise in the data
     min_lap_frames = max(10, int(round(1.0 * hz)))
     boundaries = []
     prev_norm = None
@@ -26,6 +28,8 @@ def _detect_laps_by_norm_pos(track: List[Dict], hz: float = 1.0) -> Optional[Lis
 
 def _detect_laps_by_position(track: List[Dict], hz: float = 1.0, warmup_time_s: float = 40.0) -> List[int]:
     """Fallback lap detection using position."""
+    # Use a conservative minimum based on sample rate - 10 frames at 10Hz = 1 second minimum
+    # This prevents false positives from noise in the data
     min_lap_frames = max(10, int(round(1.0 * hz)))
     warmup_frames = max(0, int(round(warmup_time_s * hz)))
 
@@ -63,6 +67,7 @@ def _detect_laps_by_timing_state(track: List[Dict], hz: float = 1.0) -> Optional
         last_laptime = pt.get("last_laptime_ms")
         if last_laptime is None:
             continue
+        # Detect when last_laptime changes (lap completion event)
         if prev_last_laptime is not None and last_laptime != prev_last_laptime:
             frame = pt["frame"]
             if not boundaries or (frame - boundaries[-1]) >= min_lap_frames:

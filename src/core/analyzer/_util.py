@@ -155,7 +155,23 @@ def _decide_analysis_mode(
     authoritative_progress_ratio: float,
     plausible_frame_ratio: float,
 ) -> Tuple[str, bool, bool]:
-    """Decide whether to run full coaching or the diagnostic stub."""
+    """Decide whether to run full coaching or the diagnostic stub.
+
+    Ideally we have authoritative track progress from the graphics SHM
+    region (>= 60% coverage). Until the AC Evo ``SPageFileGraphicEvo``
+    decoder exists, live sessions fall back to physics-derived
+    dead-reckoning ``normalized_car_position``. That signal is still
+    accurate enough for lap-over-lap coaching when physics frames are
+    consistently plausible across the whole capture (>= 95% coverage with
+    ``frame_quality`` >= 0.66).
+
+    Returns ``(mode, has_authoritative, has_high_plausible)`` — the two
+    booleans are exposed so callers can choose tailored status messages
+    without re-running the comparison.
+
+    Once ``decode_graphics_evo`` lands and ``authoritative_progress_ratio``
+    becomes the norm, the plausible-physics fallback degrades to a no-op.
+    """
     has_authoritative = authoritative_progress_ratio >= _AUTHORITATIVE_PROGRESS_THRESHOLD
     has_high_plausible = plausible_frame_ratio >= _HIGH_PLAUSIBLE_FALLBACK
     mode = "full" if (has_authoritative or has_high_plausible) else "diagnostic"
@@ -202,7 +218,11 @@ def _profile_corner_sanity_notes(laps: List[Dict]) -> List[str]:
 # ── Corner measurement window ─────────────────────────────────────────────
 
 def _corner_measurement_window(spec: Dict[str, Any]) -> Tuple[float, float]:
-    """Return a fixed lap_progress range centred on the corner profile."""
+    """Return a fixed lap_progress range centred on the corner profile.
+
+    The window is clamped to the corner profile bounds so that braking
+    zones and adjacent straights never inflate the segment time delta.
+    """
     center = (spec["start"] + spec["end"]) / 2.0
     return (
         max(spec["start"], center - _CORNER_MEASUREMENT_WINDOW_BEFORE),
@@ -219,7 +239,12 @@ def _find_frame_index(track: List[Dict], frame: int) -> int:
 
 
 def _trend_direction(values: List[float], threshold: float) -> str:
-    """Classify a per-lap series as RISING / FALLING / FLAT."""
+    """Classify a per-lap series as RISING / FALLING / FLAT.
+
+    Uses the per-step delta against ``threshold``. A series is only flagged
+    monotonic if every step moves in the same direction beyond the threshold;
+    otherwise it is FLAT. Needs at least 3 laps to be meaningful.
+    """
     if len(values) < 3:
         return "FLAT"
     diffs = [values[i + 1] - values[i] for i in range(len(values) - 1)]
@@ -449,7 +474,13 @@ def format_car_state(state: Optional[Dict]) -> str:
 
 
 def balance_hint(state: Optional[Dict]) -> str:
-    """Rough balance hint (understeer/oversteer/neutral) from per-point telemetry."""
+    """Rough balance hint (understeer/oversteer/neutral) from per-point telemetry.
+
+    Derived from front-vs-rear wheel slip ratio, steering angle, and yaw rate:
+    - understeer: front slip > rear slip * 1.15 with meaningful steering but low yaw
+    - oversteer: rear slip > front slip * 1.15 with significant yaw rate
+    - neutral: neither condition met
+    """
     if not state:
         return "unknown"
     slips = [float(state.get(f"slip_{x}", 0) or 0) for x in ["fl", "fr", "rl", "rr"]]
