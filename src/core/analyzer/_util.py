@@ -375,8 +375,8 @@ def format_car_state(state: Optional[Dict]) -> str:
     if not state:
         return "No data"
 
-    abs_active = "YES" if state.get("abs", 0) > 0.5 else "no"
-    tc_active = "YES" if state.get("tc", 0) > 0.5 else "no"
+    abs_active = "YES" if (state.get("abs", 0) or 0) > 0.5 else "no"
+    tc_active = "YES" if (state.get("tc", 0) or 0) > 0.5 else "no"
 
     steer_rad = float(state.get("steer", 0) or 0)
     steer_deg = steer_rad * (180.0 / math.pi)

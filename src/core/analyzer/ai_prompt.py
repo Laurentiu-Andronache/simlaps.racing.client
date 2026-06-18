@@ -859,10 +859,10 @@ async def generate_ai_prompt(
         lap_track = lap.get("track", [])
 
         # Collect ride height and pitch data (filter <1mm — likely uninitialized SHM in AC Evo EA)
-        front_heights = [pt.get("ride_height_front", 0) for pt in lap_track if pt.get("ride_height_front", 0) > 1.0]
-        rear_heights = [pt.get("ride_height_rear", 0) for pt in lap_track if pt.get("ride_height_rear", 0) > 1.0]
-        pitch_values = [pt.get("pitch", 0) for pt in lap_track if pt.get("pitch", 0) != 0]
-        air_densities = [pt.get("air_density", 0) for pt in lap_track if pt.get("air_density", 0) > 0]
+        front_heights = [pt.get("ride_height_front", 0) for pt in lap_track if (pt.get("ride_height_front", 0) or 0) > 1.0]
+        rear_heights = [pt.get("ride_height_rear", 0) for pt in lap_track if (pt.get("ride_height_rear", 0) or 0) > 1.0]
+        pitch_values = [pt.get("pitch", 0) for pt in lap_track if (pt.get("pitch", 0) or 0) != 0]
+        air_densities = [pt.get("air_density", 0) for pt in lap_track if (pt.get("air_density", 0) or 0) > 0]
 
         if front_heights and rear_heights:
             avg_front = sum(front_heights) / len(front_heights)
@@ -1009,7 +1009,7 @@ async def generate_ai_prompt(
                 ]
 
                 # Sample brake bias during braking phase
-                braking_pts = [pt for pt in corner_track if pt.get("brake", 0) > 0.3]
+                braking_pts = [pt for pt in corner_track if (pt.get("brake", 0) or 0) > 0.3]
                 if braking_pts:
                     avg_bias = sum(pt.get("brake_bias", 0) or 0 for pt in braking_pts) / len(braking_pts)
                     if avg_bias > 0:

@@ -1516,6 +1516,7 @@ class LogParser:
         if "END_SESSION car" in line and self.context.car_uuid:
             if self.context.car_uuid in line:
                 log_debug(Component.LOG_PARSER, "[SESSION] END_SESSION for player car — finalising")
+                self._finalise_current_session()
         return False
 
     def _process_setup(self, line: str) -> None:
@@ -1713,6 +1714,7 @@ class LogParser:
                             self.context = LogContext()
                             self.current_session = None
                             self._emit_callbacks = True
+                            self._last_emitted_game_status = None
                             await self._emit_status("New game session log detected …")
                             self.log_path = _latest
                             _restart = True
@@ -1730,6 +1732,7 @@ class LogParser:
                         self.context = LogContext()
                         self.current_session = None
                         self._emit_callbacks = True
+                        self._last_emitted_game_status = None
                         await self._emit_status("Log file reset — restarting …")
                         fh.seek(0)
 

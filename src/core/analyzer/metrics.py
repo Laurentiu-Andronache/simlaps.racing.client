@@ -41,38 +41,38 @@ def analyze_corner_phases(
     # Brake onset
     brake_onset_dt = None
     for pt in reversed(approach):
-        if pt.get("brake", 0) >= BRAKE_THRESH:
+        if (pt.get("brake", 0) or 0) >= BRAKE_THRESH:
             brake_onset_dt = (corner_start - pt["frame"]) / hz
         else:
             if brake_onset_dt is not None:
                 break
     if brake_onset_dt is None:
-        if corner_zone and corner_zone[0].get("brake", 0) >= BRAKE_THRESH:
+        if corner_zone and (corner_zone[0].get("brake", 0) or 0) >= BRAKE_THRESH:
             brake_onset_dt = 0.0
 
     # Turn-in
     turn_in_dt = None
     for pt in reversed(approach):
-        if abs(pt.get("steer", 0)) >= STEER_THRESH:
+        if abs(pt.get("steer", 0) or 0) >= STEER_THRESH:
             turn_in_dt = (corner_start - pt["frame"]) / hz
         else:
             if turn_in_dt is not None:
                 break
     if turn_in_dt is None:
-        if corner_zone and abs(corner_zone[0].get("steer", 0)) >= STEER_THRESH:
+        if corner_zone and abs(corner_zone[0].get("steer", 0) or 0) >= STEER_THRESH:
             turn_in_dt = 0.0
 
     # Gas-on
     gas_on_dt = None
     for pt in exit_zone:
-        gas_val = pt.get("gas_percent", pt.get("gas", 0))
+        gas_val = pt.get("gas_percent", pt.get("gas", 0)) or 0
         if gas_val >= GAS_THRESH:
             gas_on_dt = (pt["frame"] - apex_frame) / hz
             break
 
     # Trail braking
     entry_to_apex = [pt for pt in corner_zone if pt["frame"] <= apex_frame]
-    trail_brake_frames = sum(1 for pt in entry_to_apex if pt.get("brake", 0) > 0.05)
+    trail_brake_frames = sum(1 for pt in entry_to_apex if (pt.get("brake", 0) or 0) > 0.05)
     trail_brake_pct = trail_brake_frames / max(len(entry_to_apex), 1)
 
     # Coast frames
@@ -83,14 +83,14 @@ def analyze_corner_phases(
     ]
     coast_frames = sum(
         1 for pt in apex_vicinity
-        if (pt.get("gas_percent", pt.get("gas", 0)) < 0.10
-            and pt.get("brake", 0) < 0.10)
+        if ((pt.get("gas_percent", pt.get("gas", 0)) or 0) < 0.10
+            and (pt.get("brake", 0) or 0) < 0.10)
     )
 
     # Peak braking G
     peak_brake_g = 0.0
     for pt in approach + entry_to_apex:
-        long_g = abs(pt.get("acc_g_z", 0))
+        long_g = abs(pt.get("acc_g_z", 0) or 0)
         if long_g > peak_brake_g:
             peak_brake_g = long_g
 
@@ -127,14 +127,14 @@ def analyze_grip_utilization(
     brake_count = 0
 
     for pt in corner_pts:
-        lat_g = abs(pt.get("acc_g_x", 0))
-        long_g = abs(pt.get("acc_g_z", 0))
+        lat_g = abs(pt.get("acc_g_x", 0) or 0)
+        long_g = abs(pt.get("acc_g_z", 0) or 0)
         total_g = math.sqrt(lat_g ** 2 + long_g ** 2)
         total_gs.append(total_g)
         lat_gs.append(lat_g)
         long_gs.append(long_g)
 
-        if pt.get("brake", 0) > 0.05:
+        if (pt.get("brake", 0) or 0) > 0.05:
             brake_count += 1
             if lat_g > 0.3:
                 combined_brake_count += 1
@@ -162,7 +162,7 @@ def analyze_lap_tyre_state(lap_track: List[Dict]) -> Optional[Dict]:
     if not lap_track:
         return None
 
-    corner_frames = [pt for pt in lap_track if abs(pt.get("acc_g_x", 0.0)) > 0.5]
+    corner_frames = [pt for pt in lap_track if abs(pt.get("acc_g_x", 0.0) or 0.0) > 0.5]
 
     temps_fl = [pt.get("tyre_temp_fl", 0.0) for pt in lap_track if pt.get("tyre_temp_fl") is not None]
     temps_fr = [pt.get("tyre_temp_fr", 0.0) for pt in lap_track if pt.get("tyre_temp_fr") is not None]
@@ -185,8 +185,8 @@ def analyze_lap_tyre_state(lap_track: List[Dict]) -> Optional[Dict]:
     end_dirty = _avg([float(lap_track[-1].get(k, 0.0) or 0.0) for k in dirty_keys])
 
     if corner_frames:
-        peak_lat_g = max(abs(pt.get("acc_g_x", 0.0)) for pt in corner_frames)
-        avg_lat_g = _avg([abs(pt.get("acc_g_x", 0.0)) for pt in corner_frames])
+        peak_lat_g = max(abs(pt.get("acc_g_x", 0.0) or 0.0) for pt in corner_frames)
+        avg_lat_g = _avg([abs(pt.get("acc_g_x", 0.0) or 0.0) for pt in corner_frames])
         slip_angle_keys = ("slip_angle_fl", "slip_angle_fr", "slip_angle_rl", "slip_angle_rr")
         peak_slip_angle = max(
             (max(abs(pt.get(k, 0.0) or 0.0) for k in slip_angle_keys) for pt in corner_frames),
@@ -419,7 +419,7 @@ def analyze_suspension(laps: List[Dict], ref_corners: List[Dict]) -> Dict[str, A
             for lap in laps:
                 corner_pts = [
                     pt for pt in lap.get("track", [])
-                    if spec["start"] <= pt.get("lap_progress", -1) < spec["end"]
+                    if spec["start"] <= (pt.get("lap_progress") if pt.get("lap_progress") is not None else -1) < spec["end"]
                 ]
                 if len(corner_pts) < 3:
                     continue
@@ -445,7 +445,10 @@ def analyze_suspension(laps: List[Dict], ref_corners: List[Dict]) -> Dict[str, A
         apex_sus: Dict[int, Dict[str, float]] = {}
         for lap in laps:
             for pt in lap.get("track", []):
-                if spec["start"] <= pt.get("lap_progress", -1) < spec["end"]:
+                progress = pt.get("lap_progress")
+                if progress is None:
+                    progress = -1
+                if spec["start"] <= progress < spec["end"]:
                     for w in ("fl", "fr", "rl", "rr"):
                         v = pt.get(f"sus_{w}", 0)
                         if isinstance(v, (int, float)) and v > 0:
@@ -456,7 +459,7 @@ def analyze_suspension(laps: List[Dict], ref_corners: List[Dict]) -> Dict[str, A
                 vals = [
                     apex_sus[ln].get(w, 0)
                     for ln in apex_sus
-                    if apex_sus[ln].get(w, 0) > 0
+                    if (apex_sus[ln].get(w, 0) or 0) > 0
                 ]
                 if vals and max(vals) - min(vals) > 0.005:
                     notes["travel_delta_notes"].append(
@@ -470,7 +473,10 @@ def analyze_suspension(laps: List[Dict], ref_corners: List[Dict]) -> Dict[str, A
         name = spec.get("name") or f"Corner {cid}"
         for lap in laps:
             for pt in lap.get("track", []):
-                if spec["start"] <= pt.get("lap_progress", -1) < spec["end"]:
+                progress = pt.get("lap_progress")
+                if progress is None:
+                    progress = -1
+                if spec["start"] <= progress < spec["end"]:
                     cfl = pt.get("camber_fl", 0)
                     cfr = pt.get("camber_fr", 0)
                     if isinstance(cfl, (int, float)) and isinstance(cfr, (int, float)):

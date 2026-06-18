@@ -23,7 +23,7 @@ def _detect_profiled_corners_canonical(
     for spec in profile.get("corners", []):
         window = [
             pt for pt in canonical_track
-            if spec["start"] <= pt.get("lap_progress", -1.0) < spec["end"]
+            if spec["start"] <= (pt.get("lap_progress") if pt.get("lap_progress") is not None else -1.0) < spec["end"]
         ]
         if len(window) < 4:
             continue
@@ -76,7 +76,7 @@ def _detect_profiled_corners_canonical(
         m_start, m_end = _corner_measurement_window(spec)
         measurement = [
             pt for pt in canonical_track
-            if m_start <= pt.get("lap_progress", -1.0) < m_end
+            if m_start <= (pt.get("lap_progress") if pt.get("lap_progress") is not None else -1.0) < m_end
         ]
         if len(measurement) >= 2:
             segment_time_s = max(
