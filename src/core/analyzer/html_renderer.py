@@ -178,6 +178,7 @@ def build_html_template(data_json: str) -> str:
 </header>
 <div class="container">
   <!-- Summary stats -->
+  <div id="render-error" style="display:none;background:rgba(239,68,68,0.15);border:1px solid rgba(239,68,68,0.5);border-radius:8px;padding:12px 14px;margin-bottom:16px;color:#fca5a5;line-height:1.45;"></div>
   <div class="stat-row" id="stats-row"></div>
   <div class="notice" id="analysis-notice"></div>
 
@@ -538,37 +539,52 @@ function buildDynamicsChart() {
 }
 
 /* ── Init ──────────────────────────────────────────────────── */
+function showError(msg) {
+  const el = document.getElementById('render-error');
+  if (el) { el.style.display = 'block'; el.textContent = '\u26A0 ' + msg; }
+  document.getElementById('session-info').textContent = 'Render error \u2014 check browser console';
+}
+
 window.addEventListener('DOMContentLoaded', () => {
-  renderStats();
-  const sel = document.getElementById('map-lap-select');
-  DATA.laps.forEach(l => {
-    const opt = document.createElement('option');
-    opt.value = l.lap_num;
-    opt.textContent = `Lap ${l.lap_num}${l.lap_num===DATA.best_lap_num?'*':''} (${l.lap_time_str})`;
-    sel.appendChild(opt);
-  });
-  makeLapFilters('speed-lap-filters', rebuildAll);
-  makeLapFilters('inputs-lap-filters', rebuildAll);
-  makeLapFilters('dynamics-lap-filters', rebuildAll);
-  drawTrackMap(); buildSpeedChart(); buildCornerChart(); buildCornerTable(); buildInputsChart(); buildDynamicsChart();
-  const mapCanvas = document.getElementById('track-canvas');
-  const mapTip = document.getElementById('map-tooltip');
-  mapCanvas.addEventListener('mousemove', e => {
-    const rect = mapCanvas.getBoundingClientRect();
-    const scaleX = mapCanvas.width / rect.width, scaleY = mapCanvas.height / rect.height;
-    const mx = (e.clientX - rect.left) * scaleX, my = (e.clientY - rect.top) * scaleY;
-    const hits = window._cornerHits || [];
-    let found = null;
-    for (const h of hits) { if (Math.hypot(mx - h.px, my - h.pz) < 10) { found = h; break; } }
-    if (found) {
-      mapTip.textContent = found.name ? `C${found.num}: ${found.name}` : `Corner ${found.num}`;
-      const wrapRect = mapCanvas.parentElement.getBoundingClientRect();
-      mapTip.style.left = (e.clientX - wrapRect.left + 14) + 'px';
-      mapTip.style.top  = (e.clientY - wrapRect.top  - 10) + 'px';
-      mapTip.style.display = 'block';
-    } else { mapTip.style.display = 'none'; }
-  });
-  mapCanvas.addEventListener('mouseleave', () => { mapTip.style.display = 'none'; });
+  try {
+    if (typeof Chart === 'undefined') {
+      showError('Chart.js library failed to load from CDN. Check your internet connection.');
+      return;
+    }
+    renderStats();
+    const sel = document.getElementById('map-lap-select');
+    DATA.laps.forEach(l => {
+      const opt = document.createElement('option');
+      opt.value = l.lap_num;
+      opt.textContent = `Lap ${l.lap_num}${l.lap_num===DATA.best_lap_num?'*':''} (${l.lap_time_str})`;
+      sel.appendChild(opt);
+    });
+    makeLapFilters('speed-lap-filters', rebuildAll);
+    makeLapFilters('inputs-lap-filters', rebuildAll);
+    makeLapFilters('dynamics-lap-filters', rebuildAll);
+    drawTrackMap(); buildSpeedChart(); buildCornerChart(); buildCornerTable(); buildInputsChart(); buildDynamicsChart();
+    const mapCanvas = document.getElementById('track-canvas');
+    const mapTip = document.getElementById('map-tooltip');
+    mapCanvas.addEventListener('mousemove', e => {
+      const rect = mapCanvas.getBoundingClientRect();
+      const scaleX = mapCanvas.width / rect.width, scaleY = mapCanvas.height / rect.height;
+      const mx = (e.clientX - rect.left) * scaleX, my = (e.clientY - rect.top) * scaleY;
+      const hits = window._cornerHits || [];
+      let found = null;
+      for (const h of hits) { if (Math.hypot(mx - h.px, my - h.pz) < 10) { found = h; break; } }
+      if (found) {
+        mapTip.textContent = found.name ? `C${found.num}: ${found.name}` : `Corner ${found.num}`;
+        const wrapRect = mapCanvas.parentElement.getBoundingClientRect();
+        mapTip.style.left = (e.clientX - wrapRect.left + 14) + 'px';
+        mapTip.style.top  = (e.clientY - wrapRect.top  - 10) + 'px';
+        mapTip.style.display = 'block';
+      } else { mapTip.style.display = 'none'; }
+    });
+    mapCanvas.addEventListener('mouseleave', () => { mapTip.style.display = 'none'; });
+  } catch (e) {
+    showError('JavaScript error: ' + (e.message || e));
+    console.error(e);
+  }
 });
 </script>
 </body>
