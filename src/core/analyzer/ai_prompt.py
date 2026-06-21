@@ -15,12 +15,15 @@ from src.core.analyzer.metrics import (
     analyze_electronics_per_lap,
     analyze_brake_thermals,
     analyze_suspension,
+    analyze_steering_smoothness,
+    analyze_throttle_exit,
 )
 from src.core.analyzer._util import (
     variation_label,
     classify_corner_issue,
     format_car_state,
     balance_hint,
+    _trend_direction,
 )
 from src.utils.structured_logger import log_debug, Component
 
@@ -49,7 +52,6 @@ async def generate_ai_prompt(
     track_label = data.get("track_label") or data.get("track_name") or "Unknown Track"
     ref_corners = data.get("ref_corners", [])
     corner_speeds = data.get("corner_speeds", {})
-    corner_data_map = data.get("corner_data", {})
     analysis_mode = data.get("analysis_mode", "diagnostic")
     analysis_confidence = data.get("analysis_confidence", "low")
     analysis_notes = data.get("analysis_notes", [])
@@ -124,6 +126,8 @@ async def generate_ai_prompt(
             "Limit setup advice to tyre pressures only. Focus on driving technique."
         )
     lines.append("")
+    lines.append(f"NOTE: Telemetry sampled at {hz}Hz. Timing values resolve to {1/hz:.2f}s — differences below this are noise.")
+    lines.append("")
 
     # ── Session context
     lines.append("SESSION CONTEXT:")
@@ -136,6 +140,21 @@ async def generate_ai_prompt(
     lines.append(f"- Confidence:     {analysis_confidence}")
     lines.append(f"- Reference lap:  #{reference_lap_num}")
     lines.append(f"- Compare lap:    #{comparison_lap_num}")
+    # Compute average track and air temps across all laps
+    _all_road_temps: List[float] = []
+    _all_air_temps: List[float] = []
+    for lap in laps:
+        for pt in lap.get("track", []):
+            rt = pt.get("road_temp")
+            at = pt.get("air_temp")
+            if isinstance(rt, (int, float)) and rt > 0:
+                _all_road_temps.append(float(rt))
+            if isinstance(at, (int, float)) and at > 0:
+                _all_air_temps.append(float(at))
+    if _all_road_temps:
+        lines.append(f"- Track temp:     {sum(_all_road_temps)/len(_all_road_temps):.0f}°C")
+    if _all_air_temps:
+        lines.append(f"- Air temp:       {sum(_all_air_temps)/len(_all_air_temps):.0f}°C")
     if analysis_notes:
         lines.append("")
         lines.append("ANALYSIS NOTES:")
@@ -158,6 +177,17 @@ async def generate_ai_prompt(
     lines.append(f"- Authoritative progress coverage: {authoritative_progress_ratio:.0%}")
     lines.append(f"- Plausible physics coverage:      {plausible_frame_ratio:.0%}")
 
+    # ── Lap time progression trend
+    _lap_times = [lap["lap_time_s"] for lap in laps if lap.get("lap_time_s")]
+    if len(_lap_times) >= 3:
+        _trend_raw = _trend_direction(_lap_times, threshold=0.15)
+        # Map _trend_direction output: FALLING lap times = improving, RISING = degrading, FLAT = consistent
+        _trend_label = {"FALLING": "improving", "RISING": "degrading", "FLAT": "consistent"}.get(_trend_raw, _trend_raw.lower())
+        _time_strs = " → ".join(f"{t:.1f}" if isinstance(t, (int, float)) else str(t) for t in _lap_times[:8])
+        if len(_lap_times) > 8:
+            _time_strs += " …"
+        lines.append(f"- Lap times: {_time_strs}  (trend: {_trend_label})")
+
     # ── Fuel consumption summary (from telemetry)
     laps_with_fuel = [lap for lap in laps if lap.get('fuel_used') is not None]
     if laps_with_fuel:
@@ -166,6 +196,14 @@ async def generate_ai_prompt(
         total_fuel = sum(fuel_values)
         lines.append(f"- Fuel per lap (avg): {avg_fuel:.3f}L")
         lines.append(f"- Total fuel used: {total_fuel:.3f}L ({len(laps_with_fuel)} laps)")
+        # ── Estimate laps remaining from current fuel level
+        _last_lap = laps[-1]
+        _last_track = _last_lap.get("track", [])
+        if _last_track:
+            _last_fuel = _last_track[-1].get("fuel")
+            if isinstance(_last_fuel, (int, float)) and _last_fuel > 0 and avg_fuel > 0:
+                _laps_remaining = int(_last_fuel / avg_fuel)
+                lines.append(f"- Est. laps remaining: ~{_laps_remaining} (current fuel {_last_fuel:.1f}L)")
 
     lines.append("")
 
@@ -432,7 +470,9 @@ async def generate_ai_prompt(
         worst_apex_lap_num, _ = min(corners_for_lap, key=lambda item: item[1]["apex_speed"])
 
         lines.append(f"--- {name} (Corner {cid}) ---")
-        lines.append(f"  Apex speed range: {variation:.1f} km/h  {variation_label(variation)}")
+        lines.append(f"  Apex speed range: {variation:.1f} km/h (spread: {variation:.1f} km/h)  {variation_label(variation)}")
+        if variation > 5.0:
+            lines.append(f"  >> INCONSISTENT APEX SPEED: {variation:.1f} km/h spread across laps")
 
         lap_speed_strs = [f"Lap {ln}: {spd:.1f}" for ln, spd in sorted(speeds.items())]
         lines.append(f"  Apex speeds:  {',  '.join(lap_speed_strs)}")
@@ -520,6 +560,51 @@ async def generate_ai_prompt(
                 f"    Balance hint @apex (Lap {comparison_lap_num}): "
                 f"{balance_hint(slowest_apex_st)}"
             )
+
+        # ── Steering smoothness per corner (1.4)
+        _steer_data: Dict[int, List[tuple]] = {}
+        for lap in laps:
+            corner = lap_corner_map[lap["lap_num"]].get(cid)
+            if corner:
+                _ss = analyze_steering_smoothness(lap["track"], corner, hz)
+                if _ss:
+                    _steer_data.setdefault(lap["lap_num"], []).append(_ss)
+        if _steer_data:
+            lines.append("  Steering smoothness:")
+            for ln, ss_list in sorted(_steer_data.items()):
+                for _ss in ss_list:
+                    _jerk_flag = "  >> JERKY STEERING" if _ss["reversals"] > 3 else ""
+                    lines.append(
+                        f"    Lap {ln}: reversals={_ss['reversals']}  "
+                        f"peak_rate={_ss['peak_steer_rate']:.2f} rad/s  "
+                        f"avg_rate={_ss['avg_steer_rate']:.2f} rad/s  "
+                        f"smoothness={_ss['smoothness_score']:.2f}{_jerk_flag}"
+                    )
+
+        # ── Throttle exit profile per corner (1.5)
+        _throttle_data: Dict[int, List[tuple]] = {}
+        for lap in laps:
+            corner = lap_corner_map[lap["lap_num"]].get(cid)
+            if corner:
+                _te = analyze_throttle_exit(lap["track"], corner, hz)
+                if _te:
+                    _throttle_data.setdefault(lap["lap_num"], []).append(_te)
+        if _throttle_data:
+            lines.append("  Throttle exit profile:")
+            for ln, te_list in sorted(_throttle_data.items()):
+                for _te in te_list:
+                    _tfull = f"{_te['time_to_full_throttle']:.2f}s" if _te["time_to_full_throttle"] is not None else "never"
+                    _mod_flag = ""
+                    if _te["modulation_count"] > 3:
+                        _mod_flag = "  >> MODULATED THROTTLE"
+                    if _te["time_to_full_throttle"] is not None and _te["time_to_full_throttle"] > 1.5:
+                        _mod_flag = "  >> SLOW TO FULL THROTTLE"
+                    lines.append(
+                        f"    Lap {ln}: full_throttle={_tfull}  "
+                        f"variance={_te['throttle_variance']:.4f}  "
+                        f"modulation={_te['modulation_count']}  "
+                        f"profile={_te['exit_profile']}{_mod_flag}"
+                    )
 
         lines.append("")
 
@@ -756,6 +841,39 @@ async def generate_ai_prompt(
             lines.append(f"    >> {flag}")
         lines.append("")
 
+    # ── Theoretical best lap — assemble best segment time per corner across all laps
+    _best_segments: Dict[int, float] = {}
+    for spec in ref_corners:
+        cid = spec["id"]
+        _best_seg = None
+        for lap in laps:
+            corner = lap_corner_map.get(lap["lap_num"], {}).get(cid)
+            if corner:
+                seg = corner_segment_time(corner, hz)
+                if _best_seg is None or seg < _best_seg:
+                    _best_seg = seg
+        if _best_seg is not None:
+            _best_segments[cid] = _best_seg
+    if _best_segments:
+        _theoretical_best = sum(_best_segments.values())
+        _actual_best_time = best_lap["lap_time_s"]
+        lines.append("THEORETICAL BEST LAP:")
+        lines.append(f"  Assembled best segments: {_theoretical_best:.2f}s vs actual best lap: {_actual_best_time:.2f}s")
+        lines.append(f"  Potential gain: {_actual_best_time - _theoretical_best:.2f}s")
+        lines.append("  Per-corner best segments vs best lap segments:")
+        for spec in ref_corners:
+            cid = spec["id"]
+            name = spec.get("name") or f"Corner {cid}"
+            _best_seg = _best_segments.get(cid)
+            if _best_seg is None:
+                continue
+            _bl_corner = lap_corner_map.get(best_lap["lap_num"], {}).get(cid)
+            if _bl_corner:
+                _bl_seg = corner_segment_time(_bl_corner, hz)
+                _gap = _bl_seg - _best_seg
+                lines.append(f"    C{cid} {name}: best segment {_best_seg:.2f}s  |  best lap segment {_bl_seg:.2f}s  |  gap {_gap:+.2f}s")
+        lines.append("")
+
     # ── Time-loss ranking (cap implausible deltas that are capture artifacts)
     _MAX_PLAUSIBLE_SEGMENT_DELTA = 10.0  # seconds; anything larger is almost certainly corrupt
     _SUSPECT_SEGMENT_DELTA = 3.0  # seconds; LOW-confidence corners above this are suspect
@@ -798,140 +916,142 @@ async def generate_ai_prompt(
         lines.append("     Do not recommend specific time gains for these corners — the data is unreliable.")
     lines.append("")
 
-    # ── DRS/Aerodynamics analysis
-    lines.append("AERODYNAMICS & DRS ANALYSIS:")
-    lines.append("(drs_state = DRS flap position; drs_available = activation permitted; drs_enabled = currently active)")
-    lines.append("")
-
-    # Analyze DRS usage patterns
-    drs_usage_per_lap = {}
-    for lap in laps:
-        lap_num = lap["lap_num"]
-        lap_track = lap.get("track", [])
-        drs_active_frames = 0
-        drs_available_frames = 0
-        total_frames = len(lap_track)
-
-        for pt in lap_track:
-            if pt.get("drs_enabled", False):
-                drs_active_frames += 1
-            if pt.get("drs_available", False):
-                drs_available_frames += 1
-
-        if drs_available_frames > 0:
-            drs_usage_pct = (drs_active_frames / drs_available_frames) * 100
-            drs_usage_per_lap[lap_num] = {
-                "active_frames": drs_active_frames,
-                "available_frames": drs_available_frames,
-                "usage_pct": drs_usage_pct
-            }
-
-            lines.append(f"  Lap {lap_num}: DRS used {drs_usage_pct:.1f}% of available time "
-                       f"({drs_active_frames}/{drs_available_frames} frames)")
-
-    if not drs_usage_per_lap:
-        lines.append("  No DRS usage detected or DRS not available in this session")
-    else:
-        # Check for consistent DRS usage
-        usage_values = [data["usage_pct"] for data in drs_usage_per_lap.values()]
-        if len(usage_values) > 1:
-            avg_usage = sum(usage_values) / len(usage_values)
-            usage_variance = max(usage_values) - min(usage_values)
-            if usage_variance > 20:  # Significant variation
-                lines.append(f"  >> INCONSISTENT DRS USAGE: varies by {usage_variance:.1f}% between laps")
-            elif avg_usage < 50:
-                lines.append(f"  >> LOW DRS USAGE: only {avg_usage:.1f}% of available DRS zones utilized")
-
-    lines.append("")
-
-    # ── Aerodynamics setup analysis
-    lines.append("AERODYNAMICS SETUP ANALYSIS:")
-    lines.append("(pitch = chassis angle; ride_height = ground clearance; air_density affects downforce)")
-    lines.append("")
-
-    # Analyze ride height and pitch dynamics
-    ride_height_data = []
-    pitch_data = []
-    air_density_data = []
-
-    for lap in laps:
-        lap_num = lap["lap_num"]
-        lap_track = lap.get("track", [])
-
-        # Collect ride height and pitch data (filter <1mm — likely uninitialized SHM in AC Evo EA)
-        front_heights = [pt.get("ride_height_front", 0) for pt in lap_track if (pt.get("ride_height_front", 0) or 0) > 1.0]
-        rear_heights = [pt.get("ride_height_rear", 0) for pt in lap_track if (pt.get("ride_height_rear", 0) or 0) > 1.0]
-        pitch_values = [pt.get("pitch", 0) for pt in lap_track if (pt.get("pitch", 0) or 0) != 0]
-        air_densities = [pt.get("air_density", 0) for pt in lap_track if (pt.get("air_density", 0) or 0) > 0]
-
-        if front_heights and rear_heights:
-            avg_front = sum(front_heights) / len(front_heights)
-            avg_rear = sum(rear_heights) / len(rear_heights)
-            ride_height_data.append((lap_num, avg_front, avg_rear, avg_rear - avg_front))
-
-            lines.append(f"  Lap {lap_num}: Ride Height F={avg_front:.1f}mm R={avg_rear:.1f}mm "
-                       f"Rake={(avg_rear - avg_front):.1f}mm")
-
-        if pitch_values:
-            avg_pitch = sum(pitch_values) / len(pitch_values)
-            pitch_deg = avg_pitch * (180.0 / math.pi)
-            # Store pitch range along with avg for later sensitivity check
-            min_pitch = min(pitch_values)
-            max_pitch = max(pitch_values)
-            pitch_range = max_pitch - min_pitch
-            pitch_data.append((lap_num, avg_pitch, pitch_deg, pitch_range))
-
-            # Show pitch range (important for aero balance)
-            min_pitch_deg = min_pitch * (180.0 / math.pi)
-            max_pitch_deg = max_pitch * (180.0 / math.pi)
-            lines.append(f"    Pitch: avg={pitch_deg:+.2f}° range={min_pitch_deg:+.2f}° to {max_pitch_deg:+.2f}°")
-
-        if air_densities:
-            avg_density = sum(air_densities) / len(air_densities)
-            air_density_data.append((lap_num, avg_density))
-            lines.append(f"    Air Density: {avg_density:.3f} kg/m³")
-
-    # Setup recommendations based on aero data
-    if ride_height_data:
+    # ── DRS/Aerodynamics analysis — gate on data presence
+    _any_drs_available = any(
+        any(pt.get("drs_available", False) for pt in lap.get("track", []))
+        for lap in laps
+    )
+    if _any_drs_available:
+        lines.append("AERODYNAMICS & DRS ANALYSIS:")
+        lines.append("(drs_state = DRS flap position; drs_available = activation permitted; drs_enabled = currently active)")
         lines.append("")
-        lines.append("  AERO SETUP INSIGHTS:")
 
-        # Analyze rake angle
-        rakes = [data[3] for data in ride_height_data]
-        avg_rake = sum(rakes) / len(rakes)
-        rake_variance = max(rakes) - min(rakes)
+        # Analyze DRS usage patterns
+        drs_usage_per_lap = {}
+        for lap in laps:
+            lap_num = lap["lap_num"]
+            lap_track = lap.get("track", [])
+            drs_active_frames = 0
+            drs_available_frames = 0
 
-        if avg_rake < 10.0:  # Less than 10mm rake
-            lines.append(f"    >> LOW RAKE: {avg_rake:.1f}mm average - consider increasing rear ride height "
-                       f"or lowering front for more rear downforce")
-        elif avg_rake > 50.0:  # More than 50mm rake
-            lines.append(f"    >> HIGH RAKE: {avg_rake:.1f}mm average - may be excessive drag, "
-                       f"consider reducing rake for better top speed")
+            for pt in lap_track:
+                if pt.get("drs_enabled", False):
+                    drs_active_frames += 1
+                if pt.get("drs_available", False):
+                    drs_available_frames += 1
 
-        if rake_variance > 15.0:  # More than 15mm variation
-            lines.append(f"    >> INCONSISTENT RAKE: varies by {rake_variance:.1f}mm - "
-                       f"suspension compliance issue or inconsistent ride heights")
+            if drs_available_frames > 0:
+                drs_usage_pct = (drs_active_frames / drs_available_frames) * 100
+                drs_usage_per_lap[lap_num] = {
+                    "active_frames": drs_active_frames,
+                    "available_frames": drs_available_frames,
+                    "usage_pct": drs_usage_pct
+                }
 
-        # Check for pitch sensitivity
-        if pitch_data:
-            # pitch_data now stores (lap_num, avg_pitch, pitch_deg, pitch_range)
-            pitch_ranges = [p[3] for p in pitch_data]  # Use stored pitch_range
-            avg_pitch_range = sum(pitch_ranges) / len(pitch_ranges) if pitch_ranges else 0
-            avg_pitch_range_deg = avg_pitch_range * (180.0 / math.pi)
+                lines.append(f"  Lap {lap_num}: DRS used {drs_usage_pct:.1f}% of available time "
+                           f"({drs_active_frames}/{drs_available_frames} frames)")
 
-            if avg_pitch_range_deg > 2.0:  # More than 2 degrees pitch variation
-                lines.append(f"    >> HIGH PITCH SENSITIVITY: {avg_pitch_range_deg:.1f}° variation - "
-                       f"consider stiffer springs or more aero balance")
+        if not drs_usage_per_lap:
+            lines.append("  No DRS usage detected or DRS not available in this session")
+        else:
+            # Check for consistent DRS usage
+            usage_values = [data["usage_pct"] for data in drs_usage_per_lap.values()]
+            if len(usage_values) > 1:
+                avg_usage = sum(usage_values) / len(usage_values)
+                usage_variance = max(usage_values) - min(usage_values)
+                if usage_variance > 20:  # Significant variation
+                    lines.append(f"  >> INCONSISTENT DRS USAGE: varies by {usage_variance:.1f}% between laps")
+                elif avg_usage < 50:
+                    lines.append(f"  >> LOW DRS USAGE: only {avg_usage:.1f}% of available DRS zones utilized")
 
-    lines.append("")
-    lines.append("")
+        lines.append("")
 
-    # ── Overall time analysis
-    lines.append("OVERALL TIME ANALYSIS:")
-    lines.append(f"  Best lap:  #{best_lap['lap_num']}  {best_lap['lap_time_str']}")
-    lines.append(f"  Worst lap: #{worst_lap['lap_num']}  {worst_lap['lap_time_str']}")
-    lines.append(f"  Delta: {time_diff:.2f}s")
-    lines.append("")
+    # ── Aerodynamics setup analysis — gate on data presence
+    _any_aero_data = any(
+        (pt.get("ride_height_front", 0) or 0) > 1.0 or (pt.get("pitch", 0) or 0) != 0
+        for lap in laps for pt in lap.get("track", [])
+    )
+    if _any_aero_data:
+        lines.append("AERODYNAMICS SETUP ANALYSIS:")
+        lines.append("(pitch = chassis angle; ride_height = ground clearance; air_density affects downforce)")
+        lines.append("")
+
+        # Analyze ride height and pitch dynamics
+        ride_height_data = []
+        pitch_data = []
+        air_density_data = []
+
+        for lap in laps:
+            lap_num = lap["lap_num"]
+            lap_track = lap.get("track", [])
+
+            # Collect ride height and pitch data (filter <1mm — likely uninitialized SHM in AC Evo EA)
+            front_heights = [pt.get("ride_height_front", 0) for pt in lap_track if (pt.get("ride_height_front", 0) or 0) > 1.0]
+            rear_heights = [pt.get("ride_height_rear", 0) for pt in lap_track if (pt.get("ride_height_rear", 0) or 0) > 1.0]
+            pitch_values = [pt.get("pitch", 0) for pt in lap_track if (pt.get("pitch", 0) or 0) != 0]
+            air_densities = [pt.get("air_density", 0) for pt in lap_track if (pt.get("air_density", 0) or 0) > 0]
+
+            if front_heights and rear_heights:
+                avg_front = sum(front_heights) / len(front_heights)
+                avg_rear = sum(rear_heights) / len(rear_heights)
+                ride_height_data.append((lap_num, avg_front, avg_rear, avg_rear - avg_front))
+
+                lines.append(f"  Lap {lap_num}: Ride Height F={avg_front:.1f}mm R={avg_rear:.1f}mm "
+                           f"Rake={(avg_rear - avg_front):.1f}mm")
+
+            if pitch_values:
+                avg_pitch = sum(pitch_values) / len(pitch_values)
+                pitch_deg = avg_pitch * (180.0 / math.pi)
+                # Store pitch range along with avg for later sensitivity check
+                min_pitch = min(pitch_values)
+                max_pitch = max(pitch_values)
+                pitch_range = max_pitch - min_pitch
+                pitch_data.append((lap_num, avg_pitch, pitch_deg, pitch_range))
+
+                # Show pitch range (important for aero balance)
+                min_pitch_deg = min_pitch * (180.0 / math.pi)
+                max_pitch_deg = max_pitch * (180.0 / math.pi)
+                lines.append(f"    Pitch: avg={pitch_deg:+.2f}° range={min_pitch_deg:+.2f}° to {max_pitch_deg:+.2f}°")
+
+            if air_densities:
+                avg_density = sum(air_densities) / len(air_densities)
+                air_density_data.append((lap_num, avg_density))
+                lines.append(f"    Air Density: {avg_density:.3f} kg/m³")
+
+        # Setup recommendations based on aero data
+        if ride_height_data:
+            lines.append("")
+            lines.append("  AERO SETUP INSIGHTS:")
+
+            # Analyze rake angle
+            rakes = [data[3] for data in ride_height_data]
+            avg_rake = sum(rakes) / len(rakes)
+            rake_variance = max(rakes) - min(rakes)
+
+            if avg_rake < 10.0:  # Less than 10mm rake
+                lines.append(f"    >> LOW RAKE: {avg_rake:.1f}mm average - consider increasing rear ride height "
+                           f"or lowering front for more rear downforce")
+            elif avg_rake > 50.0:  # More than 50mm rake
+                lines.append(f"    >> HIGH RAKE: {avg_rake:.1f}mm average - may be excessive drag, "
+                           f"consider reducing rake for better top speed")
+
+            if rake_variance > 15.0:  # More than 15mm variation
+                lines.append(f"    >> INCONSISTENT RAKE: varies by {rake_variance:.1f}mm - "
+                           f"suspension compliance issue or inconsistent ride heights")
+
+            # Check for pitch sensitivity
+            if pitch_data:
+                # pitch_data now stores (lap_num, avg_pitch, pitch_deg, pitch_range)
+                pitch_ranges = [p[3] for p in pitch_data]  # Use stored pitch_range
+                avg_pitch_range = sum(pitch_ranges) / len(pitch_ranges) if pitch_ranges else 0
+                avg_pitch_range_deg = avg_pitch_range * (180.0 / math.pi)
+
+                if avg_pitch_range_deg > 2.0:  # More than 2 degrees pitch variation
+                    lines.append(f"    >> HIGH PITCH SENSITIVITY: {avg_pitch_range_deg:.1f}° variation - "
+                           f"consider stiffer springs or more aero balance")
+
+        lines.append("")
+        lines.append("")
 
     # ── Gear optimization analysis (if data available)
     gear_rpm_available = any(
@@ -960,25 +1080,37 @@ async def generate_ai_prompt(
                 ]
 
                 if corner_track:
-                    apex_idx = len(corner_track) // 2
-                    apex_pt = corner_track[apex_idx]
-                    gear_window = apex_pt.get("gear_rpm_window")
-                    gear = apex_pt.get("gear", 0)
-                    rpm_pct = apex_pt.get("rpm_percent")
-
-                    if gear_window is not None:
-                        gear_data.append((lap["lap_num"], gear, gear_window, rpm_pct))
+                    # Sample gear/RPM at entry (25%), apex (50%), and exit (75%)
+                    _n = len(corner_track)
+                    _idx25 = max(0, _n // 4)
+                    _idx50 = _n // 2
+                    _idx75 = min(_n - 1, (3 * _n) // 4)
+                    for _label, _idx in [("entry", _idx25), ("apex", _idx50), ("exit", _idx75)]:
+                        _pt = corner_track[_idx]
+                        gear_window = _pt.get("gear_rpm_window")
+                        gear = _pt.get("gear", 0)
+                        rpm_pct = _pt.get("rpm_percent")
+                        if gear_window is not None:
+                            gear_data.append((lap["lap_num"], gear, gear_window, rpm_pct, _label))
 
             if gear_data:
                 lines.append(f"  {name}:")
-                for ln, gear, gw, rpm_pct in gear_data:
+                for item in gear_data:
+                    ln, gear, gw, rpm_pct, label = item
                     rpm_str = f" RPM:{rpm_pct:.0%}" if rpm_pct else ""
                     gear_hint = ""
                     if gw < 0.80:
                         gear_hint = " <- GEAR TOO HIGH, shift down"
                     elif gw < 0.90:
                         gear_hint = " <- suboptimal, consider lower gear"
-                    lines.append(f"    Lap {ln}: Gear {gear}  GearOpt={gw:.2f}{rpm_str}{gear_hint}")
+                    lines.append(f"    Lap {ln} ({label}): Gear {gear}  GearOpt={gw:.2f}{rpm_str}{gear_hint}")
+                # Flag gear changes mid-corner
+                _by_lap: Dict[int, List[int]] = {}
+                for ln, gear, gw, rpm_pct, label in gear_data:
+                    _by_lap.setdefault(ln, []).append(gear)
+                for ln, gears in _by_lap.items():
+                    if len(set(gears)) > 1:
+                        lines.append(f"    >> Lap {ln}: Gear changes mid-corner ({' → '.join(str(g) for g in gears)}) — consider earlier downshift")
                 lines.append("")
 
     # ── Brake bias analysis (if data available)
@@ -1044,6 +1176,35 @@ async def generate_ai_prompt(
             lines.append(f"  >> IMBALANCE: {_brake_thermals['imbalance_note']}")
         if _brake_thermals["fade_note"]:
             lines.append(f"  >> FADE RISK: {_brake_thermals['fade_note']}")
+        # ── Cross-reference brake bias with brake thermals
+        if brake_bias_available and _brake_thermals["imbalance_note"]:
+            _session_bias: Optional[float] = None
+            for spec in ref_corners:
+                cid = spec["id"]
+                for lap in laps:
+                    corner = lap_corner_map[lap["lap_num"]].get(cid)
+                    if not corner:
+                        continue
+                    corner_track = [
+                        pt for pt in lap["track"]
+                        if corner["start_frame"] <= pt["frame"] <= corner["end_frame"]
+                    ]
+                    braking_pts = [pt for pt in corner_track if (pt.get("brake", 0) or 0) > 0.3]
+                    if braking_pts:
+                        _biases = [pt.get("brake_bias", 0) or 0 for pt in braking_pts if (pt.get("brake_bias", 0) or 0) > 0]
+                        if _biases:
+                            _session_bias = sum(_biases) / len(_biases)
+                            break
+                if _session_bias is not None:
+                    break
+            if _session_bias is not None and _session_bias > 0.60:
+                _front_avgs = [e["front_avg"] for e in _bt_rows if e["front_avg"] is not None]
+                _rear_avgs = [e["rear_avg"] for e in _bt_rows if e["rear_avg"] is not None]
+                if _front_avgs and _rear_avgs:
+                    _fmean = sum(_front_avgs) / len(_front_avgs)
+                    _rmean = sum(_rear_avgs) / len(_rear_avgs)
+                    if _fmean > _rmean * 1.3:
+                        lines.append(f"  >> COMBINED: Front-heavy bias ({_session_bias:.2f}) with elevated front brake temps ({_fmean:.0f}C vs {_rmean:.0f}C rear) — consider reducing front bias.")
         lines.append("")
 
     # ── Brake temperature extreme flag
@@ -1063,7 +1224,7 @@ async def generate_ai_prompt(
 
     # ── Suspension / alignment analysis
     profile_corners = data.get("profile_corners", [])
-    _suspension = analyze_suspension(laps, profile_corners)
+    _suspension = analyze_suspension(laps, profile_corners, lap_corner_map=lap_corner_map)
     _has_sus = any(
         _suspension[k] for k in ("bottoming_notes", "travel_delta_notes", "camber_notes")
     )

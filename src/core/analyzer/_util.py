@@ -189,8 +189,55 @@ def _confidence_label(score: float) -> str:
 
 # ── Profile sanity ────────────────────────────────────────────────────────
 
-def _profile_corner_sanity_notes(laps: List[Dict]) -> List[str]:
-    """Catch obviously shifted track-profile windows before coaching."""
+def _profile_corner_sanity_notes(
+    laps: List[Dict],
+    profile_corners: Optional[List[Dict]] = None,
+) -> List[str]:
+    """Catch obviously shifted track-profile windows before coaching.
+
+    When the track profile includes an ``expected_apex_speed`` hint per corner,
+    this function compares the observed median apex speed against that hint:
+    flags fire if median is >1.5× or <0.5× the expected value.
+
+    Falls back to the legacy Monza-specific checks when no expected-speed data
+    exists in the profile.
+    """
+    # ── Generic check: compare against expected apex speeds if available ──
+    if profile_corners:
+        _expected_by_id: Dict[int, float] = {}
+        for spec in profile_corners:
+            expected = spec.get("expected_apex_speed")
+            if isinstance(expected, (int, float)) and expected > 0:
+                _expected_by_id[spec["id"]] = float(expected)
+
+        if _expected_by_id:
+            notes: List[str] = []
+            for lap in laps:
+                for corner in lap.get("corners", []):
+                    cid = corner.get("id")
+                    expected = _expected_by_id.get(cid)
+                    if expected is None:
+                        continue
+                    apex = corner.get("apex_speed")
+                    if not isinstance(apex, (int, float)) or not math.isfinite(apex):
+                        continue
+                    ratio = float(apex) / expected
+                    name = corner.get("name") or f"Corner {cid}"
+                    if ratio > 1.5:
+                        notes.append(
+                            f"Track profile sanity check failed: {name} median apex is "
+                            f"{apex:.0f} km/h ({ratio:.1f}× expected {expected:.0f}) — "
+                            "profile window may be shifted too early."
+                        )
+                    elif ratio < 0.5:
+                        notes.append(
+                            f"Track profile sanity check failed: {name} median apex is "
+                            f"{apex:.0f} km/h ({ratio:.1f}× expected {expected:.0f}) — "
+                            "profile window may be shifted too late."
+                        )
+            return notes
+
+    # ── Fallback: Monza-specific legacy checks ──
     by_name: Dict[str, List[float]] = defaultdict(list)
     for lap in laps:
         for corner in lap.get("corners", []):
@@ -360,14 +407,61 @@ def variation_label(delta_kmh: float) -> str:
 
 
 def classify_corner_issue(entry_delta: float, apex_delta: float, exit_delta: float) -> str:
-    """Heuristic: given speed deltas (best - worst) at entry/apex/exit, suggest root cause."""
-    if entry_delta > apex_delta and entry_delta > exit_delta:
+    """Heuristic: given speed deltas at entry/apex/exit, suggest root cause.
+
+    Requires at least 2 km/h delta before classifying; allows multi-factor
+    classification when multiple phases are significantly off.  If all deltas
+    are below 1 km/h the corner is marked MINOR.
+    """
+    _MIN_DELTA = 2.0   # km/h — below this, don't single out a phase
+    _TRIVIAL = 1.0     # km/h — all below this = MINOR
+
+    abs_entry = abs(entry_delta)
+    abs_apex = abs(apex_delta)
+    abs_exit = abs(exit_delta)
+
+    if abs_entry < _TRIVIAL and abs_apex < _TRIVIAL and abs_exit < _TRIVIAL:
+        return "MINOR — all phases within 1 km/h"
+
+    significant: List[str] = []
+    if abs_entry >= _MIN_DELTA:
+        significant.append("entry")
+    if abs_apex >= _MIN_DELTA:
+        significant.append("apex")
+    if abs_exit >= _MIN_DELTA:
+        significant.append("exit")
+
+    if not significant:
+        # Nothing individually above threshold — pick the largest
+        largest = max(abs_entry, abs_apex, abs_exit)
+        if largest == abs_entry:
+            return "Braking inconsistency — arriving at different speeds"
+        elif largest == abs_apex:
+            return "Line variation — mid-corner speed differs despite similar entry"
+        else:
+            return "Throttle application point varies — losing drive on exit"
+
+    # ── Check if a single phase dominates (≥3× next largest) ──
+    _sorted = sorted([(abs_entry, "entry"), (abs_apex, "apex"), (abs_exit, "exit")], reverse=True)
+    if _sorted[0][0] >= _sorted[1][0] * 3.0:
+        phase = _sorted[0][1]
+        if phase == "entry":
+            return "Braking inconsistency — arriving at different speeds"
+        elif phase == "apex":
+            return "Line variation — mid-corner speed differs despite similar entry"
+        else:
+            return "Throttle application point varies — losing drive on exit"
+
+    if len(significant) >= 2:
+        return f"Combined — {' + '.join(significant)} both vary significantly"
+
+    phase = significant[0]
+    if phase == "entry":
         return "Braking inconsistency — arriving at different speeds"
-    if exit_delta > entry_delta and exit_delta > apex_delta:
-        return "Throttle application point varies — losing drive on exit"
-    if apex_delta > entry_delta and apex_delta > exit_delta:
+    elif phase == "apex":
         return "Line variation — mid-corner speed differs despite similar entry"
-    return "Mixed — entry and exit both vary"
+    else:
+        return "Throttle application point varies — losing drive on exit"
 
 
 def format_car_state(state: Optional[Dict]) -> str:

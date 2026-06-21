@@ -39,6 +39,17 @@ def _build_canonical_lap(
     scalar_fields = [
         "frame", "time_s", "x", "z", "speed", "heading", "steer",
         "brake", "gas", "yaw_rate", "acc_g_x", "acc_g_y", "acc_g_z",
+        # Tyre temperatures (per-corner core temps)
+        "tyre_temp_fl", "tyre_temp_fr", "tyre_temp_rl", "tyre_temp_rr",
+        # Tyre pressures
+        "pressure_fl", "pressure_fr", "pressure_rl", "pressure_rr",
+        # Brake temperatures
+        "brake_temp_fl", "brake_temp_fr", "brake_temp_rl", "brake_temp_rr",
+        # Suspension travel
+        "sus_fl", "sus_fr", "sus_rl", "sus_rr",
+        # Slip angles & ratios
+        "slip_angle_fl", "slip_angle_fr", "slip_angle_rl", "slip_angle_rr",
+        "slip_ratio_fl", "slip_ratio_fr", "slip_ratio_rl", "slip_ratio_rr",
     ]
     canonical: List[Dict[str, Any]] = []
     cursor = 0

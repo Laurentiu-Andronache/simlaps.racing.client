@@ -389,8 +389,165 @@ def analyze_brake_thermals(laps: List[Dict]) -> Dict[str, Any]:
     return {"per_lap": per_lap, "imbalance_note": imbalance_note, "fade_note": fade_note}
 
 
-def analyze_suspension(laps: List[Dict], ref_corners: List[Dict]) -> Dict[str, Any]:
-    """Analyze suspension travel and camber for setup hints."""
+def analyze_steering_smoothness(
+    lap_track: List[Dict],
+    corner: Dict,
+    hz: float,
+) -> Optional[Dict]:
+    """Analyze steering smoothness through a corner.
+
+    Counts steering direction reversals and computes peak/average steer rate.
+    Uses the ``steer`` field (radians) — NOT ``steering_percent``.
+
+    Returns ``{reversals, peak_steer_rate, avg_steer_rate, smoothness_score}``
+    or ``None`` if the corner zone is too short.
+    """
+    corner_pts = [
+        pt for pt in lap_track
+        if corner["start_frame"] <= pt["frame"] <= corner["end_frame"]
+    ]
+    if len(corner_pts) < 4:
+        return None
+
+    steer_values: List[float] = []
+    for pt in corner_pts:
+        s = pt.get("steer")
+        if isinstance(s, (int, float)):
+            steer_values.append(float(s))
+
+    if len(steer_values) < 4:
+        return None
+
+    # Count sign changes (direction reversals)
+    reversals = 0
+    prev_sign = 0
+    for s in steer_values:
+        sign = 1 if s > 0.02 else (-1 if s < -0.02 else 0)
+        if sign != 0 and prev_sign != 0 and sign != prev_sign:
+            reversals += 1
+        if sign != 0:
+            prev_sign = sign
+
+    # Compute steer rate (delta between consecutive frames, rad/s)
+    steer_deltas: List[float] = []
+    for i in range(1, len(steer_values)):
+        dt = (corner_pts[i]["frame"] - corner_pts[i - 1]["frame"]) / hz
+        if dt > 0:
+            steer_deltas.append(abs(steer_values[i] - steer_values[i - 1]) / dt)
+
+    peak_steer_rate = max(steer_deltas) if steer_deltas else 0.0
+    avg_steer_rate = sum(steer_deltas) / len(steer_deltas) if steer_deltas else 0.0
+
+    # Smoothness score: lower reversals + lower peak rate = smoother (0-1, higher is smoother)
+    _rev_penalty = min(1.0, reversals / 10.0)
+    _rate_factor = 1.0 if peak_steer_rate < 0.5 else (0.5 / peak_steer_rate if peak_steer_rate > 0 else 0.0)
+    smoothness_score = max(0.0, min(1.0, (1.0 - _rev_penalty) * 0.5 + _rate_factor * 0.5))
+
+    return {
+        "reversals": reversals,
+        "peak_steer_rate": round(peak_steer_rate, 3),
+        "avg_steer_rate": round(avg_steer_rate, 3),
+        "smoothness_score": round(smoothness_score, 2),
+    }
+
+
+def analyze_throttle_exit(
+    lap_track: List[Dict],
+    corner: Dict,
+    hz: float,
+) -> Optional[Dict]:
+    """Analyze throttle application smoothness from apex to corner exit.
+
+    Splits the corner track into apex-to-exit half and computes:
+    time to full throttle (>90%), throttle smoothness, modulation count.
+
+    Returns ``{time_to_full_throttle, throttle_variance, modulation_count, exit_profile}``
+    or ``None`` if the exit zone is too short.
+    """
+    corner_pts = [
+        pt for pt in lap_track
+        if corner["start_frame"] <= pt["frame"] <= corner["end_frame"]
+    ]
+    if len(corner_pts) < 4:
+        return None
+
+    apex_frame = corner["apex_frame"]
+    apex_idx = None
+    for i, pt in enumerate(corner_pts):
+        if pt["frame"] >= apex_frame:
+            apex_idx = i
+            break
+    if apex_idx is None:
+        apex_idx = len(corner_pts) // 2
+
+    exit_pts = corner_pts[apex_idx:]
+    if len(exit_pts) < 2:
+        return None
+
+    # Time from apex to full throttle (>90% gas)
+    GAS_FULL = 0.90
+    time_to_full = None
+    for pt in exit_pts:
+        gas = pt.get("gas_percent", pt.get("gas", 0)) or 0
+        if gas >= GAS_FULL:
+            time_to_full = (pt["frame"] - apex_frame) / hz
+            break
+
+    # Throttle deltas (variance of step changes)
+    gas_values = [
+        pt.get("gas_percent", pt.get("gas", 0)) or 0
+        for pt in exit_pts
+    ]
+    gas_deltas: List[float] = []
+    for i in range(1, len(gas_values)):
+        gas_deltas.append(gas_values[i] - gas_values[i - 1])
+
+    avg_delta = sum(gas_deltas) / len(gas_deltas) if gas_deltas else 0.0
+    throttle_variance = (
+        sum((d - avg_delta) ** 2 for d in gas_deltas) / len(gas_deltas)
+        if gas_deltas else 0.0
+    )
+
+    # Modulation count (direction reversals in throttle)
+    modulation_count = 0
+    prev_direction = 0
+    for d in gas_deltas:
+        direction = 1 if d > 0.02 else (-1 if d < -0.02 else 0)
+        if direction != 0 and prev_direction != 0 and direction != prev_direction:
+            modulation_count += 1
+        if direction != 0:
+            prev_direction = direction
+
+    # Exit profile classification
+    if time_to_full is None:
+        exit_profile = "never reaches full throttle"
+    elif time_to_full < 0.3:
+        exit_profile = "immediate full throttle"
+    elif time_to_full < 1.0:
+        exit_profile = "progressive throttle"
+    else:
+        exit_profile = "slow throttle application"
+
+    return {
+        "time_to_full_throttle": round(time_to_full, 2) if time_to_full is not None else None,
+        "throttle_variance": round(throttle_variance, 4),
+        "modulation_count": modulation_count,
+        "exit_profile": exit_profile,
+    }
+
+
+def analyze_suspension(
+    laps: List[Dict],
+    ref_corners: List[Dict],
+    lap_corner_map: Optional[Dict[int, Dict[int, Dict]]] = None,
+) -> Dict[str, Any]:
+    """Analyze suspension travel and camber for setup hints.
+
+    When ``lap_corner_map`` is provided, detected corner ``start_frame`` /
+    ``end_frame`` are used for filtering (frame-range approach consistent
+    with corner detection).  Otherwise falls back to progress-range filtering
+    against the profile spec.
+    """
     notes: Dict[str, List[str]] = {
         "bottoming_notes": [],
         "travel_delta_notes": [],
@@ -417,10 +574,24 @@ def analyze_suspension(laps: List[Dict], ref_corners: List[Dict]) -> Dict[str, A
         name = spec.get("name") or f"Corner {cid}"
         for w in ("fl", "fr", "rl", "rr"):
             for lap in laps:
-                corner_pts = [
-                    pt for pt in lap.get("track", [])
-                    if spec["start"] <= (pt.get("lap_progress") if pt.get("lap_progress") is not None else -1) < spec["end"]
-                ]
+                ln = lap["lap_num"]
+                if lap_corner_map:
+                    _dc = lap_corner_map.get(ln, {}).get(cid)
+                    if not _dc:
+                        continue
+                    _sf = _dc.get("start_frame")
+                    _ef = _dc.get("end_frame")
+                    if _sf is None or _ef is None:
+                        continue
+                    corner_pts = [
+                        pt for pt in lap.get("track", [])
+                        if _sf <= pt["frame"] <= _ef
+                    ]
+                else:
+                    corner_pts = [
+                        pt for pt in lap.get("track", [])
+                        if spec["start"] <= (pt.get("lap_progress") if pt.get("lap_progress") is not None else -1) < spec["end"]
+                    ]
                 if len(corner_pts) < 3:
                     continue
                 streak = 0
@@ -444,16 +615,33 @@ def analyze_suspension(laps: List[Dict], ref_corners: List[Dict]) -> Dict[str, A
         name = spec.get("name") or f"Corner {cid}"
         apex_sus: Dict[int, Dict[str, float]] = {}
         for lap in laps:
-            for pt in lap.get("track", []):
-                progress = pt.get("lap_progress")
-                if progress is None:
-                    progress = -1
-                if spec["start"] <= progress < spec["end"]:
-                    for w in ("fl", "fr", "rl", "rr"):
-                        v = pt.get(f"sus_{w}", 0)
-                        if isinstance(v, (int, float)) and v > 0:
-                            apex_sus.setdefault(lap["lap_num"], {})[w] = v
-                    break
+            ln = lap["lap_num"]
+            if lap_corner_map:
+                _dc = lap_corner_map.get(ln, {}).get(cid)
+                if not _dc:
+                    continue
+                _sf = _dc.get("start_frame")
+                _ef = _dc.get("end_frame")
+                if _sf is None or _ef is None:
+                    continue
+                for pt in lap.get("track", []):
+                    if _sf <= pt["frame"] <= _ef:
+                        for w in ("fl", "fr", "rl", "rr"):
+                            v = pt.get(f"sus_{w}", 0)
+                            if isinstance(v, (int, float)) and v > 0:
+                                apex_sus.setdefault(ln, {})[w] = v
+                        break
+            else:
+                for pt in lap.get("track", []):
+                    progress = pt.get("lap_progress")
+                    if progress is None:
+                        progress = -1
+                    if spec["start"] <= progress < spec["end"]:
+                        for w in ("fl", "fr", "rl", "rr"):
+                            v = pt.get(f"sus_{w}", 0)
+                            if isinstance(v, (int, float)) and v > 0:
+                                apex_sus.setdefault(ln, {})[w] = v
+                        break
         if len(apex_sus) >= 2:
             for w in ("fl", "fr", "rl", "rr"):
                 vals = [
@@ -472,20 +660,42 @@ def analyze_suspension(laps: List[Dict], ref_corners: List[Dict]) -> Dict[str, A
         cid = spec["id"]
         name = spec.get("name") or f"Corner {cid}"
         for lap in laps:
-            for pt in lap.get("track", []):
-                progress = pt.get("lap_progress")
-                if progress is None:
-                    progress = -1
-                if spec["start"] <= progress < spec["end"]:
-                    cfl = pt.get("camber_fl", 0)
-                    cfr = pt.get("camber_fr", 0)
-                    if isinstance(cfl, (int, float)) and isinstance(cfr, (int, float)):
-                        if abs(cfl - cfr) > 0.0087:
-                            deg = abs(cfl - cfr) * (180 / 3.14159)
-                            notes["camber_notes"].append(
-                                f"{name}: front camber mismatch {deg:.1f}deg at apex - "
-                                "excessive body roll for camber setting"
-                            )
-                    break
+            ln = lap["lap_num"]
+            if lap_corner_map:
+                _dc = lap_corner_map.get(ln, {}).get(cid)
+                if not _dc:
+                    continue
+                _sf = _dc.get("start_frame")
+                _ef = _dc.get("end_frame")
+                if _sf is None or _ef is None:
+                    continue
+                for pt in lap.get("track", []):
+                    if _sf <= pt["frame"] <= _ef:
+                        cfl = pt.get("camber_fl", 0)
+                        cfr = pt.get("camber_fr", 0)
+                        if isinstance(cfl, (int, float)) and isinstance(cfr, (int, float)):
+                            if abs(cfl - cfr) > 0.0087:
+                                deg = abs(cfl - cfr) * (180 / 3.14159)
+                                notes["camber_notes"].append(
+                                    f"{name}: front camber mismatch {deg:.1f}deg at apex - "
+                                    "excessive body roll for camber setting"
+                                )
+                        break
+            else:
+                for pt in lap.get("track", []):
+                    progress = pt.get("lap_progress")
+                    if progress is None:
+                        progress = -1
+                    if spec["start"] <= progress < spec["end"]:
+                        cfl = pt.get("camber_fl", 0)
+                        cfr = pt.get("camber_fr", 0)
+                        if isinstance(cfl, (int, float)) and isinstance(cfr, (int, float)):
+                            if abs(cfl - cfr) > 0.0087:
+                                deg = abs(cfl - cfr) * (180 / 3.14159)
+                                notes["camber_notes"].append(
+                                    f"{name}: front camber mismatch {deg:.1f}deg at apex - "
+                                    "excessive body roll for camber setting"
+                                )
+                        break
 
     return notes
