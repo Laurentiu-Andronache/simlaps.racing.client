@@ -316,7 +316,7 @@ function renderStats() {
   const notice = document.getElementById('analysis-notice');
   const notes = DATA.analysis_notes || [];
   if (notice && (DATA.analysis_mode !== 'full' || notes.length)) {
-    const escaped = notes.map(note => String(note).replace(/[&<>"']/g, ch => ({'&':'&','<':'<','>':'>','"':'"',"'":'''}[ch])));
+    const escaped = notes.map(note => String(note).replace(/[&<>"']/g, ch => ({'&':'&','<':'<','>':'>','"':'"',"'":'\x27'}[ch])));
     const title = DATA.analysis_mode !== 'full'
       ? '<strong>Diagnostic mode:</strong> Detailed coaching is suppressed because this capture is not fully trustworthy.'
       : '<strong>Analysis notes:</strong>';
