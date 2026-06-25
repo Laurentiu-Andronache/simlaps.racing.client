@@ -1478,3 +1478,395 @@ class TestFixedMeasurementWindow:
                              "sus_fr": 5.0, "sus_rl": 5.0, "sus_rr": 5.0}]}]
         result = analyze_suspension(laps, profile_corners)
         assert isinstance(result, dict)
+
+    def test_canonical_corner_segment_time_none_when_measurement_too_sparse(self):
+        """Regression: canonical corner detection must set segment_time_s=None
+        (not 0.0) when the measurement window has fewer than 2 points or
+        produces zero elapsed time.  A 0.0 value was being selected as the
+        'best segment' in theoretical best lap calculation."""
+        from src.core.telemetry_analyzer import _build_canonical_lap, _detect_profiled_corners_canonical
+
+        # Build a canonical lap where the corner window has very few samples
+        samples = []
+        for i in range(200):
+            t = i / 199.0
+            samples.append({
+                "frame": i, "time_s": i / 10.0, "lap_progress": t, "lap_pos": t,
+                "speed": 100.0, "x": 0.0, "z": 0.0, "heading": 0.0,
+                "steer": 0.0, "brake": 0.0, "gas": 1.0,
+            })
+        canonical_lap = {"samples": samples, "progress_start": 0.0, "progress_end": 1.0}
+        profile = {
+            "corners": [
+                {"id": 1, "name": "T1", "start": 0.01, "end": 0.02},
+            ]
+        }
+        corners = _detect_profiled_corners_canonical(
+            canonical_lap["samples"], profile, hz=10.0, authoritative_progress=True,
+        )
+        # With a tiny window [0.01, 0.02], the measurement window may have
+        # 0-1 points. segment_time_s must be None, not 0.0.
+        if corners:
+            assert corners[0]["segment_time_s"] is None or corners[0]["segment_time_s"] > 0.0
+
+    @pytest.mark.asyncio
+    async def test_theoretical_best_uses_gap_sum_not_segment_sum(self):
+        """Regression: theoretical best must be actual_best - sum(per_corner_gaps),
+        not sum(corner_segments).  Old code summed only corner segments (e.g. 29s)
+        and compared to full lap time (109s), producing nonsensical 80s 'potential gain'.
+        """
+        from src.core.telemetry_analyzer import TelemetryAnalyzer
+
+        corner1_lap1 = {
+            "id": 1, "name": "T1", "apex_speed": 80.0, "entry_speed": 100.0,
+            "exit_speed": 90.0, "start_frame": 10, "end_frame": 30, "apex_frame": 20,
+            "segment_time_s": 3.0, "confidence_label": "high",
+            "entry_state": None, "apex_state": None, "exit_state": None,
+        }
+        corner1_lap2 = {
+            "id": 1, "name": "T1", "apex_speed": 85.0, "entry_speed": 100.0,
+            "exit_speed": 95.0, "start_frame": 10, "end_frame": 30, "apex_frame": 20,
+            "segment_time_s": 2.5, "confidence_label": "high",
+            "entry_state": None, "apex_state": None, "exit_state": None,
+        }
+        corner2_lap1 = {
+            "id": 2, "name": "T2", "apex_speed": 70.0, "entry_speed": 90.0,
+            "exit_speed": 80.0, "start_frame": 50, "end_frame": 80, "apex_frame": 65,
+            "segment_time_s": 4.0, "confidence_label": "high",
+            "entry_state": None, "apex_state": None, "exit_state": None,
+        }
+        corner2_lap2 = {
+            "id": 2, "name": "T2", "apex_speed": 75.0, "entry_speed": 90.0,
+            "exit_speed": 85.0, "start_frame": 50, "end_frame": 80, "apex_frame": 65,
+            "segment_time_s": 3.5, "confidence_label": "high",
+            "entry_state": None, "apex_state": None, "exit_state": None,
+        }
+
+        lap1 = {
+            "lap_num": 1, "lap_time_s": 100.0, "lap_time_str": "1:40.00",
+            "max_speed": 200.0, "avg_speed": 150.0,
+            "start_frame": 0, "end_frame": 1000,
+            "corners": [corner1_lap1, corner2_lap1], "track": [],
+        }
+        lap2 = {
+            "lap_num": 2, "lap_time_s": 105.0, "lap_time_str": "1:45.00",
+            "max_speed": 195.0, "avg_speed": 145.0,
+            "start_frame": 0, "end_frame": 1050,
+            "corners": [corner1_lap2, corner2_lap2], "track": [],
+        }
+
+        data = {
+            "hz": 10.0, "laps": [lap1, lap2],
+            "best_lap_num": 1, "reference_lap_num": 1, "comparison_lap_num": 2,
+            "ref_corners": [{"id": 1, "name": "T1"}, {"id": 2, "name": "T2"}],
+            "corner_data": {}, "corner_speeds": {},
+            "analysis_mode": "full", "analysis_confidence": "high",
+            "analysis_notes": [], "authoritative_progress_ratio": 1.0,
+            "plausible_frame_ratio": 1.0,
+            "track_label": "Test Track", "car": "Test Car",
+        }
+
+        analyzer = TelemetryAnalyzer(output_dir="tests/output", session_manager=SharedSessionManager())
+        path = await analyzer._generate_ai_prompt(data, output_prefix="test_theoretical_best")
+        with open(path, "r", encoding="utf-8") as fh:
+            prompt = fh.read()
+
+        assert "THEORETICAL BEST LAP:" in prompt
+        # Best lap is lap1 (100s). Gaps: T1=3.0-2.5=0.5s, T2=4.0-3.5=0.5s.
+        # Total gap=1.0s. Theoretical best=100-1.0=99.0s.
+        # Old buggy code would show "Assembled best segments: 6.0s" and "Potential gain: 94.0s"
+        assert "Potential gain: 1.00s" in prompt
+        assert "99.00s" in prompt
+        # Must NOT contain the old "Assembled best segments" label
+        assert "Assembled best segments" not in prompt
+
+    @pytest.mark.asyncio
+    async def test_theoretical_best_filters_impossibly_short_segments(self):
+        """Regression: when a corner's best segment is less than 50% of the best
+        lap's segment for that corner (e.g. 0.60s vs 4.40s), it should be excluded
+        from the theoretical best calculation as a measurement artifact."""
+        from src.core.telemetry_analyzer import TelemetryAnalyzer
+
+        corner1_lap1 = {
+            "id": 1, "name": "T1", "apex_speed": 80.0, "entry_speed": 100.0,
+            "exit_speed": 90.0, "start_frame": 10, "end_frame": 30, "apex_frame": 20,
+            "segment_time_s": 4.0, "confidence_label": "high",
+            "entry_state": None, "apex_state": None, "exit_state": None,
+        }
+        # Lap 2 has an impossibly short segment (0.5s vs 4.0s) — artifact
+        corner1_lap2 = {
+            "id": 1, "name": "T1", "apex_speed": 85.0, "entry_speed": 100.0,
+            "exit_speed": 95.0, "start_frame": 10, "end_frame": 30, "apex_frame": 20,
+            "segment_time_s": 0.5, "confidence_label": "high",
+            "entry_state": None, "apex_state": None, "exit_state": None,
+        }
+        corner2_lap1 = {
+            "id": 2, "name": "T2", "apex_speed": 70.0, "entry_speed": 90.0,
+            "exit_speed": 80.0, "start_frame": 50, "end_frame": 80, "apex_frame": 65,
+            "segment_time_s": 3.0, "confidence_label": "high",
+            "entry_state": None, "apex_state": None, "exit_state": None,
+        }
+        corner2_lap2 = {
+            "id": 2, "name": "T2", "apex_speed": 75.0, "entry_speed": 90.0,
+            "exit_speed": 85.0, "start_frame": 50, "end_frame": 80, "apex_frame": 65,
+            "segment_time_s": 2.5, "confidence_label": "high",
+            "entry_state": None, "apex_state": None, "exit_state": None,
+        }
+
+        lap1 = {
+            "lap_num": 1, "lap_time_s": 100.0, "lap_time_str": "1:40.00",
+            "max_speed": 200.0, "avg_speed": 150.0,
+            "start_frame": 0, "end_frame": 1000,
+            "corners": [corner1_lap1, corner2_lap1], "track": [],
+        }
+        lap2 = {
+            "lap_num": 2, "lap_time_s": 105.0, "lap_time_str": "1:45.00",
+            "max_speed": 195.0, "avg_speed": 145.0,
+            "start_frame": 0, "end_frame": 1050,
+            "corners": [corner1_lap2, corner2_lap2], "track": [],
+        }
+
+        data = {
+            "hz": 10.0, "laps": [lap1, lap2],
+            "best_lap_num": 1, "reference_lap_num": 1, "comparison_lap_num": 2,
+            "ref_corners": [{"id": 1, "name": "T1"}, {"id": 2, "name": "T2"}],
+            "corner_data": {}, "corner_speeds": {},
+            "analysis_mode": "full", "analysis_confidence": "high",
+            "analysis_notes": [], "authoritative_progress_ratio": 1.0,
+            "plausible_frame_ratio": 1.0,
+            "track_label": "Test Track", "car": "Test Car",
+        }
+
+        analyzer = TelemetryAnalyzer(output_dir="tests/output", session_manager=SharedSessionManager())
+        path = await analyzer._generate_ai_prompt(data, output_prefix="test_theo_best_filter")
+        with open(path, "r", encoding="utf-8") as fh:
+            prompt = fh.read()
+
+        assert "THEORETICAL BEST LAP:" in prompt
+        # T1 best segment (0.5s) is < 50% of best lap segment (4.0s) -> excluded.
+        # Only T2 gap counts: 3.0-2.5=0.5s. Theoretical best=100-0.5=99.5s.
+        assert "Potential gain: 0.50s" in prompt
+        # T1 should not appear in per-corner breakdown (it was filtered)
+        assert "C1 T1: best segment 0.50s" not in prompt
+
+    @pytest.mark.asyncio
+    async def test_ai_prompt_includes_lap_time_decomposition(self):
+        """LAP TIME DECOMPOSITION section shows corner vs straight time per lap."""
+        from src.core.telemetry_analyzer import TelemetryAnalyzer
+
+        corner = {
+            "id": 1, "name": "T1", "apex_speed": 80.0, "entry_speed": 100.0,
+            "exit_speed": 90.0, "start_frame": 10, "end_frame": 30, "apex_frame": 20,
+            "segment_time_s": 2.0, "confidence_label": "high",
+            "entry_state": None, "apex_state": None, "exit_state": None,
+        }
+        lap = {
+            "lap_num": 1, "lap_time_s": 90.0, "lap_time_str": "1:30.00",
+            "max_speed": 200.0, "avg_speed": 140.0,
+            "start_frame": 0, "end_frame": 100,
+            "corners": [corner], "track": [],
+        }
+        data = {
+            "hz": 10.0, "laps": [lap, {**lap, "lap_num": 2}],
+            "best_lap_num": 1, "reference_lap_num": 1, "comparison_lap_num": 2,
+            "ref_corners": [{"id": 1, "name": "T1"}], "corner_data": {}, "corner_speeds": {},
+            "analysis_mode": "full", "analysis_confidence": "high",
+            "analysis_notes": [], "authoritative_progress_ratio": 1.0,
+            "plausible_frame_ratio": 1.0, "track_label": "Test Track", "car": "Test Car",
+        }
+        analyzer = TelemetryAnalyzer(output_dir="tests/output", session_manager=SharedSessionManager())
+        path = await analyzer._generate_ai_prompt(data, output_prefix="test_decomp")
+        with open(path, "r", encoding="utf-8") as fh:
+            prompt = fh.read()
+
+        assert "LAP TIME DECOMPOSITION" in prompt
+        assert "corners 2.0s" in prompt
+        assert "straights 88.0s" in prompt
+
+    @pytest.mark.asyncio
+    async def test_ai_prompt_includes_straight_sector_analysis(self):
+        """STRAIGHT/SECTOR ANALYSIS shows time between consecutive corners."""
+        from src.core.telemetry_analyzer import TelemetryAnalyzer
+
+        corner1 = {
+            "id": 1, "name": "T1", "apex_speed": 80.0, "entry_speed": 100.0,
+            "exit_speed": 90.0, "start_frame": 10, "end_frame": 30, "apex_frame": 20,
+            "segment_time_s": 2.0, "confidence_label": "high",
+            "entry_state": None, "apex_state": None, "exit_state": None,
+        }
+        corner2 = {
+            "id": 2, "name": "T2", "apex_speed": 70.0, "entry_speed": 90.0,
+            "exit_speed": 80.0, "start_frame": 50, "end_frame": 80, "apex_frame": 65,
+            "segment_time_s": 3.0, "confidence_label": "high",
+            "entry_state": None, "apex_state": None, "exit_state": None,
+        }
+        lap1 = {
+            "lap_num": 1, "lap_time_s": 100.0, "lap_time_str": "1:40.00",
+            "max_speed": 200.0, "avg_speed": 150.0,
+            "start_frame": 0, "end_frame": 1000,
+            "corners": [corner1, corner2], "track": [],
+        }
+        corner2_lap2 = {**corner2, "segment_time_s": 3.5}
+        lap2 = {
+            "lap_num": 2, "lap_time_s": 105.0, "lap_time_str": "1:45.00",
+            "max_speed": 195.0, "avg_speed": 145.0,
+            "start_frame": 0, "end_frame": 1050,
+            "corners": [corner1, corner2_lap2], "track": [],
+        }
+        data = {
+            "hz": 10.0, "laps": [lap1, lap2],
+            "best_lap_num": 1, "reference_lap_num": 1, "comparison_lap_num": 2,
+            "ref_corners": [{"id": 1, "name": "T1"}, {"id": 2, "name": "T2"}],
+            "corner_data": {}, "corner_speeds": {},
+            "analysis_mode": "full", "analysis_confidence": "high",
+            "analysis_notes": [], "authoritative_progress_ratio": 1.0,
+            "plausible_frame_ratio": 1.0, "track_label": "Test Track", "car": "Test Car",
+        }
+        analyzer = TelemetryAnalyzer(output_dir="tests/output", session_manager=SharedSessionManager())
+        path = await analyzer._generate_ai_prompt(data, output_prefix="test_straight")
+        with open(path, "r", encoding="utf-8") as fh:
+            prompt = fh.read()
+
+        assert "STRAIGHT/SECTOR ANALYSIS" in prompt
+        assert "T1 → T2:" in prompt
+        assert "spread" in prompt
+
+    @pytest.mark.asyncio
+    async def test_ai_prompt_includes_exit_to_entry_correlation(self):
+        """EXIT-TO-ENTRY CORRELATION links corner exit speed to next corner entry speed."""
+        from src.core.telemetry_analyzer import TelemetryAnalyzer
+
+        corner1_lap1 = {
+            "id": 1, "name": "T1", "apex_speed": 80.0, "entry_speed": 100.0,
+            "exit_speed": 90.0, "start_frame": 10, "end_frame": 30, "apex_frame": 20,
+            "segment_time_s": 2.0, "confidence_label": "high",
+            "entry_state": None, "apex_state": None, "exit_state": None,
+        }
+        corner2_lap1 = {
+            "id": 2, "name": "T2", "apex_speed": 70.0, "entry_speed": 95.0,
+            "exit_speed": 80.0, "start_frame": 50, "end_frame": 80, "apex_frame": 65,
+            "segment_time_s": 3.0, "confidence_label": "high",
+            "entry_state": None, "apex_state": None, "exit_state": None,
+        }
+        corner1_lap2 = {
+            "id": 1, "name": "T1", "apex_speed": 75.0, "entry_speed": 100.0,
+            "exit_speed": 80.0, "start_frame": 10, "end_frame": 30, "apex_frame": 20,
+            "segment_time_s": 2.5, "confidence_label": "high",
+            "entry_state": None, "apex_state": None, "exit_state": None,
+        }
+        corner2_lap2 = {
+            "id": 2, "name": "T2", "apex_speed": 65.0, "entry_speed": 85.0,
+            "exit_speed": 75.0, "start_frame": 50, "end_frame": 80, "apex_frame": 65,
+            "segment_time_s": 3.5, "confidence_label": "high",
+            "entry_state": None, "apex_state": None, "exit_state": None,
+        }
+        lap1 = {
+            "lap_num": 1, "lap_time_s": 100.0, "lap_time_str": "1:40.00",
+            "max_speed": 200.0, "avg_speed": 150.0,
+            "start_frame": 0, "end_frame": 1000,
+            "corners": [corner1_lap1, corner2_lap1], "track": [],
+        }
+        lap2 = {
+            "lap_num": 2, "lap_time_s": 105.0, "lap_time_str": "1:45.00",
+            "max_speed": 195.0, "avg_speed": 145.0,
+            "start_frame": 0, "end_frame": 1050,
+            "corners": [corner1_lap2, corner2_lap2], "track": [],
+        }
+        data = {
+            "hz": 10.0, "laps": [lap1, lap2],
+            "best_lap_num": 1, "reference_lap_num": 1, "comparison_lap_num": 2,
+            "ref_corners": [{"id": 1, "name": "T1"}, {"id": 2, "name": "T2"}],
+            "corner_data": {}, "corner_speeds": {},
+            "analysis_mode": "full", "analysis_confidence": "high",
+            "analysis_notes": [], "authoritative_progress_ratio": 1.0,
+            "plausible_frame_ratio": 1.0, "track_label": "Test Track", "car": "Test Car",
+        }
+        analyzer = TelemetryAnalyzer(output_dir="tests/output", session_manager=SharedSessionManager())
+        path = await analyzer._generate_ai_prompt(data, output_prefix="test_corr")
+        with open(path, "r", encoding="utf-8") as fh:
+            prompt = fh.read()
+
+        assert "EXIT-TO-ENTRY CORRELATION" in prompt
+        # Exit delta: 80-90 = -10 km/h, entry delta: 85-95 = -10 km/h
+        assert "T1 → T2:" in prompt
+        assert "exit D -10.0 km/h" in prompt
+
+    @pytest.mark.asyncio
+    async def test_ai_prompt_includes_coast_time_aggregation(self):
+        """COAST TIME AGGREGATION sums total coasting per lap."""
+        from src.core.telemetry_analyzer import TelemetryAnalyzer
+
+        corner = {
+            "id": 1, "name": "T1", "apex_speed": 80.0, "entry_speed": 100.0,
+            "exit_speed": 90.0, "start_frame": 10, "end_frame": 30, "apex_frame": 20,
+            "segment_time_s": 2.0, "confidence_label": "high",
+            "entry_state": None, "apex_state": None, "exit_state": None,
+        }
+        # Build track with coasting near apex (frames 18-22: no gas, no brake)
+        track = []
+        for i in range(100):
+            track.append({
+                "frame": i,
+                "speed": 80.0,
+                "gas": 0.0 if 18 <= i <= 22 else 0.5,
+                "gas_percent": 0.0 if 18 <= i <= 22 else 0.5,
+                "brake": 0.0,
+                "steer": 0.0,
+                "acc_g_x": 0.0,
+                "acc_g_z": 0.0,
+            })
+        lap = {
+            "lap_num": 1, "lap_time_s": 100.0, "lap_time_str": "1:40.00",
+            "max_speed": 200.0, "avg_speed": 150.0,
+            "start_frame": 0, "end_frame": 100,
+            "corners": [corner], "track": track,
+        }
+        data = {
+            "hz": 10.0, "laps": [lap, {**lap, "lap_num": 2}],
+            "best_lap_num": 1, "reference_lap_num": 1, "comparison_lap_num": 2,
+            "ref_corners": [{"id": 1, "name": "T1"}], "corner_data": {}, "corner_speeds": {},
+            "analysis_mode": "full", "analysis_confidence": "high",
+            "analysis_notes": [], "authoritative_progress_ratio": 1.0,
+            "plausible_frame_ratio": 1.0, "track_label": "Test Track", "car": "Test Car",
+        }
+        analyzer = TelemetryAnalyzer(output_dir="tests/output", session_manager=SharedSessionManager())
+        path = await analyzer._generate_ai_prompt(data, output_prefix="test_coast")
+        with open(path, "r", encoding="utf-8") as fh:
+            prompt = fh.read()
+
+        assert "COAST TIME AGGREGATION" in prompt
+        assert "coasting" in prompt
+
+    @pytest.mark.asyncio
+    async def test_ai_prompt_response_format_has_straights_section(self):
+        """Response format includes section 5 for STRAIGHTS & SECTORS."""
+        from src.core.telemetry_analyzer import TelemetryAnalyzer
+
+        corner = {
+            "id": 1, "name": "T1", "apex_speed": 80.0, "entry_speed": 100.0,
+            "exit_speed": 90.0, "start_frame": 10, "end_frame": 30, "apex_frame": 20,
+            "segment_time_s": 2.0, "confidence_label": "high",
+            "entry_state": None, "apex_state": None, "exit_state": None,
+        }
+        lap = {
+            "lap_num": 1, "lap_time_s": 90.0, "lap_time_str": "1:30.00",
+            "max_speed": 200.0, "avg_speed": 140.0,
+            "start_frame": 0, "end_frame": 100,
+            "corners": [corner], "track": [],
+        }
+        data = {
+            "hz": 10.0, "laps": [lap, {**lap, "lap_num": 2}],
+            "best_lap_num": 1, "reference_lap_num": 1, "comparison_lap_num": 2,
+            "ref_corners": [{"id": 1, "name": "T1"}], "corner_data": {}, "corner_speeds": {},
+            "analysis_mode": "full", "analysis_confidence": "high",
+            "analysis_notes": [], "authoritative_progress_ratio": 1.0,
+            "plausible_frame_ratio": 1.0, "track_label": "Test Track", "car": "Test Car",
+        }
+        analyzer = TelemetryAnalyzer(output_dir="tests/output", session_manager=SharedSessionManager())
+        path = await analyzer._generate_ai_prompt(data, output_prefix="test_format")
+        with open(path, "r", encoding="utf-8") as fh:
+            prompt = fh.read()
+
+        assert "## 5. STRAIGHTS & SECTORS" in prompt
+        assert "## 6. TRACK NOTES" in prompt
+        assert "## 7. SINGLE BIGGEST GAIN" in prompt

@@ -84,8 +84,10 @@ def _detect_profiled_corners_canonical(
                 (_optional_float(measurement[-1].get("time_s")) or 0.0)
                 - (_optional_float(measurement[0].get("time_s")) or 0.0),
             )
+            if segment_time_s <= 0.0:
+                segment_time_s = None
         else:
-            segment_time_s = 0.0
+            segment_time_s = None
 
         result.append({
             "id": spec["id"],

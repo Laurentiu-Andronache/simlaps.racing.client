@@ -242,6 +242,27 @@ async def generate_ai_prompt(
         )
     lines.append("")
 
+    # ── Lap time decomposition: corner time vs straight time
+    _decomp_lines: List[str] = []
+    for lap in laps:
+        _corner_total = 0.0
+        for corner in lap.get("corners", []):
+            _st = corner_segment_time(corner, hz)
+            if _st is not None and _st > 0.0:
+                _corner_total += _st
+        _straight_total = lap["lap_time_s"] - _corner_total
+        _corner_pct = (_corner_total / lap["lap_time_s"] * 100) if lap["lap_time_s"] > 0 else 0
+        _straight_pct = 100 - _corner_pct
+        _marker = " <- BEST" if lap["lap_num"] == best_lap["lap_num"] else ""
+        _decomp_lines.append(
+            f"  Lap {lap['lap_num']}: corners {_corner_total:.1f}s ({_corner_pct:.0f}%)  "
+            f"straights {_straight_total:.1f}s ({_straight_pct:.0f}%){_marker}"
+        )
+    if _decomp_lines:
+        lines.append("LAP TIME DECOMPOSITION (corner vs straight):")
+        lines.extend(_decomp_lines)
+        lines.append("")
+
     # ── Electronics / aids summary
     elec_per_lap = analyze_electronics_per_lap(laps)
     has_elec_data = any(
@@ -613,6 +634,114 @@ async def generate_ai_prompt(
         lines.extend(compact_corner_lines)
         lines.append("")
 
+    # ── Straight/sector analysis: time between consecutive corners
+    _straight_lines: List[str] = []
+    for i in range(len(ref_corners) - 1):
+        spec_a = ref_corners[i]
+        spec_b = ref_corners[i + 1]
+        cid_a = spec_a["id"]
+        cid_b = spec_b["id"]
+        name_a = spec_a.get("name") or f"Corner {cid_a}"
+        name_b = spec_b.get("name") or f"Corner {cid_b}"
+        _straight_times: Dict[int, float] = {}
+        for lap in laps:
+            corner_a = lap_corner_map.get(lap["lap_num"], {}).get(cid_a)
+            corner_b = lap_corner_map.get(lap["lap_num"], {}).get(cid_b)
+            if corner_a and corner_b:
+                _t_a = corner_segment_time(corner_a, hz)
+                _t_b = corner_segment_time(corner_b, hz)
+                if _t_a is not None and _t_b is not None and _t_a > 0 and _t_b > 0:
+                    _straight_time = _t_b - _t_a
+                    if _straight_time > 0:
+                        _straight_times[lap["lap_num"]] = _straight_time
+        if len(_straight_times) >= 2:
+            _best_straight = min(_straight_times.values())
+            _worst_straight = max(_straight_times.values())
+            _best_lap_num = min(_straight_times, key=lambda k: _straight_times[k])
+            _straight_lines.append(
+                f"  {name_a} → {name_b}: "
+                f"best {_best_straight:.2f}s (Lap {_best_lap_num})  "
+                f"worst {_worst_straight:.2f}s  "
+                f"spread {_worst_straight - _best_straight:.2f}s"
+            )
+    if _straight_lines:
+        lines.append("STRAIGHT/SECTOR ANALYSIS (time between consecutive corner segments):")
+        lines.extend(_straight_lines)
+        lines.append("")
+
+    # ── Exit-to-entry correlation: link corner exit speed to next corner entry speed
+    _correlation_lines: List[str] = []
+    for i in range(len(ref_corners) - 1):
+        spec_a = ref_corners[i]
+        spec_b = ref_corners[i + 1]
+        cid_a = spec_a["id"]
+        cid_b = spec_b["id"]
+        name_a = spec_a.get("name") or f"Corner {cid_a}"
+        name_b = spec_b.get("name") or f"Corner {cid_b}"
+        _ref_exit = None
+        _ref_entry_next = None
+        _cmp_exit = None
+        _cmp_entry_next = None
+        ref_corner_a = lap_corner_map.get(reference_lap_num, {}).get(cid_a)
+        ref_corner_b = lap_corner_map.get(reference_lap_num, {}).get(cid_b)
+        cmp_corner_a = lap_corner_map.get(comparison_lap_num, {}).get(cid_a)
+        cmp_corner_b = lap_corner_map.get(comparison_lap_num, {}).get(cid_b)
+        if ref_corner_a and ref_corner_b:
+            _ref_exit = ref_corner_a.get("exit_speed")
+            _ref_entry_next = ref_corner_b.get("entry_speed")
+        if cmp_corner_a and cmp_corner_b:
+            _cmp_exit = cmp_corner_a.get("exit_speed")
+            _cmp_entry_next = cmp_corner_b.get("entry_speed")
+        if _ref_exit is not None and _ref_entry_next is not None:
+            _exit_d = (_cmp_exit - _ref_exit) if _cmp_exit is not None else 0.0
+            _entry_d = (_cmp_entry_next - _ref_entry_next) if _cmp_entry_next is not None else 0.0
+            if abs(_exit_d) > 2.0 or abs(_entry_d) > 2.0:
+                _correlation_lines.append(
+                    f"  {name_a} → {name_b}: "
+                    f"exit D {_exit_d:+.1f} km/h → entry D {_entry_d:+.1f} km/h"
+                )
+    if _correlation_lines:
+        lines.append("EXIT-TO-ENTRY CORRELATION (corner exit impact on next corner):")
+        lines.append("(D = compare lap minus reference lap; large exit delta cascades to next entry)")
+        lines.extend(_correlation_lines)
+        lines.append("")
+
+    # ── Coast time aggregation: total coasting per lap
+    _coast_lines: List[str] = []
+    for lap in laps:
+        _total_coast_frames = 0
+        for corner in lap.get("corners", []):
+            _phases = analyze_corner_phases(
+                lap["track"], corner, lap["start_frame"], hz
+            )
+            if _phases:
+                _total_coast_frames += _phases["coast_frames"]
+        _total_coast_s = _total_coast_frames / hz if hz > 0 else 0.0
+        if _total_coast_s > 0.1:
+            _marker = " <- BEST" if lap["lap_num"] == best_lap["lap_num"] else ""
+            _coast_lines.append(
+                f"  Lap {lap['lap_num']}: {_total_coast_s:.1f}s coasting "
+                f"({_total_coast_frames} frames across all corners){_marker}"
+            )
+    if _coast_lines:
+        lines.append("COAST TIME AGGREGATION (total time coasting per lap, all corners):")
+        lines.append("(coasting = neither brake nor gas near apex; pure time loss)")
+        lines.extend(_coast_lines)
+        _best_coast = min(
+            (float(l.split(":")[1].split("s")[0].strip()) for l in _coast_lines),
+            default=0.0,
+        )
+        _worst_coast = max(
+            (float(l.split(":")[1].split("s")[0].strip()) for l in _coast_lines),
+            default=0.0,
+        )
+        if _worst_coast - _best_coast > 0.3:
+            lines.append(
+                f"  >> COASTING SPREAD: {_worst_coast - _best_coast:.1f}s "
+                f"between best and worst lap — reducing coast time is free lap time."
+            )
+        lines.append("")
+
     # ── Braking, turn-in, and throttle timing analysis
     lines.append("BRAKING & TIMING ANALYSIS:")
     lines.append("(brake_onset = seconds before corner entry; turn_in = seconds before entry;")
@@ -842,7 +971,13 @@ async def generate_ai_prompt(
         lines.append("")
 
     # ── Theoretical best lap — assemble best segment time per corner across all laps
+    # Compute per-corner gap (best_lap_segment - best_segment_across_laps), then
+    # theoretical_best = actual_best_lap_time - sum(gaps).  This avoids the
+    # nonsensical "sum of corner segments vs full lap" comparison that ignored
+    # straights and produced inflated potential-gain figures.
     _best_segments: Dict[int, float] = {}
+    _best_lap_segments: Dict[int, float] = {}
+    _corner_gaps: Dict[int, float] = {}
     for spec in ref_corners:
         cid = spec["id"]
         _best_seg = None
@@ -850,28 +985,35 @@ async def generate_ai_prompt(
             corner = lap_corner_map.get(lap["lap_num"], {}).get(cid)
             if corner:
                 seg = corner_segment_time(corner, hz)
-                if _best_seg is None or seg < _best_seg:
+                if seg is not None and seg > 0.0 and (_best_seg is None or seg < _best_seg):
                     _best_seg = seg
         if _best_seg is not None:
-            _best_segments[cid] = _best_seg
-    if _best_segments:
-        _theoretical_best = sum(_best_segments.values())
+            _bl_corner = lap_corner_map.get(best_lap["lap_num"], {}).get(cid)
+            if _bl_corner:
+                _bl_seg = corner_segment_time(_bl_corner, hz)
+                if _bl_seg is not None and _bl_seg > 0.0:
+                    if _best_seg < _bl_seg * 0.5:
+                        continue
+                    _best_segments[cid] = _best_seg
+                    _best_lap_segments[cid] = _bl_seg
+                    _corner_gaps[cid] = _bl_seg - _best_seg
+    if _corner_gaps:
         _actual_best_time = best_lap["lap_time_s"]
+        _total_gap = sum(_corner_gaps.values())
+        _theoretical_best = _actual_best_time - _total_gap
         lines.append("THEORETICAL BEST LAP:")
-        lines.append(f"  Assembled best segments: {_theoretical_best:.2f}s vs actual best lap: {_actual_best_time:.2f}s")
-        lines.append(f"  Potential gain: {_actual_best_time - _theoretical_best:.2f}s")
+        lines.append(f"  Theoretical best: {_theoretical_best:.2f}s (actual best: {_actual_best_time:.2f}s)")
+        lines.append(f"  Potential gain: {_total_gap:.2f}s across {len(_corner_gaps)} corners")
         lines.append("  Per-corner best segments vs best lap segments:")
         for spec in ref_corners:
             cid = spec["id"]
             name = spec.get("name") or f"Corner {cid}"
             _best_seg = _best_segments.get(cid)
-            if _best_seg is None:
+            _bl_seg = _best_lap_segments.get(cid)
+            if _best_seg is None or _bl_seg is None:
                 continue
-            _bl_corner = lap_corner_map.get(best_lap["lap_num"], {}).get(cid)
-            if _bl_corner:
-                _bl_seg = corner_segment_time(_bl_corner, hz)
-                _gap = _bl_seg - _best_seg
-                lines.append(f"    C{cid} {name}: best segment {_best_seg:.2f}s  |  best lap segment {_bl_seg:.2f}s  |  gap {_gap:+.2f}s")
+            _gap = _corner_gaps.get(cid, 0.0)
+            lines.append(f"    C{cid} {name}: best segment {_best_seg:.2f}s  |  best lap segment {_bl_seg:.2f}s  |  gap {_gap:+.2f}s")
         lines.append("")
 
     # ── Time-loss ranking (cap implausible deltas that are capture artifacts)
@@ -1315,7 +1457,18 @@ async def generate_ai_prompt(
     lines.append("")
     lines.append("---")
     lines.append("")
-    lines.append(f"## 5. TRACK NOTES — {track_label}")
+    lines.append("## 5. STRAIGHTS & SECTORS")
+    lines.append("")
+    lines.append("3 bullets maximum. One line each.")
+    lines.append("Use the STRAIGHT/SECTOR ANALYSIS and EXIT-TO-ENTRY CORRELATION data above.")
+    lines.append("Format: **[Corner A → Corner B]:** [insight] ([one number]).")
+    lines.append("Only include straights where there is meaningful time spread between laps or exit speed is compromising the next corner.")
+    lines.append("Example: '**T2 → T3:** Poor T2 exit costs 0.4s on straight — get on throttle 0.3s earlier.'")
+    lines.append("Example: '**T4 → T5:** 0.5s spread on straight — carry more speed through T4 exit.'")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+    lines.append(f"## 6. TRACK NOTES — {track_label}")
     lines.append("")
     lines.append("3 bullets maximum. One line each.")
     lines.append("Format: **[Corner/Section]:** [short insight] ([one number]).")
@@ -1324,7 +1477,7 @@ async def generate_ai_prompt(
     lines.append("")
     lines.append("---")
     lines.append("")
-    lines.append("## 6. SINGLE BIGGEST GAIN")
+    lines.append("## 7. SINGLE BIGGEST GAIN")
     lines.append("")
     lines.append("Exactly one sentence: [corner] + [what to change] + [expected delta].")
     lines.append("Example: 'Lift instead of braking into Turn 6 to gain ~0.7s.'")
