@@ -104,9 +104,13 @@ def check_dependencies():
     for package, import_name in required.items():
         try:
             if package == "pyarmor":
-                # PyArmor doesn't have a Python import, check via command
-                pyarmor_exe = get_venv_executable("pyarmor")
-                result = subprocess.run([pyarmor_exe, "--version"], capture_output=True, text=True)
+                # PyArmor 9.x installs versioned CLI launchers (pyarmor-7.exe,
+                # pyarmor-8.exe) that may not work if the venv path changed.
+                # Invoke via python -m for reliability.
+                result = subprocess.run(
+                    [sys.executable, "-m", "pyarmor.cli", "--version"],
+                    capture_output=True, text=True,
+                )
                 if result.returncode != 0:
                     missing.append(package)
             else:
@@ -127,8 +131,6 @@ def obfuscate_source():
     """Obfuscate source code with PyArmor."""
     print("Obfuscating source code with PyArmor...")
     
-    pyarmor_exe = get_venv_executable("pyarmor")
-
     # Only obfuscate sensitive files to stay within trial limits
     files_to_obfuscate = [
         "src/core/security.py",
@@ -136,8 +138,9 @@ def obfuscate_source():
     ]
     
     # PyArmor obfuscation command (using free features only)
+    # Invoke via python -m pyarmor.cli for venv-path resilience
     cmd = [
-        pyarmor_exe,
+        sys.executable, "-m", "pyarmor.cli",
         "gen",
         "--output", OBFUSCATED_DIR,
         "--obf-code", "0",  # Basic obfuscation (free tier)
@@ -159,7 +162,7 @@ def obfuscate_source():
             
             # Try with minimal arguments
             simple_cmd = [
-                pyarmor_exe,
+                sys.executable, "-m", "pyarmor.cli",
                 "gen",
                 "--output", OBFUSCATED_DIR,
                 *files_to_obfuscate,

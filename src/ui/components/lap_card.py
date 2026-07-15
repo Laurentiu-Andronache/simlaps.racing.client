@@ -49,7 +49,7 @@ class LapCard(ft.Container):
         super().__init__(
             content=self._build_content(),
             padding=16,
-            margin=ft.margin.only(bottom=8),
+            margin=ft.Margin.only(bottom=8),
             border_radius=12,
             bgcolor=self._get_bgcolor(),
             border=ft.Border.all(1, self._get_border_color()),
@@ -132,7 +132,7 @@ class LapCard(ft.Container):
                 color="#ffffff" if lap.is_valid else "#666666",
                 font_family="monospace",
             ),
-            margin=ft.margin.symmetric(vertical=12),
+            margin=ft.Margin.symmetric(vertical=12),
         )
         
         # Sector times

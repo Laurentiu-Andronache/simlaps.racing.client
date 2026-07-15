@@ -262,7 +262,7 @@ class HomePage(ft.Column):
                 ], spacing=0),
                 ft.Container(expand=True),
             ], spacing=12),
-            padding=ft.padding.only(left=20, right=20, top=20, bottom=16),
+            padding=ft.Padding.only(left=20, right=20, top=20, bottom=16),
             bgcolor="#0f0f1a",
         )
         
@@ -282,10 +282,10 @@ class HomePage(ft.Column):
                     style=ft.ButtonStyle(color="#ffffff"),
                 ),
             ], alignment=ft.MainAxisAlignment.START),
-            padding=ft.padding.symmetric(horizontal=16, vertical=12),
+            padding=ft.Padding.symmetric(horizontal=16, vertical=12),
             bgcolor="#7c3aed",
             border_radius=8,
-            margin=ft.margin.only(left=20, right=20, top=0, bottom=16),
+            margin=ft.Margin.only(left=20, right=20, top=0, bottom=16),
             visible=False,  # Hidden by default
         )
         
@@ -298,10 +298,10 @@ class HomePage(ft.Column):
                 ], spacing=8),
                 self._telemetry_status,
             ], spacing=8),
-            padding=ft.padding.symmetric(vertical=12, horizontal=16),
+            padding=ft.Padding.symmetric(vertical=12, horizontal=16),
             bgcolor="#16162a",
             border_radius=8,
-            margin=ft.margin.only(left=20, right=20, top=0, bottom=16),
+            margin=ft.Margin.only(left=20, right=20, top=0, bottom=16),
         )
         
         # Laps header
@@ -312,7 +312,7 @@ class HomePage(ft.Column):
                 ft.Text("Recent Laps", size=16, weight=ft.FontWeight.W_600, color="#ffffff"),
                 self._lap_count_text,
             ], spacing=8),
-            padding=ft.padding.only(left=20, right=20, bottom=8),
+            padding=ft.Padding.only(left=20, right=20, bottom=8),
             bgcolor="#0f0f1a",
         )
         
@@ -320,7 +320,7 @@ class HomePage(ft.Column):
         laps_container = ft.Container(
             content=self._laps_column,
             expand=True,
-            padding=ft.padding.only(left=20, right=20),
+            padding=ft.Padding.only(left=20, right=20),
             bgcolor="#0f0f1a",
         )
         
@@ -352,7 +352,7 @@ class HomePage(ft.Column):
                     style=ft.ButtonStyle(color="#888888", side=ft.BorderSide(1, "#3d3d5c")),
                 ),
             ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-            padding=ft.padding.only(left=20, right=20, top=16, bottom=16),
+            padding=ft.Padding.only(left=20, right=20, top=16, bottom=16),
             bgcolor="#0f0f1a",
         )
         
@@ -362,7 +362,7 @@ class HomePage(ft.Column):
         # Game status container wrapper
         game_status_wrapper = ft.Container(
             content=self._game_status_container,
-            padding=ft.padding.only(left=20, right=20),
+            padding=ft.Padding.only(left=20, right=20),
             bgcolor="#0f0f1a",
         )
         
@@ -561,7 +561,7 @@ class HomePage(ft.Column):
             print(f"[HOME] Button on_click after update_path: {button.on_click}")
             self._telemetry_button_container.content = ft.Container(
                 content=button,
-                padding=ft.padding.only(left=20, right=20, bottom=8),
+                padding=ft.Padding.only(left=20, right=20, bottom=8),
                 bgcolor="#0f0f1a",
             )
         try:
