@@ -111,8 +111,9 @@ def test_get_lap_time_uses_source_priority() -> None:
     manager._session_data.lap_times_logs[5] = 130000.0
     assert manager.get_lap_time(5) == 130000.0
 
+    # Graphics SHM times must NOT override log-sourced times.
     manager._session_data.lap_times_graphics[5] = 120000.0
-    assert manager.get_lap_time(5) == 120000.0
+    assert manager.get_lap_time(5) == 130000.0
 
 
 def test_validate_data_consistency_reports_large_source_drift() -> None:
@@ -165,7 +166,7 @@ def test_legacy_wrapper_converts_shared_state_to_session_data() -> None:
     assert legacy_session.laps[0].sector2_ms == 41000
 
 
-def test_to_legacy_session_data_uses_graphics_lap_time_priority() -> None:
+def test_to_legacy_session_data_uses_log_lap_time_priority() -> None:
     manager = SharedSessionManager()
     session = SessionData(
         session_id="session-priority",
@@ -188,7 +189,8 @@ def test_to_legacy_session_data_uses_graphics_lap_time_priority() -> None:
 
     legacy_session = manager.to_legacy_session_data()
     lap_two = next(l for l in legacy_session.laps if l.lap_number == 2)
-    assert lap_two.lap_time_ms == 120000
+    # Log-sourced time (130000) must take priority over graphics SHM (120000).
+    assert lap_two.lap_time_ms == 130000
 
 
 def test_legacy_wrapper_preserves_log_derived_outlap_state() -> None:
@@ -269,9 +271,11 @@ def test_concurrent_updates_are_thread_safe() -> None:
     with ThreadPoolExecutor(max_workers=8) as pool:
         list(pool.map(_write, range(1, 50)))
 
-    lap_times = manager.get_all_lap_times()
+    # Graphics times go to lap_times_graphics (not get_all_lap_times).
+    with manager._lock:
+        graphics_count = len(manager._session_data.lap_times_graphics)
     lap_validity = manager.get_all_lap_validity()
-    assert len(lap_times) == 49
+    assert graphics_count == 49
     assert len(lap_validity) == 49
 
 
@@ -289,7 +293,9 @@ def test_concurrent_access_performance() -> None:
 
     # Guard against major regressions while avoiding flaky micro-bench assertions.
     assert elapsed < 8.0
-    assert len(manager.get_all_lap_times()) == 1500
+    with manager._lock:
+        graphics_count = len(manager._session_data.lap_times_graphics)
+    assert graphics_count == 1500
 
 
 def test_memory_usage_optimization() -> None:

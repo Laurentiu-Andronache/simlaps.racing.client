@@ -1058,10 +1058,11 @@ class TestTelemetryAnalyzer:
 
         frames = [create_mock_frame(i, speed=90.0 + (i % 40), position=i * 0.01) for i in range(220)]
         manager = SharedSessionManager()
-        manager.update_lap_timing_from_graphics_shm(1, {"last_laptime_ms": 200000})
-        manager.update_lap_timing_from_graphics_shm(2, {"last_laptime_ms": 190000})
-        manager.update_lap_timing_from_graphics_shm(3, {"last_laptime_ms": 180000})
-        manager.update_lap_timing_from_graphics_shm(4, {"last_laptime_ms": 170000})
+        # Lap times must come from logs (graphics SHM is not authoritative).
+        manager._session_data.lap_times_logs[1] = 200000.0
+        manager._session_data.lap_times_logs[2] = 190000.0
+        manager._session_data.lap_times_logs[3] = 180000.0
+        manager._session_data.lap_times_logs[4] = 170000.0
         manager.update_lap_validity_from_graphics_shm(2, True)
 
         analyzer = TelemetryAnalyzer(output_dir="tests/output", session_manager=manager)
@@ -1094,11 +1095,12 @@ class TestTelemetryAnalyzer:
 
         frames = [create_mock_frame(i, speed=95.0 + (i % 30), position=i * 0.01) for i in range(180)]
         manager = SharedSessionManager()
-        manager.update_lap_timing_from_graphics_shm(1, {"last_laptime_ms": 999000})
-        manager.update_lap_timing_from_graphics_shm(2, {"last_laptime_ms": 150000})
-        manager.update_lap_timing_from_graphics_shm(3, {"last_laptime_ms": 140000})
-        manager.update_lap_timing_from_graphics_shm(4, {"last_laptime_ms": 130000})
-        manager.update_lap_timing_from_graphics_shm(5, {"last_laptime_ms": 129000})
+        # Lap times must come from logs (graphics SHM is not authoritative).
+        manager._session_data.lap_times_logs[1] = 999000.0
+        manager._session_data.lap_times_logs[2] = 150000.0
+        manager._session_data.lap_times_logs[3] = 140000.0
+        manager._session_data.lap_times_logs[4] = 130000.0
+        manager._session_data.lap_times_logs[5] = 129000.0
 
         analyzer = TelemetryAnalyzer(output_dir="tests/output", session_manager=manager)
         game_markers = [

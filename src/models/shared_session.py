@@ -221,17 +221,12 @@ class SharedSessionManager:
     # Legacy accessors
     def get_lap_time(self, lap_num: int) -> Optional[float]:
         with self._lock:
-            # 1st priority: Graphics SHM timing state.
-            graphics_time = self._session_data.lap_times_graphics.get(lap_num)
-            if graphics_time is not None:
-                return graphics_time
-
-            # 2nd priority: Log parser completed-lap timing.
+            # 1st priority: Log parser completed-lap timing (authoritative).
             logs_time = self._session_data.lap_times_logs.get(lap_num)
             if logs_time is not None:
                 return logs_time
 
-            # 3rd priority: Derived telemetry timings.
+            # 2nd priority: Derived telemetry timings.
             return self._session_data.calc_lap_times.get(lap_num)
 
     def get_current_lap_time(self) -> Optional[int]:
@@ -320,20 +315,17 @@ class SharedSessionManager:
 
     def get_best_lap_time(self) -> Optional[float]:
         with self._lock:
-            return min(self._session_data.lap_times.values()) if self._session_data.lap_times else None
+            return min(self._session_data.lap_times_logs.values()) if self._session_data.lap_times_logs else None
 
     def get_all_lap_times(self) -> Dict[int, float]:
         with self._lock:
             lap_nums = (
-                set(self._session_data.lap_times_graphics)
-                | set(self._session_data.lap_times_logs)
+                set(self._session_data.lap_times_logs)
                 | set(self._session_data.calc_lap_times)
             )
             merged: Dict[int, float] = {}
             for lap_num in lap_nums:
-                value = self._session_data.lap_times_graphics.get(lap_num)
-                if value is None:
-                    value = self._session_data.lap_times_logs.get(lap_num)
+                value = self._session_data.lap_times_logs.get(lap_num)
                 if value is None:
                     value = self._session_data.calc_lap_times.get(lap_num)
                 if value is not None:
@@ -408,7 +400,6 @@ class SharedSessionManager:
 
             if current.last_lap_time_ms and current.last_lap_time_ms > 0:
                 lap_time = float(current.last_lap_time_ms)
-                self._session_data.lap_times[lap_num] = lap_time
                 self._session_data.lap_times_graphics[lap_num] = lap_time
                 self._mark_source("lap_times", "shm_graphics")
 
