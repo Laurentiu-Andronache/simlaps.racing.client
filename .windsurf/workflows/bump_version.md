@@ -41,7 +41,6 @@ href="/downloads/SimLapsClient-v119.exe"
 |------|--------|---------|
 | version.py | Separate integers | `VERSION_MAJOR = 1` |
 | version.ts | Dotted string | `'1.1.9'` |
-| footr.tsx | Concatenated | `v119` |
 | header.tsx | Concatenated | `v119` |
 
 ## Example: Bumping from 1.1.9 to 1.2.0
@@ -58,7 +57,7 @@ VERSION_PATCH = 0  # Changed from 9
 export const LATEST_CLIENT_VERSION = '1.2.2'
 ```
 
-**footer.tsx & header.tsx:**
+**header.tsx:**
 ```tsx
 href="/downloads/SimLapsClient-v120.exe"  # v119 -> v120
 ```
@@ -68,4 +67,3 @@ href="/downloads/SimLapsClient-v120.exe"  # v119 -> v120
 - [ ] src/version.py - VERSION_MAJOR, VERSION_MINOR, VERSION_PATCH
 - [ ] web/src/version.ts - LATEST_CLIENT_VERSION string  
 - [ ] web/src/components/footr.tsx - download link filename
-- [ ] web/src/components/header.tsx - all download link filenames
