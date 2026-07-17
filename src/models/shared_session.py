@@ -226,7 +226,12 @@ class SharedSessionManager:
             if logs_time is not None:
                 return logs_time
 
-            # 2nd priority: Derived telemetry timings.
+            # 2nd priority: Graphics SHM timing state.
+            graphics_time = self._session_data.lap_times_graphics.get(lap_num)
+            if graphics_time is not None:
+                return graphics_time
+
+            # 3rd priority: Derived telemetry timings.
             return self._session_data.calc_lap_times.get(lap_num)
 
     def get_current_lap_time(self) -> Optional[int]:
@@ -315,17 +320,22 @@ class SharedSessionManager:
 
     def get_best_lap_time(self) -> Optional[float]:
         with self._lock:
-            return min(self._session_data.lap_times_logs.values()) if self._session_data.lap_times_logs else None
+            all_times = list(self._session_data.lap_times_logs.values())
+            all_times.extend(self._session_data.lap_times_graphics.values())
+            return min(all_times) if all_times else None
 
     def get_all_lap_times(self) -> Dict[int, float]:
         with self._lock:
             lap_nums = (
                 set(self._session_data.lap_times_logs)
+                | set(self._session_data.lap_times_graphics)
                 | set(self._session_data.calc_lap_times)
             )
             merged: Dict[int, float] = {}
             for lap_num in lap_nums:
                 value = self._session_data.lap_times_logs.get(lap_num)
+                if value is None:
+                    value = self._session_data.lap_times_graphics.get(lap_num)
                 if value is None:
                     value = self._session_data.calc_lap_times.get(lap_num)
                 if value is not None:

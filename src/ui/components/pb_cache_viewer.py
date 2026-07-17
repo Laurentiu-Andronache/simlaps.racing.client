@@ -34,7 +34,7 @@ def show_pb_cache_dialog(page: ft.Page, pb_cache: PBCache):
                 ft.Text("No personal best data loaded", size=16, color="#888888"),
                 ft.Text("Try recording some laps or check server connection", size=12, color="#666666"),
             ], horizontal_alignment=ft.CrossAxisAlignment.CENTER),
-            padding=ft.padding.all(20),
+            padding=ft.Padding.all(20),
             width=400,
             height=200,
         )
@@ -64,7 +64,7 @@ def show_pb_cache_dialog(page: ft.Page, pb_cache: PBCache):
                     border_radius=8,
                 ),
             ]),
-            padding=ft.padding.all(20),
+            padding=ft.Padding.all(20),
             width=500,
             height=400,
         )

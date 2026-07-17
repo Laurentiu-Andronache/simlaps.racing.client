@@ -116,6 +116,22 @@ def test_get_lap_time_uses_source_priority() -> None:
     assert manager.get_lap_time(5) == 130000.0
 
 
+def test_get_lap_time_graphics_fallback_when_no_log_time() -> None:
+    """Graphics SHM times must be visible when log-sourced times are absent."""
+    manager = SharedSessionManager()
+
+    manager._session_data.lap_times_graphics[3] = 95000.0
+    assert manager.get_lap_time(3) == 95000.0
+
+    # get_all_lap_times must include graphics-only laps
+    all_times = manager.get_all_lap_times()
+    assert 3 in all_times
+    assert all_times[3] == 95000.0
+
+    # get_best_lap_time must consider graphics times
+    assert manager.get_best_lap_time() == 95000.0
+
+
 def test_validate_data_consistency_reports_large_source_drift() -> None:
     manager = SharedSessionManager()
 
@@ -271,12 +287,15 @@ def test_concurrent_updates_are_thread_safe() -> None:
     with ThreadPoolExecutor(max_workers=8) as pool:
         list(pool.map(_write, range(1, 50)))
 
-    # Graphics times go to lap_times_graphics (not get_all_lap_times).
+    # Graphics times are stored in lap_times_graphics and serve as fallback
+    # in get_all_lap_times when no log-sourced times exist.
     with manager._lock:
         graphics_count = len(manager._session_data.lap_times_graphics)
     lap_validity = manager.get_all_lap_validity()
+    all_lap_times = manager.get_all_lap_times()
     assert graphics_count == 49
     assert len(lap_validity) == 49
+    assert len(all_lap_times) == 49
 
 
 def test_concurrent_access_performance() -> None:

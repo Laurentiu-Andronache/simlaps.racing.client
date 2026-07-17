@@ -64,7 +64,7 @@ def _detect_laps_by_timing_state(track: List[Dict], hz: float = 1.0) -> Optional
     prev_last_laptime = None
 
     for pt in track:
-        last_laptime = pt.get("last_laptime_ms")
+        last_laptime = pt.get("last_lap_time_ms")
         if last_laptime is None:
             continue
         # Detect when last_laptime changes (lap completion event)
