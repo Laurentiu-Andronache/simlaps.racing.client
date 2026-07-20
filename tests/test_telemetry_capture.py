@@ -246,9 +246,12 @@ class TestTelemetryCapture:
         frame = capture._capture_frame(1)
         assert frame is not None
 
-        # Lap validity is sourced from logs only — SHM graphics no longer sets it.
+        # SHM validity flags are now wired into shared session.
         validity = manager.get_lap_validity_data(4)
-        assert validity is None
+        assert validity is not None
+        assert validity.is_valid is False
+        assert validity.lap_state == "INVALID_GAME"
+        assert validity.source == "shm_graphics"
 
         timing = manager.get_lap_timing_data(4)
         assert timing is not None

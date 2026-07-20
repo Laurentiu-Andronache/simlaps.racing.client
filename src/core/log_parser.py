@@ -1335,6 +1335,12 @@ class LogParser:
                     f"[VALIDITY] Game says invalid — #{pending.lap_number} → INVALID_GAME"
                 )
 
+        # Tag the lap as carrying an authoritative validity verdict from the
+        # game's "Relevant onSplit" broadcast.  This provenance is consumed by
+        # SharedSessionManager.update_lap_from_logs so it can protect
+        # authoritative-valid results from being overridden by SHM.
+        pending.validity_source = "authoritative"
+
         self.current_session.laps.append(pending)
         self._pending_lap = None
         log_debug(Component.LOG_PARSER, 

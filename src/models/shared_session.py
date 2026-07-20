@@ -12,7 +12,18 @@ from typing import Any, Callable, Dict, Optional, Set
 import threading
 import uuid
 
+from ..utils.structured_logger import log_debug, Component
 from .lap import LapData, LapState, SessionData
+
+# Lap states that carry an authoritative "this lap does not count" verdict
+# from the game's Relevant-onSplit broadcast.  Both merge guards (SHM→log
+# and log→SHM) must agree on this set so that an authoritative invalid
+# result is never overwritten by a heuristic source.
+_AUTHORITATIVE_INVALID_STATES = frozenset({
+    LapState.INVALID_GAME.value,
+    LapState.INVALID_TRACK_LIMIT.value,
+    LapState.INVALID_PENALTY.value,
+})
 
 
 @dataclass
@@ -187,6 +198,10 @@ class SharedSessionManager:
         self._session_data = SharedSessionData()
         self._lock = threading.RLock()
         self._observers: list[Callable[[SharedSessionData], None]] = []
+        # Per-frame change gate: only update/log validity when the
+        # (lap, is_invalid) tuple transitions.  Prevents log spam and
+        # redundant observer notifications at capture Hz (~10-20/s).
+        self._last_validity_state: tuple[int, bool] = (0, False)
 
     def _mark_source(self, field_name: str, source: str) -> None:
         if field_name not in self._session_data.data_sources:
@@ -370,17 +385,40 @@ class SharedSessionManager:
         with self._lock:
             current = self._session_data.lap_validity.get(lap_num)
             lap_state = "INVALID_GAME" if is_invalid else "VALID"
+
+            # Always keep the live "current lap invalidated" flag up to date
+            # even when we early-return below (Fable #6).
+            self._session_data.is_current_lap_invalid = is_invalid
+
+            # Don't let SHM VALID overwrite a log-sourced authoritative INVALID.
+            if (
+                current is not None
+                and current.source == "logs"
+                and not is_invalid
+                and current.lap_state in _AUTHORITATIVE_INVALID_STATES
+            ):
+                log_debug(
+                    Component.SHARED_SESSION,
+                    f"[VALIDITY_MERGE] lap={lap_num} keeping log verdict ({current.lap_state}), SHM says valid",
+                )
+                return
+
             if current is None:
                 current = LapValidityData(lap_number=lap_num, is_valid=not is_invalid, lap_state=lap_state)
                 self._session_data.lap_validity[lap_num] = current
+            elif current.lap_state in _AUTHORITATIVE_INVALID_STATES and is_invalid:
+                # SHM agrees the lap is invalid, but an authoritative
+                # log-sourced state is already stored.  Update the live
+                # flag without overwriting provenance (Fable #5).
+                current.is_valid = False
+                # Keep current.lap_state and current.source intact.
             else:
                 current.is_valid = not is_invalid
                 if current.lap_state in (None, "VALID", "INVALID_GAME"):
                     current.lap_state = lap_state
-            current.source = "shm_graphics"
+                current.source = "shm_graphics"
 
             self._session_data.lap_validity_flat[lap_num] = not is_invalid
-            self._session_data.is_current_lap_invalid = is_invalid
             self._mark_source("lap_validity", "shm_graphics")
 
         self.notify_observers()
@@ -582,13 +620,50 @@ class SharedSessionManager:
                 self._session_data.lap_times_logs[lap_data.lap_number] = lap_time
                 self._mark_source("lap_times", "logs")
 
-            self._session_data.lap_validity[lap_data.lap_number] = LapValidityData(
-                lap_number=lap_data.lap_number,
-                is_valid=lap_data.is_valid,
-                lap_state=lap_data.lap_type or lap_data.lap_state.value,
-                source="logs",
+            # ── Merge validity ────────────────────────────────────────────
+            # SHM is_invalid is a live flag for the *in-progress* lap; the
+            # log parser emits the completed lap with either a heuristic
+            # verdict (no Relevant-onSplit line arrived) or an authoritative
+            # one (Relevant-onSplit was processed).  Preserve SHM only when
+            # SHM says *invalid* and the log says *heuristic valid* — all
+            # other log states (OUTLAP, INLAP, INVALID_SPLIT, … and every
+            # authoritative verdict) must replace the SHM entry (Fable #1).
+            existing = self._session_data.lap_validity.get(lap_data.lap_number)
+            log_state = lap_data.lap_type or lap_data.lap_state.value
+            log_is_authoritative = (
+                lap_data.validity_source == "authoritative"
+                or log_state in _AUTHORITATIVE_INVALID_STATES
             )
-            self._session_data.lap_validity_flat[lap_data.lap_number] = lap_data.is_valid
+            # SHM wins ONLY when it already recorded an invalid verdict AND
+            # the log only brings a non-authoritative (heuristic) valid lap.
+            shm_wins = (
+                existing is not None
+                and existing.source == "shm_graphics"
+                and not existing.is_valid
+                and lap_data.is_valid
+                and not log_is_authoritative
+            )
+
+            if shm_wins:
+                log_debug(
+                    Component.SHARED_SESSION,
+                    f"[VALIDITY_MERGE] lap={lap_data.lap_number} keeping SHM verdict ({existing.lap_state}), log heuristic was {log_state}",
+                )
+                # Keep lap_validity_flat consistent with the SHM verdict.
+                self._session_data.lap_validity_flat[lap_data.lap_number] = False
+            else:
+                self._session_data.lap_validity[lap_data.lap_number] = LapValidityData(
+                    lap_number=lap_data.lap_number,
+                    is_valid=lap_data.is_valid,
+                    lap_state=log_state,
+                    source="logs",
+                )
+                self._session_data.lap_validity_flat[lap_data.lap_number] = lap_data.is_valid
+                if existing is not None:
+                    log_debug(
+                        Component.SHARED_SESSION,
+                        f"[VALIDITY_MERGE] lap={lap_data.lap_number} logs overrode SHM (was {existing.lap_state} now {log_state})",
+                    )
 
             self._mark_source("lap_boundaries", "logs")
             self._mark_source("lap_completion_timestamps", "logs")
@@ -625,6 +700,42 @@ class SharedSessionManager:
         current_lap = int(graphics_data.get("session_current_lap") or 0)
         if current_lap > 0:
             self.update_lap_timing_from_graphics_shm(current_lap, graphics_data)
+
+            # ── Wire SHM validity flags into shared session ──────────────
+            # is_invalid comes from SMEvoTimingState; the decoder always
+            # populates it (mapped from timing_is_invalid), so it is never
+            # None in practice.  is_valid_lap from SPageFileGraphicEvo is a
+            # different semantic ("this lap counts") and is NOT the logical
+            # negation of is_invalid, so we intentionally do NOT use it as a
+            # fallback (Fable #2).
+            #
+            # is_invalid applies to the *current* (in-progress) lap, which is
+            # session_current_lap.  When the lap completes and last_lap_time_ms
+            # updates, the validity for the *completed* lap is what matters.
+            # We store validity keyed by lap number so both sources converge.
+            #
+            # Lap-rollover note: on the frame(s) where the lap counter has
+            # incremented but the game hasn't cleared the invalid flag yet,
+            # lap N+1 can be momentarily marked INVALID_GAME.  This
+            # self-heals on the next frame when SHM-sourced VALID overwrites
+            # SHM-sourced INVALID for the same lap (Fable #4).
+            is_invalid = graphics_data.get("is_invalid")
+            if is_invalid is None:
+                is_invalid = graphics_data.get("timing_is_invalid")
+
+            if is_invalid is not None:
+                is_invalid_bool = bool(is_invalid)
+                # Only call update + log when the (lap, is_invalid) tuple
+                # actually changes — avoids per-frame observer spam and
+                # debug-log eviction at capture Hz (Fable #3, Sol5.6 #3).
+                new_state = (current_lap, is_invalid_bool)
+                if new_state != self._last_validity_state:
+                    self._last_validity_state = new_state
+                    self.update_lap_validity_from_graphics_shm(current_lap, is_invalid_bool)
+                    log_debug(
+                        Component.SHARED_SESSION,
+                        f"[SHM_VALIDITY] current_lap={current_lap} is_invalid={is_invalid_bool}",
+                    )
 
         self.update_fuel_from_graphics_shm(graphics_data)
 

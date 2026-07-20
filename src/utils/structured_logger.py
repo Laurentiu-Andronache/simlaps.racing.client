@@ -39,6 +39,7 @@ class Component(Enum):
     DISCORD = "DISCORD"
     API = "API"
     LOG_PARSER = "LOG_PARSER"
+    SHARED_SESSION = "SHARED_SESSION"
 
 
 class StructuredLogger:

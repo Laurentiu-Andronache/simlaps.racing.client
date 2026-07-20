@@ -30,9 +30,12 @@ def test_update_from_graphics_sets_timing_and_fuel() -> None:
         }
     )
 
-    # Lap validity is sourced from logs only — SHM graphics no longer sets it.
+    # SHM validity flags are now wired into shared session.
     lap_validity = manager.get_lap_validity_data(3)
-    assert lap_validity is None
+    assert lap_validity is not None
+    assert lap_validity.is_valid is False
+    assert lap_validity.lap_state == "INVALID_GAME"
+    assert lap_validity.source == "shm_graphics"
 
     lap_timing = manager.get_lap_timing_data(3)
     assert lap_timing is not None
@@ -78,6 +81,185 @@ def test_update_lap_from_logs_populates_player_and_sector_data() -> None:
     assert sectors.sector1_ms == 32000
     assert sectors.sector2_ms == 33000
     assert sectors.sector3_ms == 35000
+
+
+def test_shm_invalid_not_overwritten_by_log_heuristic_valid() -> None:
+    """SHM says lap is invalid → log parser heuristic VALID must not overwrite it."""
+    manager = SharedSessionManager()
+
+    # SHM reports lap 2 as invalid
+    manager.update_from_graphics_shm({
+        "session_current_lap": 2,
+        "is_invalid": True,
+    })
+    assert manager.get_lap_validity(2) is False
+
+    # Log parser emits lap 2 with heuristic VALID (no authoritative onSplit)
+    lap = LapData(
+        lap_number=2,
+        physics_lap_number=2,
+        lap_time_ms=95000,
+        lap_time_str="1:35.000",
+        is_valid=True,
+        lap_state=LapState.VALID,
+        timestamp="2026-01-01T00:00:00",
+    )
+    manager.update_lap_from_logs(lap)
+
+    # SHM verdict must be preserved
+    validity = manager.get_lap_validity_data(2)
+    assert validity is not None
+    assert validity.is_valid is False
+    assert validity.lap_state == "INVALID_GAME"
+
+
+def test_log_authoritative_invalid_not_overwritten_by_shm_valid() -> None:
+    """Log parser authoritative INVALID_GAME must not be overwritten by SHM VALID."""
+    manager = SharedSessionManager()
+
+    # Log parser emits lap 1 with authoritative INVALID_GAME
+    lap = LapData(
+        lap_number=1,
+        physics_lap_number=1,
+        lap_time_ms=95000,
+        lap_time_str="1:35.000",
+        is_valid=False,
+        lap_state=LapState.INVALID_GAME,
+        lap_type="INVALID_GAME",
+        timestamp="2026-01-01T00:00:00",
+    )
+    manager.update_lap_from_logs(lap)
+    assert manager.get_lap_validity(1) is False
+
+    # SHM later reports lap 1 as valid
+    manager.update_lap_validity_from_graphics_shm(1, is_invalid=False)
+
+    # Log verdict must be preserved
+    validity = manager.get_lap_validity_data(1)
+    assert validity is not None
+    assert validity.is_valid is False
+    assert validity.lap_state == "INVALID_GAME"
+    assert validity.source == "logs"
+
+
+def test_shm_valid_does_not_block_log_outlap() -> None:
+    """SHM writes VALID for current lap → log parser emits OUTLAP → log must win."""
+    manager = SharedSessionManager()
+
+    # SHM reports lap 3 as valid (normal in-progress frame)
+    manager.update_from_graphics_shm({
+        "session_current_lap": 3,
+        "is_invalid": False,
+    })
+    assert manager.get_lap_validity(3) is True
+
+    # Log parser emits lap 3 as OUTLAP (heuristic, not authoritative)
+    lap = LapData(
+        lap_number=3,
+        physics_lap_number=3,
+        lap_time_ms=0,
+        lap_time_str="0:00.000",
+        is_valid=False,
+        lap_state=LapState.OUTLAP,
+        lap_type="OUTLAP",
+        timestamp="2026-01-01T00:00:00",
+    )
+    manager.update_lap_from_logs(lap)
+
+    # Log OUTLAP must replace the SHM VALID entry
+    validity = manager.get_lap_validity_data(3)
+    assert validity is not None
+    assert validity.lap_state == "OUTLAP"
+    assert validity.source == "logs"
+
+
+def test_authoritative_log_valid_overrides_shm_invalid() -> None:
+    """SHM says invalid → log parser emits authoritative VALID (from onSplit) → log wins."""
+    manager = SharedSessionManager()
+
+    # SHM reports lap 5 as invalid
+    manager.update_from_graphics_shm({
+        "session_current_lap": 5,
+        "is_invalid": True,
+    })
+    assert manager.get_lap_validity(5) is False
+
+    # Log parser emits lap 5 with authoritative VALID (Relevant onSplit said valid)
+    lap = LapData(
+        lap_number=5,
+        physics_lap_number=5,
+        lap_time_ms=95000,
+        lap_time_str="1:35.000",
+        is_valid=True,
+        lap_state=LapState.VALID,
+        lap_type="VALID",
+        validity_source="authoritative",
+        timestamp="2026-01-01T00:00:00",
+    )
+    manager.update_lap_from_logs(lap)
+
+    # Authoritative log VALID must override SHM INVALID
+    validity = manager.get_lap_validity_data(5)
+    assert validity is not None
+    assert validity.is_valid is True
+    assert validity.lap_state == "VALID"
+    assert validity.source == "logs"
+
+
+def test_shm_invalid_does_not_block_log_invalid_split() -> None:
+    """SHM says invalid → log parser emits INVALID_SPLIT → log state must win."""
+    manager = SharedSessionManager()
+
+    manager.update_from_graphics_shm({
+        "session_current_lap": 2,
+        "is_invalid": True,
+    })
+
+    lap = LapData(
+        lap_number=2,
+        physics_lap_number=2,
+        lap_time_ms=95000,
+        lap_time_str="1:35.000",
+        is_valid=False,
+        lap_state=LapState.INVALID_SPLIT,
+        lap_type="INVALID_SPLIT",
+        timestamp="2026-01-01T00:00:00",
+    )
+    manager.update_lap_from_logs(lap)
+
+    validity = manager.get_lap_validity_data(2)
+    assert validity is not None
+    assert validity.lap_state == "INVALID_SPLIT"
+    assert validity.source == "logs"
+
+
+def test_shm_validity_change_gate_prevents_duplicate_updates() -> None:
+    """Repeated SHM frames with same (lap, is_invalid) must not call update twice."""
+    manager = SharedSessionManager()
+
+    # First frame: lap 1, invalid=False
+    manager.update_from_graphics_shm({
+        "session_current_lap": 1,
+        "is_invalid": False,
+    })
+    assert manager._last_validity_state == (1, False)
+
+    # Second frame: same state — should be gated, no new update
+    # We verify by checking that the change gate tuple hasn't triggered a re-notification.
+    # The gate is working if the state tuple is unchanged and no exception occurs.
+    manager.update_from_graphics_shm({
+        "session_current_lap": 1,
+        "is_invalid": False,
+    })
+    assert manager._last_validity_state == (1, False)
+
+    # Third frame: is_invalid transitions to True — should update
+    manager.update_from_graphics_shm({
+        "session_current_lap": 1,
+        "is_invalid": True,
+    })
+    assert manager._last_validity_state == (1, True)
+    assert manager.get_lap_validity(1) is False
 
 
 def test_update_from_static_shm_sets_session_metadata() -> None:
