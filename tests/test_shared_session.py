@@ -113,6 +113,49 @@ def test_shm_invalid_not_overwritten_by_log_heuristic_valid() -> None:
     assert validity.lap_state == "INVALID_GAME"
 
 
+def test_shm_invalid_from_total_lap_count_wins_over_log_heuristic() -> None:
+    """AC Evo 0.8.0.1: session_current_lap is 0, so current lap is derived from
+    total_lap_count.  When total_lap_count=1 and is_valid_lap=False with an
+    active current_lap_time_ms, the in-progress lap is lap 2 and must win over
+    a heuristic VALID log entry for lap 2.
+    """
+    manager = SharedSessionManager()
+
+    # Lap 1 finishes; lap 2 starts and is immediately invalidated.
+    manager.update_from_graphics_shm({
+        "session_current_lap": 0,
+        "total_lap_count": 1,
+        "is_valid_lap": False,
+        "current_lap_time_ms": 44573,
+    })
+
+    # SHM must derive lap 2 and mark it invalid.
+    assert manager.get_lap_validity(2) is False
+    validity = manager.get_lap_validity_data(2)
+    assert validity is not None
+    assert validity.lap_state == "INVALID_GAME"
+    assert validity.source == "shm_graphics"
+
+    # Log parser emits lap 2 with heuristic VALID (no Relevant onSplit).
+    lap = LapData(
+        lap_number=2,
+        physics_lap_number=2,
+        lap_time_ms=54453,
+        lap_time_str="0:54.453",
+        is_valid=True,
+        lap_state=LapState.VALID,
+        timestamp="2026-01-01T00:00:00",
+    )
+    manager.update_lap_from_logs(lap)
+
+    # SHM verdict must be preserved; the 54.453 lap stays invalid.
+    validity = manager.get_lap_validity_data(2)
+    assert validity is not None
+    assert validity.is_valid is False
+    assert validity.lap_state == "INVALID_GAME"
+    assert validity.source == "shm_graphics"
+
+
 def test_log_authoritative_invalid_not_overwritten_by_shm_valid() -> None:
     """Log parser authoritative INVALID_GAME must not be overwritten by SHM VALID."""
     manager = SharedSessionManager()
@@ -541,3 +584,70 @@ def test_large_session_handling() -> None:
     legacy_session = manager.to_legacy_session_data()
     assert len(legacy_session.laps) == 2000
     assert manager.get_lap_time(2000) == 102000.0
+
+
+def test_shm_is_valid_lap_false_with_active_timing_marks_invalid() -> None:
+    """is_valid_lap=False with current_lap_time_ms > 0 must mark lap invalid."""
+    manager = SharedSessionManager()
+
+    manager.update_from_graphics_shm({
+        "total_lap_count": 1,
+        "is_valid_lap": False,
+        "current_lap_time_ms": 40374,
+        "session_current_lap": 0,
+        "is_invalid": None,
+        "timing_is_invalid": None,
+    })
+
+    validity = manager.get_lap_validity_data(2)
+    assert validity is not None
+    assert validity.is_valid is False
+    assert validity.source == "shm_graphics"
+
+
+def test_shm_is_valid_lap_false_with_zero_lap_time_skipped() -> None:
+    """is_valid_lap=False with current_lap_time_ms == 0 means timing inactive, not invalid."""
+    manager = SharedSessionManager()
+
+    manager.update_from_graphics_shm({
+        "total_lap_count": 0,
+        "is_valid_lap": False,
+        "current_lap_time_ms": 0,
+        "session_current_lap": 0,
+        "is_invalid": None,
+        "timing_is_invalid": None,
+    })
+
+    assert manager.get_lap_validity_data(1) is None
+
+
+def test_shm_invalid_survives_heuristic_valid_log() -> None:
+    """SHM says invalid → log emits heuristic VALID (no onSplit) → SHM verdict must survive."""
+    manager = SharedSessionManager()
+
+    manager.update_from_graphics_shm({
+        "total_lap_count": 1,
+        "is_valid_lap": False,
+        "current_lap_time_ms": 40374,
+        "session_current_lap": 0,
+        "is_invalid": None,
+        "timing_is_invalid": None,
+    })
+    assert manager.get_lap_validity(2) is False
+
+    lap = LapData(
+        lap_number=2,
+        physics_lap_number=2,
+        lap_time_ms=52371,
+        lap_time_str="00:52.371",
+        is_valid=True,
+        lap_state=LapState.VALID,
+        lap_type="VALID",
+        timestamp="2026-07-20T23:24:20.446",
+    )
+    manager.update_lap_from_logs(lap)
+
+    validity = manager.get_lap_validity_data(2)
+    assert validity is not None
+    assert validity.is_valid is False
+    assert validity.source == "shm_graphics"

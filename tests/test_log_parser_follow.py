@@ -523,6 +523,59 @@ class TestFollowWithCallbacks:
         assert completed is not None
         assert completed.tyre_compound == "HC"
 
+    @pytest.mark.asyncio
+    async def test_follow_emits_final_race_lap_before_end_session(self, tmp_path):
+        log_file = tmp_path / "test.log"
+        log_file.write_text("")
+        car_id = "459ee57547c87da8-27add15c0fd9b297"
+        emitted_laps = []
+        all_laps_emitted = asyncio.Event()
+
+        async def on_lap(session, lap):
+            emitted_laps.append(lap)
+            if len(emitted_laps) == 3:
+                all_laps_emitted.set()
+
+        parser = LogParser(log_path=str(log_file), on_lap_complete=on_lap)
+        parser.context.car_uuid = car_id
+        parser.current_session = SessionData(
+            track="brands_hatch indy",
+            car="ks_ktm_x_bow_gt4",
+            session_type="RACE",
+            car_uuid=car_id,
+        )
+
+        follow_task = asyncio.create_task(parser.follow(poll_interval=0.01))
+        await asyncio.sleep(0.05)
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(
+                f"[2026-07-20 23:23:27.867] [physics] [info] "
+                f"Lap test evOnLapCompleted 2 completed\n"
+                f"[2026-07-20 23:23:28.073] [gameplay] [info] "
+                f"New lap carId {car_id}: 00:59.172\n"
+                f"[2026-07-20 23:23:28.080] [physics] [info] "
+                f"Lap test evOnLapCompleted 2 completed\n"
+                f"[2026-07-20 23:24:20.446] [gameplay] [info] "
+                f"New lap carId {car_id}: 00:52.371\n"
+                f"[2026-07-20 23:24:20.451] [physics] [info] "
+                f"Lap test evOnLapCompleted 3 completed\n"
+                f"[2026-07-20 23:25:11.016] [physics] [info] "
+                f"Lap test evOnLapCompleted 4 completed\n"
+                f"[2026-07-20 23:25:11.019] [gameplay] [info] "
+                f"New lap carId {car_id}: 00:50.574\n"
+                f"[2026-07-20 23:25:11.060] [gameplay] [info] "
+                f"END_SESSION WatingForOthers Ending Lap for {car_id} car\n"
+            )
+
+        try:
+            await asyncio.wait_for(all_laps_emitted.wait(), timeout=1.0)
+        finally:
+            parser.stop()
+            await asyncio.wait_for(follow_task, timeout=1.0)
+
+        assert [lap.lap_time_ms for lap in emitted_laps] == [59172, 52371, 50574]
+        assert [lap.lap_number for lap in emitted_laps] == [2, 3, 4]
+
 
 class TestFollowLiveTailing:
     """Test live tailing behavior."""

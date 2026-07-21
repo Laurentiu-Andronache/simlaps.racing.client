@@ -1696,6 +1696,7 @@ def decode_static_fallback(data: bytes) -> Dict[str, Any]:
 #   _GE_TOTAL_LAP_COUNT  = 2384  (int32)
 #   _GE_IS_VALID_LAP     = 3121  (uint8 → bool)
 
+_PEEK_CURRENT_LAP_TIME = 188
 _PEEK_TOTAL_LAP_COUNT = 2384
 _PEEK_IS_VALID_LAP    = 3121
 
@@ -1719,8 +1720,9 @@ def peek_graphics_validity(data: bytes) -> Optional[Dict[str, Any]]:
         return None
 
     try:
+        current_lap_time_ms = struct.unpack_from("<i", data, _PEEK_CURRENT_LAP_TIME)[0]
         total_lap_count = struct.unpack_from("<i", data, _PEEK_TOTAL_LAP_COUNT)[0]
-        is_valid_lap    = bool(data[_PEEK_IS_VALID_LAP])
+        is_valid_lap = bool(data[_PEEK_IS_VALID_LAP])
     except (struct.error, IndexError):
         return None
 
@@ -1731,6 +1733,7 @@ def peek_graphics_validity(data: bytes) -> Optional[Dict[str, Any]]:
         "total_lap_count": total_lap_count,
         "completed_laps": total_lap_count,
         "is_valid_lap": is_valid_lap,
+        "current_lap_time_ms": current_lap_time_ms,
         # These fields are not populated by the peek (lap times come from
         # logs), but must be present so update_from_graphics_shm doesn't
         # crash on a KeyError.

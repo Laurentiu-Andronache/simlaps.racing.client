@@ -1204,7 +1204,11 @@ class LogParser:
 
         # Physics lap number is the only source available in log parser (graphics data not available)
         physics_lap_number = ip.physics_lap_num
-        lap_number = physics_lap_number or (len(self.current_session.laps) + 1)
+        prior_lap_numbers = [lap.lap_number for lap in self.current_session.laps]
+        if self._pending_lap is not None:
+            prior_lap_numbers.append(self._pending_lap.lap_number)
+        next_lap_number = max(prior_lap_numbers, default=0) + 1
+        lap_number = max(physics_lap_number or 0, next_lap_number)
 
         # Update stint (only for laps that actually ran, including invalid valid)
         if lap_state != LapState.OUTLAP:
@@ -1686,6 +1690,9 @@ class LogParser:
                             await self._emit_game_status(False, trigger="GameModeRequestExit")
                         if "END_SESSION" in line:
                             if self._line_mentions_player_car(line):
+                                completed = self._flush_pending_lap()
+                                if completed is not None and self.current_session is not None:
+                                    await self._emit_lap(self.current_session, completed)
                                 await self._emit_game_status(False, trigger="END_SESSION matched")
                             else:
                                 log_debug(Component.LOG_PARSER, "[SESSION_END] ignoring END_SESSION for non-player car")

@@ -709,26 +709,38 @@ class SharedSessionManager:
         if shm_current_lap > 0:
             current_lap = shm_current_lap
         else:
-            current_lap = completed_laps + 1 if completed_laps > 0 else 0
+            # completed_laps is the number of laps already finished; the
+            # in-progress lap is always the next one.  completed_laps=0 means
+            # lap 1 is running (formation/outlap or the first timed lap),
+            # completed_laps=1 means lap 2 is running, and so on.
+            current_lap = completed_laps + 1
 
         if current_lap > 0:
             self.update_lap_timing_from_graphics_shm(current_lap, graphics_data)
 
             # ── Wire SHM validity flags into shared session ──────────────
-            # is_invalid / timing_is_invalid (SMEvoTimingState) is NOT
-            # populated by AC Evo 0.8.0.1 — always None/False.  Per-lap
-            # invalidity verdicts come from the log parser's authoritative
-            # "Relevant onSplit" broadcast, not from SHM.
-            #
-            # is_valid_lap (SPageFileGraphicEvo at offset 3121) DOES work
-            # and toggles between 0 (timing inactive / between sessions)
-            # and 1 (timing active).  We store it as a session-level state
-            # indicator but do NOT derive per-lap invalidity from it —
-            # is_valid_lap=False can mean "in the pits" or "session
-            # transitioning", not "this specific lap is invalid."
+            # Priority 1: is_invalid / timing_is_invalid (SMEvoTimingState)
+            # is NOT populated by AC Evo 0.8.0.1 — always None/False.
+            # Priority 2: is_valid_lap (SPageFileGraphicEvo at offset 3121)
+            # DOES work and indicates whether the current lap is being timed
+            # as valid.  is_valid_lap=False with current_lap_time_ms > 0 means
+            # the in-progress lap has been invalidated (cut track, penalty,
+            # etc.).  is_valid_lap=False with current_lap_time_ms == 0 means
+            # timing is inactive (between sessions, in pits, etc.) and should
+            # NOT be treated as an invalidity verdict.
             is_invalid = graphics_data.get("is_invalid")
             if is_invalid is None:
                 is_invalid = graphics_data.get("timing_is_invalid")
+
+            if is_invalid is None:
+                is_valid_lap = graphics_data.get("is_valid_lap")
+                if is_valid_lap is not None:
+                    lap_time_ms = int(graphics_data.get("current_lap_time_ms") or 0)
+                    if is_valid_lap and lap_time_ms > 0:
+                        is_invalid = False
+                    elif not is_valid_lap and lap_time_ms > 0:
+                        is_invalid = True
+                    # else: lap_time_ms == 0 → timing inactive, skip
 
             if is_invalid is not None:
                 is_invalid_bool = bool(is_invalid)
