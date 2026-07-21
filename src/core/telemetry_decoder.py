@@ -750,6 +750,11 @@ _GE_SESSION_TOTAL_LAP = 2515
 _GE_SESSION_CURRENT_LAP = 2519
 _GE_SESSION_LAP_LENGTH_KM = 2527
 # timing_state SMEvoTimingState (256 B) at 2732
+# NOTE: AC Evo 0.8.0.1 does NOT populate this struct — all fields read as
+# zero/empty in captured frames.  The offsets below are retained for
+# compatibility with future builds that may start writing timing data.
+# For live lap validation use ``peek_graphics_validity()`` which reads
+# the working ``is_valid_lap`` bool at offset 3121 instead.
 _GE_TIMING_CURRENT_LAPTIME = 2732
 _GE_TIMING_DELTA_CURRENT = 2747
 _GE_TIMING_DELTA_LAST = 2762
@@ -1675,6 +1680,66 @@ def decode_static_fallback(data: bytes) -> Dict[str, Any]:
     result["ascii"] = ''.join(chr(b) if 32 <= b <= 126 else '.' for b in data[:100])
 
     return result
+
+
+# ── Lightweight SHM peek for live lap validation ──────────────────────────
+# Reads just 2 fields (5 bytes total) from the raw 4096-byte graphics
+# buffer.  Lap times, splits, and per-lap validity verdicts all come from
+# the log parser — SHM is only consulted for the real-time "is the current
+# lap being timed?" flag (is_valid_lap) plus total_lap_count for lap-number
+# context.
+#
+# This is ~800× cheaper than the full decoder and runs on every capture
+# frame regardless of whether telemetry recording is enabled.
+#
+# Offsets validated empirically against AC Evo 0.8.0.1 captures:
+#   _GE_TOTAL_LAP_COUNT  = 2384  (int32)
+#   _GE_IS_VALID_LAP     = 3121  (uint8 → bool)
+
+_PEEK_TOTAL_LAP_COUNT = 2384
+_PEEK_IS_VALID_LAP    = 3121
+
+# Minimum buffer size needed for the peek.
+_PEEK_MIN_SIZE = _PEEK_IS_VALID_LAP + 1  # 3122
+
+
+def peek_graphics_validity(data: bytes) -> Optional[Dict[str, Any]]:
+    """Extract the real-time lap validity flag from raw graphics SHM bytes.
+
+    Reads only ``is_valid_lap`` (bool at offset 3121) and ``total_lap_count``
+    (int32 at offset 2384) via ``struct.unpack_from``.  Returns ``None`` if
+    the buffer is too small.  The returned dict is shaped for direct
+    consumption by ``SharedSessionManager.update_from_graphics_shm``.
+
+    Lap times and per-lap validity verdicts are authoritative from logs;
+    this peek exists solely to answer "is the current lap being timed right
+    now?" without the overhead of a full 4096-byte decode.
+    """
+    if len(data) < _PEEK_MIN_SIZE:
+        return None
+
+    try:
+        total_lap_count = struct.unpack_from("<i", data, _PEEK_TOTAL_LAP_COUNT)[0]
+        is_valid_lap    = bool(data[_PEEK_IS_VALID_LAP])
+    except (struct.error, IndexError):
+        return None
+
+    if total_lap_count < 0 or total_lap_count > 10_000:
+        return None
+
+    return {
+        "total_lap_count": total_lap_count,
+        "completed_laps": total_lap_count,
+        "is_valid_lap": is_valid_lap,
+        # These fields are not populated by the peek (lap times come from
+        # logs), but must be present so update_from_graphics_shm doesn't
+        # crash on a KeyError.
+        "session_current_lap": 0,
+        "last_laptime_ms": 0,
+        "best_laptime_ms": 0,
+        "is_invalid": None,
+        "timing_is_invalid": None,
+    }
 
 
 def decode_physics(data: bytes) -> Dict[str, Any]:

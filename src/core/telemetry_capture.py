@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from src.core.security import is_game_running, GameProcessStatus
 from src.core.telemetry_decoder import (
     decode_physics, decode_graphics, decode_static,
+    peek_graphics_validity,
     PHYSICS_SHM_SIZE, GRAPHICS_SHM_SIZE, STATIC_SHM_SIZE,
 )
 from src.models import SharedSessionManager
@@ -504,6 +505,16 @@ class TelemetryCapture:
 
             # Save raw bytes for later reverse-engineering
             frame[f"{key}_raw"] = raw.hex()
+
+            # ── Lightweight peek: always feed lap validity to shared state ──
+            # Runs regardless of debug_logs / full decode; costs ~1 µs per
+            # frame (3 struct.unpack_from calls) vs ~500 µs for the full
+            # decoder.  This ensures lap counting + validity data flows even
+            # when telemetry recording is off.
+            if key == "graphics":
+                peeked = peek_graphics_validity(raw)
+                if peeked is not None:
+                    self._session_manager.update_from_graphics_shm(peeked)
 
             try:
                 if key == "physics":

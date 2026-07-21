@@ -697,28 +697,35 @@ class SharedSessionManager:
         self.update_session_metadata_from_static_shm(static_data)
 
     def update_from_graphics_shm(self, graphics_data: Dict[str, Any]) -> None:
-        current_lap = int(graphics_data.get("session_current_lap") or 0)
+        # ── Determine current lap number ────────────────────────────────
+        # session_current_lap (from SMEvoSessionState.current_lap) has a
+        # fragile offset that reads 0 on AC Evo 0.8.0.1.  total_lap_count
+        # (SPageFileGraphicEvo at stable offset 2384) is the completed-lap
+        # counter; +1 gives the in-progress lap.  The lightweight
+        # ``peek_graphics_validity()`` always provides total_lap_count and
+        # sets session_current_lap=0, so the fallback is the normal path.
+        shm_current_lap = int(graphics_data.get("session_current_lap") or 0)
+        completed_laps = int(graphics_data.get("total_lap_count") or 0)
+        if shm_current_lap > 0:
+            current_lap = shm_current_lap
+        else:
+            current_lap = completed_laps + 1 if completed_laps > 0 else 0
+
         if current_lap > 0:
             self.update_lap_timing_from_graphics_shm(current_lap, graphics_data)
 
             # ── Wire SHM validity flags into shared session ──────────────
-            # is_invalid comes from SMEvoTimingState; the decoder always
-            # populates it (mapped from timing_is_invalid), so it is never
-            # None in practice.  is_valid_lap from SPageFileGraphicEvo is a
-            # different semantic ("this lap counts") and is NOT the logical
-            # negation of is_invalid, so we intentionally do NOT use it as a
-            # fallback (Fable #2).
+            # is_invalid / timing_is_invalid (SMEvoTimingState) is NOT
+            # populated by AC Evo 0.8.0.1 — always None/False.  Per-lap
+            # invalidity verdicts come from the log parser's authoritative
+            # "Relevant onSplit" broadcast, not from SHM.
             #
-            # is_invalid applies to the *current* (in-progress) lap, which is
-            # session_current_lap.  When the lap completes and last_lap_time_ms
-            # updates, the validity for the *completed* lap is what matters.
-            # We store validity keyed by lap number so both sources converge.
-            #
-            # Lap-rollover note: on the frame(s) where the lap counter has
-            # incremented but the game hasn't cleared the invalid flag yet,
-            # lap N+1 can be momentarily marked INVALID_GAME.  This
-            # self-heals on the next frame when SHM-sourced VALID overwrites
-            # SHM-sourced INVALID for the same lap (Fable #4).
+            # is_valid_lap (SPageFileGraphicEvo at offset 3121) DOES work
+            # and toggles between 0 (timing inactive / between sessions)
+            # and 1 (timing active).  We store it as a session-level state
+            # indicator but do NOT derive per-lap invalidity from it —
+            # is_valid_lap=False can mean "in the pits" or "session
+            # transitioning", not "this specific lap is invalid."
             is_invalid = graphics_data.get("is_invalid")
             if is_invalid is None:
                 is_invalid = graphics_data.get("timing_is_invalid")
