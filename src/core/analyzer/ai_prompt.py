@@ -234,11 +234,12 @@ async def generate_ai_prompt(
     for lap in laps:
         marker = " <- BEST" if lap["lap_num"] == best_lap["lap_num"] else \
                  " <- WORST" if lap["lap_num"] == worst_lap["lap_num"] else ""
+        valid_str = "" if lap.get("is_valid", True) else " [INVALID]"
         fuel_str = f"  fuel {lap['fuel_used']:.3f}L" if lap.get('fuel_used') is not None else ""
         lines.append(
             f"  Lap {lap['lap_num']}: {lap['lap_time_str']}  "
             f"max {lap['max_speed']:.1f} km/h  "
-            f"avg {lap['avg_speed']:.1f} km/h{fuel_str}{marker}"
+            f"avg {lap['avg_speed']:.1f} km/h{fuel_str}{valid_str}{marker}"
         )
     lines.append("")
 

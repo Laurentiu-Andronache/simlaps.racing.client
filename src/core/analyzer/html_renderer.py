@@ -67,6 +67,7 @@ async def render_html(
             "lap_time_str": lap["lap_time_str"],
             "max_speed": round(lap["max_speed"], 1),
             "avg_speed": round(lap["avg_speed"], 1),
+            "is_valid": lap.get("is_valid", True),
             "confidence_label": lap.get("confidence_label"),
             "track": track_slim,
             "corners": corners_json,

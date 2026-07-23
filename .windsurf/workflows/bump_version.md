@@ -22,13 +22,7 @@ Update the version export:
 export const LATEST_CLIENT_VERSION = '1.1.9'
 ```
 
-### 3. C:\Storage\my documents\sim-laps-app\components\layout\footer.tsx
-Update the download link (NO DOTS in exe name):
-```tsx
-href="/downloads/SimLapsClient-v119.exe"
-```
-
-### 4. C:\Storage\my documents\sim-laps-app\components\layout\header.tsx
+### 3. C:\Storage\my documents\sim-laps-app\components\layout\header.tsx
 Update all download links (NO DOTS in exe name):
 ```tsx
 href="/downloads/SimLapsClient-v119.exe"

@@ -267,11 +267,10 @@ class TelemetryAnalyzer:
             # Use game-reported lap times when available.
             if lap_times_ms and i < len(lap_times_ms) and lap_times_ms[i] is not None:
                 lap_time = lap_times_ms[i] / 1000.0  # Convert ms to seconds
-            elif prefer_game_lap_times:
-                # If game times were provided for this analysis, do not silently
-                # mix in telemetry-derived durations for missing entries.
-                continue
             else:
+                # Fall back to telemetry-derived duration so laps without
+                # game-reported times (e.g. invalid/aborted laps) are still
+                # included in the analysis rather than silently dropped.
                 lap_time = (e - s) / hz
             
             # Calculate fuel consumption from telemetry (start fuel - end fuel)
