@@ -4,6 +4,8 @@ ACE Log Parser Constants
 Tuning constants and configuration values.
 """
 
+from typing import Optional
+
 
 # `tyres out → 4` events with inside_distance above this are pit-teleport
 # artefacts. All three analysed logs show exactly 12.52 m for teleports;

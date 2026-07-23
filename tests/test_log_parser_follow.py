@@ -574,7 +574,7 @@ class TestFollowWithCallbacks:
             await asyncio.wait_for(follow_task, timeout=1.0)
 
         assert [lap.lap_time_ms for lap in emitted_laps] == [59172, 52371, 50574]
-        assert [lap.lap_number for lap in emitted_laps] == [2, 3, 4]
+        assert [lap.lap_number for lap in emitted_laps] == [1, 2, 3]
 
 
 class TestFollowLiveTailing:

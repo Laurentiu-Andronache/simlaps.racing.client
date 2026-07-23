@@ -1202,13 +1202,16 @@ class LogParser:
         compound = self.context.tyre.compound_name
         self.current_session.tyre_compound = compound
 
-        # Physics lap number is the only source available in log parser (graphics data not available)
+        # Lap numbering comes from the count of "New lap carId" lines for the
+        # player, NOT from physics_lap_num (which includes formation laps and
+        # gives inflated numbers).  physics_lap_number is still stored on
+        # LapData for SHM validity lookup (SHM uses completed_laps+1 which
+        # aligns with the physics counter).
         physics_lap_number = ip.physics_lap_num
         prior_lap_numbers = [lap.lap_number for lap in self.current_session.laps]
         if self._pending_lap is not None:
             prior_lap_numbers.append(self._pending_lap.lap_number)
-        next_lap_number = max(prior_lap_numbers, default=0) + 1
-        lap_number = max(physics_lap_number or 0, next_lap_number)
+        lap_number = max(prior_lap_numbers, default=0) + 1
 
         # Update stint (only for laps that actually ran, including invalid valid)
         if lap_state != LapState.OUTLAP:
@@ -1523,7 +1526,7 @@ class LogParser:
         """Handle session start/end detection. Returns True if a new session started."""
         if self._handle_session_start(line):
             return True
-        if "END_SESSION car" in line and self.context.car_uuid:
+        if "END_SESSION" in line and self.context.car_uuid:
             if self.context.car_uuid in line:
                 log_debug(Component.LOG_PARSER, "[SESSION] END_SESSION for player car — finalising")
                 self._finalise_current_session()
@@ -1631,6 +1634,8 @@ class LogParser:
                     self.current_session.laps.clear()
                     self.current_session.stints.clear()
                     self._finalise_stints()
+                    self._pending_lap = None
+                    self._reset_in_progress()
                     log_debug(Component.LOG_PARSER, 
                         f"Context: track={self.current_session.track} "
                         f"car={self.current_session.car}"
