@@ -53,20 +53,48 @@ class SettingsService:
         # Update services with new settings
         app._api_client.set_server_url(config.server_url)
 
-        # Re-initialize telemetry if settings changed
+        # Reconcile telemetry capture mode with the new setting.
+        # The capture loop always runs (needed for SHM lap validity), but
+        # frame recording and analysis are gated on telemetry_enabled.
         if config.telemetry_enabled and not app._telemetry_capture:
+            # First time enabling — full init (should not happen now that
+            # _init_telemetry_services always creates the capture, but
+            # keep as a safety net).
             log_info(Component.APP, "Telemetry enabled - initializing services")
             app._init_telemetry_services()
             app._attach_telemetry_ui()
             if app._telemetry_capture:
                 app.page.run_task(app._start_telemetry_capture)
+        elif config.telemetry_enabled and app._telemetry_capture:
+            # Telemetry was already enabled or was in validity-only mode;
+            # switch to full recording and ensure analyzer/button exist.
+            if not app._telemetry_capture.record_frames:
+                app._telemetry_capture.set_record_frames(True)
+                log_info(Component.APP, "Telemetry recording enabled")
+            if not app._telemetry_analyzer:
+                from src.core.analyzer import TelemetryAnalyzer
+                from src.core.track_catalog import TRACK_CATALOG
+                app._telemetry_analyzer = TelemetryAnalyzer(
+                    output_dir=config.telemetry_output_path,
+                    track_catalog=TRACK_CATALOG,
+                    session_manager=app._session_manager,
+                )
+            if not app._telemetry_button:
+                from .components.telemetry_status import TelemetryButton
+                app._telemetry_button = TelemetryButton(
+                    on_click=app._open_telemetry_location,
+                    output_path=config.telemetry_output_path,
+                )
+                app._attach_telemetry_ui()
         elif not config.telemetry_enabled and app._telemetry_capture:
-            log_info(Component.APP, "Telemetry disabled - stopping services")
-            if app._telemetry_capture.is_capturing():
-                app.page.run_task(app._telemetry_capture.stop_capture, "disabled")
-            app._telemetry_capture = None
+            # User disabled telemetry recording — switch to validity-only
+            # mode.  The capture loop stays alive so SHM validity data
+            # continues to flow to the shared session.
+            if app._telemetry_capture.record_frames:
+                app._telemetry_capture.set_record_frames(False)
+                log_info(Component.APP, "Telemetry recording disabled — validity-only mode active")
+            # Drop analyzer and UI button (no frames to analyze).
             app._telemetry_analyzer = None
-            # Remove button from home page
             if app._home_page:
                 app._home_page.set_telemetry_button(None, "")
             app._telemetry_button = None

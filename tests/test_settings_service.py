@@ -53,10 +53,14 @@ def test_apply_enabling_telemetry_schedules_capture_start():
     app.page.run_task.assert_called_once_with(app._start_telemetry_capture)
 
 
-def test_apply_disabling_telemetry_stops_capture_and_clears_ui():
+def test_apply_disabling_telemetry_switches_to_validity_only_mode():
+    """When telemetry is disabled the capture loop stays alive for SHM
+    validity but stops recording frames.  The analyzer and UI button are
+    torn down since there are no frames to analyze."""
     app = _make_app()
     telemetry_capture = MagicMock()
     telemetry_capture.is_capturing.return_value = True
+    telemetry_capture.record_frames = True
     app._telemetry_capture = telemetry_capture
     app._telemetry_analyzer = MagicMock()
     app._telemetry_button = MagicMock()
@@ -73,9 +77,11 @@ def test_apply_disabling_telemetry_stops_capture_and_clears_ui():
         create_log_parser=MagicMock(return_value=MagicMock()),
     )
 
-    app.page.run_task.assert_called_once_with(telemetry_capture.stop_capture, "disabled")
+    # Capture loop stays alive — only recording mode changes.
+    telemetry_capture.set_record_frames.assert_called_once_with(False)
     app._home_page.set_telemetry_button.assert_called_once_with(None, "")
-    assert app._telemetry_capture is None
+    # The capture instance itself is NOT destroyed.
+    assert app._telemetry_capture is telemetry_capture
     assert app._telemetry_analyzer is None
     assert app._telemetry_button is None
 

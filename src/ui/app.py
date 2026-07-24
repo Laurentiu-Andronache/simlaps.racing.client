@@ -202,49 +202,65 @@ class SimLapsApp:
         )
     
     def _init_telemetry_services(self):
-        """Initialize telemetry capture and analyzer services."""
-        if not self._config.telemetry_enabled:
-            log_debug(Component.APP, "Telemetry disabled in settings")
-            return
-        
+        """Initialize telemetry capture and analyzer services.
+
+        The SHM capture loop is always created so that real-time lap
+        validity, timing, and fuel data flow to the shared session
+        regardless of the user's telemetry-recording preference.
+        When ``telemetry_enabled`` is False the capture runs in
+        *validity-only* mode: it reads all SHM regions and pushes data
+        to the shared session but does NOT accumulate frames in memory
+        and does NOT produce HTML/AI-prompt analysis outputs.
+        """
         try:
+            # Always create the capture service so SHM validity data
+            # reaches the shared session even when telemetry is off.
             self._telemetry_capture = TelemetryCapture(
                 hz=10.0,
                 output_dir=self._config.telemetry_output_path,
                 debug_logs=self._config.telemetry_debug_logs,
                 session_manager=self._session_manager,
+                record_frames=self._config.telemetry_enabled,
             )
             # Set up auto-stop callback to trigger analysis
             self._telemetry_capture.set_on_stop_callback(self._on_telemetry_auto_stop)
-            self._telemetry_analyzer = TelemetryAnalyzer(
-                output_dir=self._config.telemetry_output_path,
-                track_catalog=TRACK_CATALOG,
-                session_manager=self._session_manager,
-            )
-            
-            # Create telemetry button
-            log_debug(Component.APP, "Creating TelemetryButton", callback=self._open_telemetry_location)
-            self._telemetry_button = TelemetryButton(
-                on_click=self._open_telemetry_location,
-                output_path=self._config.telemetry_output_path,
-            )
-            log_debug(Component.APP, "TelemetryButton created", callback=self._telemetry_button.on_click)
-            
-            # Set button on home page
-            if self._home_page:
-                log_debug(Component.APP, "Home page exists, attaching telemetry button")
-                self._home_page.set_telemetry_button(
-                    self._telemetry_button,
-                    self._config.telemetry_output_path,
+
+            if self._config.telemetry_enabled:
+                self._telemetry_analyzer = TelemetryAnalyzer(
+                    output_dir=self._config.telemetry_output_path,
+                    track_catalog=TRACK_CATALOG,
+                    session_manager=self._session_manager,
+                )
+
+                # Create telemetry button
+                log_debug(Component.APP, "Creating TelemetryButton", callback=self._open_telemetry_location)
+                self._telemetry_button = TelemetryButton(
+                    on_click=self._open_telemetry_location,
+                    output_path=self._config.telemetry_output_path,
+                )
+                log_debug(Component.APP, "TelemetryButton created", callback=self._telemetry_button.on_click)
+
+                # Set button on home page
+                if self._home_page:
+                    log_debug(Component.APP, "Home page exists, attaching telemetry button")
+                    self._home_page.set_telemetry_button(
+                        self._telemetry_button,
+                        self._config.telemetry_output_path,
+                    )
+                else:
+                    log_debug(Component.APP, "Home page not initialized yet; telemetry UI attach deferred")
+
+                log_info(
+                    Component.APP,
+                    "Telemetry services initialized (full recording)",
+                    output=self._config.telemetry_output_path,
                 )
             else:
-                log_debug(Component.APP, "Home page not initialized yet; telemetry UI attach deferred")
-            
-            log_info(
-                Component.APP,
-                "Telemetry services initialized",
-                output=self._config.telemetry_output_path,
-            )
+                log_info(
+                    Component.APP,
+                    "Telemetry services initialized (validity-only mode — "
+                    "SHM lap validity active, frame recording disabled)",
+                )
         except Exception as e:
             log_exception(Component.APP, "Failed to initialize telemetry", e)
             self._telemetry_capture = None

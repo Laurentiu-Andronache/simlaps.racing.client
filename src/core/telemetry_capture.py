@@ -244,6 +244,7 @@ class TelemetryCapture:
         output_dir: Optional[str] = None,
         debug_logs: bool = False,
         session_manager: Optional[SharedSessionManager] = None,
+        record_frames: bool = True,
     ):
         # ``debug_logs`` gates three on-disk artefacts that are only useful
         # for reverse-engineering / capture-loop debugging:
@@ -253,7 +254,16 @@ class TelemetryCapture:
         # The HTML summary, AI prompt, and analyzer outputs are produced
         # regardless. Default is False so end-users don't accumulate
         # multi-MB files every session.
+        #
+        # ``record_frames`` controls whether captured frames are stored
+        # for later analysis.  When False (validity-only mode) the capture
+        # loop still reads SHM and pushes lap validity / timing / fuel data
+        # to the shared session, but does NOT accumulate frames in memory
+        # and does NOT produce HTML/AI-prompt outputs.  This keeps the
+        # real-time validity pipeline active even when the user has
+        # disabled full telemetry recording in Settings.
         self._debug_logs = debug_logs
+        self._record_frames = record_frames
         self._hz = hz
         self._frames: List[FrameData] = []
         self._running = False
@@ -277,6 +287,32 @@ class TelemetryCapture:
     def is_capturing(self) -> bool:
         """Check if currently capturing."""
         return self._running
+
+    @property
+    def record_frames(self) -> bool:
+        """Whether frames are being recorded for later analysis."""
+        return self._record_frames
+
+    def set_record_frames(self, record: bool) -> None:
+        """Enable or disable frame recording at runtime.
+
+        When disabled the capture loop continues to read SHM and push
+        validity/timing/fuel data to the shared session, but stops
+        accumulating ``FrameData`` in memory.  Existing buffered frames
+        are cleared when switching from record→validity-only.
+
+        Call this when the user toggles the telemetry-enabled setting
+        without restarting the session.
+        """
+        was_recording = self._record_frames
+        self._record_frames = record
+        if was_recording and not record:
+            # Switching to validity-only — drop buffered frames to free
+            # memory and prevent stale data from being analyzed later.
+            self._frames.clear()
+            self._lap_boundaries.clear()
+            log_info(Component.TELEMETRY, "Switched to validity-only mode",
+                     frames_dropped="cleared")
 
     def get_stop_reason(self) -> Optional[str]:
         """Get the reason why capture stopped (None if still running)."""
@@ -562,6 +598,14 @@ class TelemetryCapture:
             frame["graphics_raw"] = None
             frame["static_raw"] = None
 
+        # When telemetry recording is disabled (_record_frames=False) we
+        # still read every SHM region and push validity/timing/fuel data to
+        # the shared session, but do NOT accumulate FrameData objects in
+        # memory and do NOT produce analysis outputs.  This keeps the
+        # real-time lap validity pipeline active at all times.
+        if not self._record_frames:
+            return None
+
         return FrameData(**frame)
 
     async def start_capture(self) -> bool:
@@ -727,11 +771,15 @@ class TelemetryCapture:
                     break
 
                 frame = self._capture_frame(frame_num)
-                if frame:
+                if frame is not None:
                     # Accept all frames regardless of content - capture everything
                     # The decoder may return fallback data or empty dicts if structure doesn't match
                     self._last_valid_frame_time = now_mono
-                    self._frames.append(frame)
+                    if frame:
+                        # frame is a FrameData object (record_frames=True)
+                        self._frames.append(frame)
+                    # else frame is an empty falsy value? Not possible since
+                    # _capture_frame always returns FrameData or None.
                     frame_num += 1
                     # Reset disconnect timer on valid frame
                     self._all_disconnected_since = None
@@ -739,8 +787,8 @@ class TelemetryCapture:
                     # Check for idle state (speed = 0 for extended period = race exit to menu).
                     # Skip this check once laps are being recorded — the "remove car" log
                     # signal is the authoritative session-end trigger for active races.
-                    physics = frame.physics if frame.physics else {}
-                    speed_kmh = physics.get("speed_kmh", 0)
+                    physics = frame.physics if (frame and frame.physics) else {}
+                    speed_kmh = physics.get("speed_kmh", 0) if isinstance(physics, dict) else 0
                     if speed_kmh < 1.0:  # Consider speed < 1 km/h as idle
                         if not self._lap_boundaries:  # Only idle-timeout before first lap
                             if self._idle_since is None:
@@ -757,7 +805,14 @@ class TelemetryCapture:
                     
                     # Debug: log first frame
                     if frame_num == 1:
-                        log_info(Component.TELEMETRY, "First frame captured - telemetry active")
+                        mode_label = "validity-only" if not self._record_frames else "telemetry active"
+                        log_info(Component.TELEMETRY, f"First frame captured - {mode_label}")
+                else:
+                    # _capture_frame returned None — all SHM regions are
+                    # disconnected.  Update the heartbeat timer so we don't
+                    # time out while waiting for the game to publish SHM,
+                    # and bump frame_num so the reconnect logic still runs.
+                    self._last_valid_frame_time = now_mono
 
                 if frame_num % int(self._hz * 5) == 0 and frame_num > 0:
                     if frame_num % int(self._hz * 30) == 0:  # Log every 30 seconds at 10Hz

@@ -31,7 +31,13 @@ class TelemetryLifecycleService:
         home_page: HomePage | None,
         telemetry_enabled: bool,
     ) -> None:
-        """Start telemetry capture when a session becomes active."""
+        """Start telemetry capture when a session becomes active.
+
+        The capture loop always runs so that real-time SHM validity data
+        reaches the shared session.  When ``telemetry_enabled`` is False
+        the loop runs in validity-only mode (reads SHM, pushes to shared
+        session, but does not record frames).
+        """
         output_prefix = telemetry_capture.get_output_prefix() if telemetry_capture else None
         log_debug(
             Component.APP,
@@ -41,32 +47,40 @@ class TelemetryLifecycleService:
             output_prefix=output_prefix,
         )
 
-        if not telemetry_capture or not telemetry_enabled:
-            log_info(Component.APP, "Telemetry start skipped: disabled or unavailable")
+        if not telemetry_capture:
+            log_info(Component.APP, "Telemetry start skipped: capture service unavailable")
             return
         if telemetry_capture.is_capturing():
             log_info(Component.APP, "Telemetry start skipped: already capturing")
             return
 
+        # Ensure the capture's recording mode matches the current setting.
+        # This handles the case where the user toggled telemetry in Settings
+        # while no session was active.
+        if telemetry_capture.record_frames != telemetry_enabled:
+            telemetry_capture.set_record_frames(telemetry_enabled)
+
         try:
-            log_info(Component.APP, "Starting telemetry capture from UI")
-            if home_page:
+            mode_label = "full recording" if telemetry_enabled else "validity-only"
+            log_info(Component.APP, f"Starting telemetry capture ({mode_label})")
+            if home_page and telemetry_enabled:
                 home_page.set_telemetry_status(TelemetryStatus.CAPTURING, 0)
 
             success = await telemetry_capture.start_capture()
             if not success:
                 log_error(Component.APP, "Telemetry capture failed to start")
-                if home_page:
+                if home_page and telemetry_enabled:
                     home_page.set_telemetry_status(TelemetryStatus.ERROR)
             else:
                 log_info(
                     Component.APP,
                     "Telemetry capture started successfully",
                     prefix=telemetry_capture.get_output_prefix(),
+                    mode=mode_label,
                 )
         except Exception as exc:
             log_exception(Component.APP, "Telemetry start error", exc)
-            if home_page:
+            if home_page and telemetry_enabled:
                 home_page.set_telemetry_status(TelemetryStatus.ERROR)
 
     async def handle_auto_stop(
@@ -78,7 +92,12 @@ class TelemetryLifecycleService:
         home_page: HomePage | None,
         current_track_name: Optional[str],
     ) -> None:
-        """Handle automatic stop event (crash/quit) and run analysis if frames exist."""
+        """Handle automatic stop event (crash/quit) and run analysis if frames exist.
+
+        Analysis only runs when an analyzer is present AND frames were
+        recorded.  In validity-only mode there are no frames and no
+        analyzer — the method still finalises the capture loop cleanly.
+        """
         output_prefix = telemetry_capture.get_output_prefix() if telemetry_capture else None
         frame_count = len(telemetry_capture.get_frames()) if telemetry_capture else 0
         log_info(
@@ -95,14 +114,15 @@ class TelemetryLifecycleService:
                 f"Session ended ({reason})",
             )
 
-        if telemetry_capture and telemetry_analyzer:
+        if telemetry_capture:
             frames = telemetry_capture.get_frames()
             frame_count = len(frames)
 
-            if frame_count > 0:
+            if frame_count > 0 and telemetry_analyzer is not None:
                 log_info(Component.APP, "Starting analysis", frames=frame_count)
                 try:
-                    home_page.set_telemetry_status(TelemetryStatus.ANALYZING, frame_count)
+                    if home_page:
+                        home_page.set_telemetry_status(TelemetryStatus.ANALYZING, frame_count)
                     metadata = telemetry_capture.get_metadata()
                     lap_boundaries = telemetry_capture.get_lap_boundaries()
                     result = await telemetry_analyzer.analyze(
@@ -120,16 +140,23 @@ class TelemetryLifecycleService:
                         laps=result.laps_detected,
                         best_lap_time=f"{result.best_lap_time:.1f}s",
                     )
-                    home_page.set_telemetry_status(
-                        TelemetryStatus.COMPLETE,
-                        frame_count,
-                        result.html_path,
-                    )
+                    if home_page:
+                        home_page.set_telemetry_status(
+                            TelemetryStatus.COMPLETE,
+                            frame_count,
+                            result.html_path,
+                        )
                 except Exception as exc:
                     log_exception(Component.APP, "Analysis error", exc)
-                    home_page.set_telemetry_status(TelemetryStatus.ERROR)
+                    if home_page:
+                        home_page.set_telemetry_status(TelemetryStatus.ERROR)
+            elif frame_count > 0:
+                log_debug(Component.APP, "Frames captured but no analyzer — skipping (validity-only mode)")
+                if home_page:
+                    home_page.set_telemetry_status(TelemetryStatus.IDLE)
             else:
-                home_page.set_telemetry_status(TelemetryStatus.IDLE)
+                if home_page:
+                    home_page.set_telemetry_status(TelemetryStatus.IDLE)
 
     async def stop_capture(
         self,
@@ -141,7 +168,13 @@ class TelemetryLifecycleService:
         home_page: HomePage | None,
         current_track_name: Optional[str],
     ) -> None:
-        """Stop telemetry capture and run analysis unless discarded."""
+        """Stop telemetry capture and run analysis unless discarded.
+
+        The capture loop is always stopped regardless of whether an
+        analyzer is present (validity-only mode has no analyzer).
+        Analysis only runs when both an analyzer is available and
+        frames were recorded.
+        """
         output_prefix = telemetry_capture.get_output_prefix() if telemetry_capture else None
         is_capturing = telemetry_capture.is_capturing() if telemetry_capture else False
         log_info(
@@ -152,8 +185,8 @@ class TelemetryLifecycleService:
             capturing=is_capturing,
         )
 
-        if not telemetry_capture or not telemetry_analyzer:
-            log_debug(Component.APP, "Telemetry stop skipped: capture or analyzer missing")
+        if not telemetry_capture:
+            log_debug(Component.APP, "Telemetry stop skipped: capture missing")
             return
         if not telemetry_capture.is_capturing():
             stop_reason = telemetry_capture.get_stop_reason()
@@ -170,11 +203,15 @@ class TelemetryLifecycleService:
 
             if discard:
                 log_info(Component.APP, "Discarding captured frames (contaminated buffer)", frames=frame_count)
-                home_page.set_telemetry_status(TelemetryStatus.IDLE)
+                if home_page:
+                    home_page.set_telemetry_status(TelemetryStatus.IDLE)
                 return
 
-            if frame_count > 0:
-                home_page.set_telemetry_status(TelemetryStatus.ANALYZING, frame_count)
+            # Analysis requires both an analyzer and recorded frames.
+            # In validity-only mode the analyzer is None — skip silently.
+            if frame_count > 0 and telemetry_analyzer is not None:
+                if home_page:
+                    home_page.set_telemetry_status(TelemetryStatus.ANALYZING, frame_count)
                 log_info(Component.APP, "Starting telemetry analysis", frames=frame_count, prefix=output_prefix)
                 metadata = telemetry_capture.get_metadata()
                 lap_boundaries = telemetry_capture.get_lap_boundaries()
@@ -195,15 +232,22 @@ class TelemetryLifecycleService:
                     html_path=result.html_path,
                     ai_prompt_path=result.ai_prompt_path,
                 )
-                home_page.set_telemetry_status(
-                    TelemetryStatus.COMPLETE,
-                    frame_count,
-                    result.html_path,
-                )
+                if home_page:
+                    home_page.set_telemetry_status(
+                        TelemetryStatus.COMPLETE,
+                        frame_count,
+                        result.html_path,
+                    )
+            elif frame_count > 0:
+                log_debug(Component.APP, "Frames captured but no analyzer — skipping analysis (validity-only mode)")
+                if home_page:
+                    home_page.set_telemetry_status(TelemetryStatus.IDLE)
             else:
                 log_debug(Component.APP, "No frames captured, skipping analysis")
-                home_page.set_telemetry_status(TelemetryStatus.IDLE)
+                if home_page:
+                    home_page.set_telemetry_status(TelemetryStatus.IDLE)
 
         except Exception as exc:
             log_exception(Component.APP, "Telemetry stop/analysis error", exc)
-            home_page.set_telemetry_status(TelemetryStatus.ERROR)
+            if home_page:
+                home_page.set_telemetry_status(TelemetryStatus.ERROR)
