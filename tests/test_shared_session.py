@@ -84,10 +84,11 @@ def test_update_lap_from_logs_populates_player_and_sector_data() -> None:
 
 
 def test_shm_invalid_not_overwritten_by_log_heuristic_valid() -> None:
-    """SHM says lap is invalid → log parser heuristic VALID must not overwrite it."""
+    """Log parser is authoritative for completed-lap validity — its heuristic
+    VALID must replace a conflicting SHM per-frame INVALID_GAME verdict."""
     manager = SharedSessionManager()
 
-    # SHM reports lap 2 as invalid
+    # SHM reports lap 2 as invalid (per-frame flag while lap was in progress)
     manager.update_from_graphics_shm({
         "session_current_lap": 2,
         "is_invalid": True,
@@ -106,22 +107,23 @@ def test_shm_invalid_not_overwritten_by_log_heuristic_valid() -> None:
     )
     manager.update_lap_from_logs(lap)
 
-    # SHM verdict must be preserved
+    # Log parser's completed-lap verdict must replace the SHM per-frame flag.
     validity = manager.get_lap_validity_data(2)
     assert validity is not None
-    assert validity.is_valid is False
-    assert validity.lap_state == "INVALID_GAME"
+    assert validity.is_valid is True
+    assert validity.lap_state == "VALID"
+    assert validity.source == "logs"
 
 
 def test_shm_invalid_from_total_lap_count_wins_over_log_heuristic() -> None:
     """AC Evo 0.8.0.1: session_current_lap is 0, so current lap is derived from
     total_lap_count.  When total_lap_count=1 and is_valid_lap=False with an
-    active current_lap_time_ms, the in-progress lap is lap 2 and must win over
-    a heuristic VALID log entry for lap 2.
+    active current_lap_time_ms, the in-progress lap is lap 2.  The log parser's
+    completed-lap verdict must replace the SHM per-frame flag.
     """
     manager = SharedSessionManager()
 
-    # Lap 1 finishes; lap 2 starts and is immediately invalidated.
+    # Lap 1 finishes; lap 2 starts and is immediately invalidated per SHM.
     manager.update_from_graphics_shm({
         "session_current_lap": 0,
         "total_lap_count": 1,
@@ -129,7 +131,7 @@ def test_shm_invalid_from_total_lap_count_wins_over_log_heuristic() -> None:
         "current_lap_time_ms": 44573,
     })
 
-    # SHM must derive lap 2 and mark it invalid.
+    # SHM must derive lap 2 and mark it invalid while in progress.
     assert manager.get_lap_validity(2) is False
     validity = manager.get_lap_validity_data(2)
     assert validity is not None
@@ -148,12 +150,12 @@ def test_shm_invalid_from_total_lap_count_wins_over_log_heuristic() -> None:
     )
     manager.update_lap_from_logs(lap)
 
-    # SHM verdict must be preserved; the 54.453 lap stays invalid.
+    # Log parser's completed-lap verdict replaces the SHM per-frame flag.
     validity = manager.get_lap_validity_data(2)
     assert validity is not None
-    assert validity.is_valid is False
-    assert validity.lap_state == "INVALID_GAME"
-    assert validity.source == "shm_graphics"
+    assert validity.is_valid is True
+    assert validity.lap_state == "VALID"
+    assert validity.source == "logs"
 
 
 def test_log_authoritative_invalid_not_overwritten_by_shm_valid() -> None:
@@ -622,7 +624,8 @@ def test_shm_is_valid_lap_false_with_zero_lap_time_skipped() -> None:
 
 
 def test_shm_invalid_survives_heuristic_valid_log() -> None:
-    """SHM says invalid → log emits heuristic VALID (no onSplit) → SHM verdict must survive."""
+    """Log parser's completed-lap verdict replaces SHM per-frame flag even when
+    the log verdict is heuristic (no Relevant onSplit)."""
     manager = SharedSessionManager()
 
     manager.update_from_graphics_shm({
@@ -647,7 +650,8 @@ def test_shm_invalid_survives_heuristic_valid_log() -> None:
     )
     manager.update_lap_from_logs(lap)
 
+    # Log parser's completed-lap verdict replaces the SHM per-frame flag.
     validity = manager.get_lap_validity_data(2)
     assert validity is not None
-    assert validity.is_valid is False
-    assert validity.source == "shm_graphics"
+    assert validity.is_valid is True
+    assert validity.source == "logs"

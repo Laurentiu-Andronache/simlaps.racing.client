@@ -621,49 +621,56 @@ class SharedSessionManager:
                 self._mark_source("lap_times", "logs")
 
             # ── Merge validity ────────────────────────────────────────────
-            # SHM is_invalid is a live flag for the *in-progress* lap; the
-            # log parser emits the completed lap with either a heuristic
-            # verdict (no Relevant-onSplit line arrived) or an authoritative
-            # one (Relevant-onSplit was processed).  Preserve SHM only when
-            # SHM says *invalid* and the log says *heuristic valid* — all
-            # other log states (OUTLAP, INLAP, INVALID_SPLIT, … and every
-            # authoritative verdict) must replace the SHM entry (Fable #1).
+            # The log parser is the authoritative source for completed-lap
+            # validity: it either receives the game's definitive
+            # ``Relevant onSplit … valid true|false`` broadcast (stored as
+            # ``validity_source == "authoritative"``) or falls back to a
+            # heuristic verdict.  SHM's per-frame ``is_valid_lap`` flag is a
+            # live signal for the *in-progress* lap that can produce false
+            # positives at lap boundaries (the flag and ``total_lap_count``
+            # are not updated atomically in shared memory).  We therefore
+            # always accept the log parser's verdict for a completed lap.
+            # SHM validity data for the lap is preserved as supplementary
+            # metadata but never overrides the log-sourced verdict.
             existing = self._session_data.lap_validity.get(lap_data.lap_number)
             log_state = lap_data.lap_type or lap_data.lap_state.value
             log_is_authoritative = (
                 lap_data.validity_source == "authoritative"
                 or log_state in _AUTHORITATIVE_INVALID_STATES
             )
-            # SHM wins ONLY when it already recorded an invalid verdict AND
-            # the log only brings a non-authoritative (heuristic) valid lap.
-            shm_wins = (
-                existing is not None
-                and existing.source == "shm_graphics"
-                and not existing.is_valid
-                and lap_data.is_valid
-                and not log_is_authoritative
-            )
 
-            if shm_wins:
-                log_debug(
-                    Component.SHARED_SESSION,
-                    f"[VALIDITY_MERGE] lap={lap_data.lap_number} keeping SHM verdict ({existing.lap_state}), log heuristic was {log_state}",
-                )
-                # Keep lap_validity_flat consistent with the SHM verdict.
-                self._session_data.lap_validity_flat[lap_data.lap_number] = False
-            else:
-                self._session_data.lap_validity[lap_data.lap_number] = LapValidityData(
-                    lap_number=lap_data.lap_number,
-                    is_valid=lap_data.is_valid,
-                    lap_state=log_state,
-                    source="logs",
-                )
-                self._session_data.lap_validity_flat[lap_data.lap_number] = lap_data.is_valid
-                if existing is not None:
+            # Always apply the log parser's verdict — it is the source of
+            # truth for completed laps.  SHM may have pre-populated an entry
+            # for this lap while it was in progress; we replace it.
+            self._session_data.lap_validity[lap_data.lap_number] = LapValidityData(
+                lap_number=lap_data.lap_number,
+                is_valid=lap_data.is_valid,
+                lap_state=log_state,
+                source="logs",
+            )
+            self._session_data.lap_validity_flat[lap_data.lap_number] = lap_data.is_valid
+
+            if existing is not None and existing.source == "shm_graphics":
+                # SHM had a different verdict for this lap while it was
+                # in progress — log the discrepancy for diagnostics.
+                if existing.lap_state != log_state:
                     log_debug(
                         Component.SHARED_SESSION,
-                        f"[VALIDITY_MERGE] lap={lap_data.lap_number} logs overrode SHM (was {existing.lap_state} now {log_state})",
+                        f"[VALIDITY_MERGE] lap={lap_data.lap_number} log verdict ({log_state}) "
+                        f"replaces SHM verdict ({existing.lap_state})",
                     )
+                else:
+                    log_debug(
+                        Component.SHARED_SESSION,
+                        f"[VALIDITY_MERGE] lap={lap_data.lap_number} log verdict ({log_state}) "
+                        f"confirms SHM verdict",
+                    )
+            elif existing is not None and existing.lap_state != log_state:
+                log_debug(
+                    Component.SHARED_SESSION,
+                    f"[VALIDITY_MERGE] lap={lap_data.lap_number} log ({log_state}) "
+                    f"replaces previous ({existing.lap_state})",
+                )
 
             self._mark_source("lap_boundaries", "logs")
             self._mark_source("lap_completion_timestamps", "logs")

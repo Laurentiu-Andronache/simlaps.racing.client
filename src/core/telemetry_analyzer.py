@@ -206,7 +206,7 @@ class TelemetryAnalyzer:
                     )
             else:
                 lap_bounds = game_lap_boundaries
-            log_info(Component.ANALYZER, "Lap detection successful", method="authoritative game log boundaries", laps=len(lap_bounds))
+            log_info(Component.ANALYZER, "Lap detection successful", method="authoritative game log boundaries", laps=len(lap_bounds) - 1)
         # 2nd priority: Shared memory timing state (last_laptime_ms updates)
         else:
             timing_bounds = _detect_laps_by_timing_state(track, hz=hz)
