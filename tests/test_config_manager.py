@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from src.utils.config import ConfigManager, AppConfig, get_config_manager, get_config_path
+from src.utils.config import ConfigManager, AppConfig, get_config_path
 
 
 def test_set_discord_config_post_invalid_maps_to_submit_invalid_laps(tmp_path) -> None:
@@ -142,22 +142,6 @@ def test_app_config_to_dict_roundtrip() -> None:
 
     assert d["theme"] == "light"
     assert d["server_url"] == "http://test"
-
-
-def test_get_config_manager_returns_singleton() -> None:
-    from src.utils.config import _config_manager
-
-    # Reset global to test fresh
-    import src.utils.config as config_mod
-    orig = config_mod._config_manager
-    config_mod._config_manager = None
-
-    try:
-        m1 = get_config_manager()
-        m2 = get_config_manager()
-        assert m1 is m2
-    finally:
-        config_mod._config_manager = orig
 
 
 def test_config_path_returns_path() -> None:

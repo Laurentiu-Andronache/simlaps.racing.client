@@ -14,6 +14,8 @@ import sys
 from typing import Optional
 from dotenv import load_dotenv
 
+from ..utils.structured_logger import log_debug, log_info, Component
+
 
 class GameProcessStatus(enum.Enum):
     """Game process detection status."""
@@ -290,12 +292,12 @@ def get_steam_user() -> tuple[Optional[str], Optional[str]]:
                 # Try to get the username from loginusers.vdf or registry
                 username = _get_steam_username(steam64_id)
                 
-                print(f"[SECURITY] Steam user detected from registry: {steam64_id} ({username})")
+                log_debug(Component.SECURITY, f"Steam user detected from registry: {steam64_id} ({username})")
                 return steam64_id, username
     except (ImportError, OSError, FileNotFoundError, PermissionError):
         pass
     
-    print("[SECURITY] No Steam user found in registry")
+    log_debug(Component.SECURITY, "No Steam user found in registry")
     return None, None
 
 

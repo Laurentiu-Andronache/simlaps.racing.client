@@ -16,7 +16,6 @@ def build_track(frames: List[FrameData], hz: float = 1.0, start_idx: int = 0) ->
     """Build track map from frames."""
     track = []
     x = z = 0.0
-    dt = 1.0 / hz
 
     for i in range(start_idx, len(frames)):
         f = frames[i]
@@ -43,14 +42,6 @@ def build_track(frames: List[FrameData], hz: float = 1.0, start_idx: int = 0) ->
                 x = wp_x
             if wp_z is not None:
                 z = wp_z
-        else:
-            velocity = ph.get("velocity", {})
-            vx = _optional_float(velocity.get("x")) if isinstance(velocity, dict) else _optional_float(getattr(velocity, "x", None))
-            vz = _optional_float(velocity.get("z")) if isinstance(velocity, dict) else _optional_float(getattr(velocity, "z", None))
-            if vx is not None:
-                x += vx * dt
-            if vz is not None:
-                z += vz * dt
 
         graphics_norm_pos = None
         if gr.get("has_authoritative_progress"):
@@ -58,15 +49,8 @@ def build_track(frames: List[FrameData], hz: float = 1.0, start_idx: int = 0) ->
             if i == start_idx and graphics_norm_pos is not None:
                 log_debug(Component.ANALYZER, "First frame graphics normalized_position", norm_pos=graphics_norm_pos)
 
-        physics_norm_pos = _optional_float(
-            ph.get("normalized_spline_position")
-            or ph.get("spNormalizedCarPosition")
-            or ph.get("normalizedCarPosition")
-            or ph.get("normalized_car_position")
-        )
-
-        norm_pos = graphics_norm_pos if graphics_norm_pos is not None else physics_norm_pos
-        progress_source = "graphics" if graphics_norm_pos is not None else "physics" if physics_norm_pos is not None else None
+        norm_pos = graphics_norm_pos
+        progress_source = "graphics" if graphics_norm_pos is not None else None
         physics_quality = _optional_float(ph.get("quality_score")) or 0.0
         graphics_quality = _optional_float(gr.get("quality_score"))
         frame_quality = physics_quality if progress_source != "graphics" or graphics_quality is None else min(physics_quality, graphics_quality)

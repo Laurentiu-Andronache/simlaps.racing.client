@@ -84,8 +84,10 @@ def test_update_lap_from_logs_populates_player_and_sector_data() -> None:
 
 
 def test_shm_invalid_not_overwritten_by_log_heuristic_valid() -> None:
-    """Log parser is authoritative for completed-lap validity — its heuristic
-    VALID must replace a conflicting SHM per-frame INVALID_GAME verdict."""
+    """SHM per-frame INVALID_GAME must survive a conflicting log heuristic
+    VALID verdict — the log heuristic is the default when no authoritative
+    ``Relevant onSplit`` broadcast arrived, and SHM captures real-time
+    track-cut / penalty data that the log parser cannot see without it."""
     manager = SharedSessionManager()
 
     # SHM reports lap 2 as invalid (per-frame flag while lap was in progress)
@@ -107,19 +109,21 @@ def test_shm_invalid_not_overwritten_by_log_heuristic_valid() -> None:
     )
     manager.update_lap_from_logs(lap)
 
-    # Log parser's completed-lap verdict must replace the SHM per-frame flag.
+    # SHM per-frame invalid flag survives — log heuristic VALID is not
+    # authoritative (no Relevant onSplit) and must not overwrite SHM data.
     validity = manager.get_lap_validity_data(2)
     assert validity is not None
-    assert validity.is_valid is True
-    assert validity.lap_state == "VALID"
-    assert validity.source == "logs"
+    assert validity.is_valid is False
+    assert validity.lap_state == "INVALID_GAME"
+    assert validity.source == "shm_graphics"
 
 
 def test_shm_invalid_from_total_lap_count_wins_over_log_heuristic() -> None:
     """AC Evo 0.8.0.1: session_current_lap is 0, so current lap is derived from
     total_lap_count.  When total_lap_count=1 and is_valid_lap=False with an
-    active current_lap_time_ms, the in-progress lap is lap 2.  The log parser's
-    completed-lap verdict must replace the SHM per-frame flag.
+    active current_lap_time_ms, the in-progress lap is lap 2.  The SHM
+    invalidity must survive a later heuristic-VALID log verdict because only
+    the game's ``Relevant onSplit`` broadcast is authoritative.
     """
     manager = SharedSessionManager()
 
@@ -150,19 +154,22 @@ def test_shm_invalid_from_total_lap_count_wins_over_log_heuristic() -> None:
     )
     manager.update_lap_from_logs(lap)
 
-    # Log parser's completed-lap verdict replaces the SHM per-frame flag.
+    # SHM invalid verdict survives — log heuristic VALID is not authoritative.
     validity = manager.get_lap_validity_data(2)
     assert validity is not None
-    assert validity.is_valid is True
-    assert validity.lap_state == "VALID"
-    assert validity.source == "logs"
+    assert validity.is_valid is False
+    assert validity.lap_state == "INVALID_GAME"
+    assert validity.source == "shm_graphics"
 
 
 def test_log_authoritative_invalid_not_overwritten_by_shm_valid() -> None:
     """Log parser authoritative INVALID_GAME must not be overwritten by SHM VALID."""
     manager = SharedSessionManager()
 
-    # Log parser emits lap 1 with authoritative INVALID_GAME
+    # Log parser emits lap 1 with authoritative INVALID_GAME.
+    # In production INVALID_GAME is always paired with
+    # validity_source="authoritative" because it comes from the game's
+    # ``Relevant onSplit`` broadcast.
     lap = LapData(
         lap_number=1,
         physics_lap_number=1,
@@ -171,6 +178,7 @@ def test_log_authoritative_invalid_not_overwritten_by_shm_valid() -> None:
         is_valid=False,
         lap_state=LapState.INVALID_GAME,
         lap_type="INVALID_GAME",
+        validity_source="authoritative",
         timestamp="2026-01-01T00:00:00",
     )
     manager.update_lap_from_logs(lap)
@@ -188,7 +196,8 @@ def test_log_authoritative_invalid_not_overwritten_by_shm_valid() -> None:
 
 
 def test_shm_valid_does_not_block_log_outlap() -> None:
-    """SHM writes VALID for current lap → log parser emits OUTLAP → log must win."""
+    """SHM writes VALID for current lap → log parser emits OUTLAP → log must win
+    because OUTLAP is a structural classification that SHM cannot provide."""
     manager = SharedSessionManager()
 
     # SHM reports lap 3 as valid (normal in-progress frame)
@@ -198,7 +207,7 @@ def test_shm_valid_does_not_block_log_outlap() -> None:
     })
     assert manager.get_lap_validity(3) is True
 
-    # Log parser emits lap 3 as OUTLAP (heuristic, not authoritative)
+    # Log parser emits lap 3 as OUTLAP (heuristic structural classification)
     lap = LapData(
         lap_number=3,
         physics_lap_number=3,
@@ -211,7 +220,7 @@ def test_shm_valid_does_not_block_log_outlap() -> None:
     )
     manager.update_lap_from_logs(lap)
 
-    # Log OUTLAP must replace the SHM VALID entry
+    # Log OUTLAP replaces the SHM VALID — structural classifications win.
     validity = manager.get_lap_validity_data(3)
     assert validity is not None
     assert validity.lap_state == "OUTLAP"
@@ -252,7 +261,8 @@ def test_authoritative_log_valid_overrides_shm_invalid() -> None:
 
 
 def test_shm_invalid_does_not_block_log_invalid_split() -> None:
-    """SHM says invalid → log parser emits INVALID_SPLIT → log state must win."""
+    """SHM says INVALID_GAME → log parser emits INVALID_SPLIT → log state must win
+    because INVALID_SPLIT is a log-specific classification that SHM cannot provide."""
     manager = SharedSessionManager()
 
     manager.update_from_graphics_shm({
@@ -272,6 +282,7 @@ def test_shm_invalid_does_not_block_log_invalid_split() -> None:
     )
     manager.update_lap_from_logs(lap)
 
+    # Log-specific classification wins over SHM's generic INVALID_GAME.
     validity = manager.get_lap_validity_data(2)
     assert validity is not None
     assert validity.lap_state == "INVALID_SPLIT"
@@ -334,12 +345,15 @@ def test_update_from_static_shm_sets_session_metadata() -> None:
 def test_get_lap_time_uses_source_priority() -> None:
     manager = SharedSessionManager()
 
-    manager._session_data.calc_lap_times[5] = 150000.0
-    manager._session_data.lap_times_logs[5] = 130000.0
-    assert manager.get_lap_time(5) == 130000.0
+    # Set graphics-sourced time first (lower priority).
+    manager.update_lap_timing_from_graphics_shm(5, {"last_laptime_ms": 120000})
+    assert manager.get_lap_time(5) == 120000.0
 
-    # Graphics SHM times must NOT override log-sourced times.
-    manager._session_data.lap_times_graphics[5] = 120000.0
+    # Log-sourced time must override graphics.
+    from src.models.shared_session import LapTimingData
+    timing = manager._session_data.lap_timing[5]
+    timing.completed_lap_time = 130000.0
+    timing.completed_lap_time_source = "logs"
     assert manager.get_lap_time(5) == 130000.0
 
 
@@ -347,7 +361,7 @@ def test_get_lap_time_graphics_fallback_when_no_log_time() -> None:
     """Graphics SHM times must be visible when log-sourced times are absent."""
     manager = SharedSessionManager()
 
-    manager._session_data.lap_times_graphics[3] = 95000.0
+    manager.update_lap_timing_from_graphics_shm(3, {"last_laptime_ms": 95000})
     assert manager.get_lap_time(3) == 95000.0
 
     # get_all_lap_times must include graphics-only laps
@@ -359,22 +373,20 @@ def test_get_lap_time_graphics_fallback_when_no_log_time() -> None:
     assert manager.get_best_lap_time() == 95000.0
 
 
-def test_validate_data_consistency_reports_large_source_drift() -> None:
+def test_validate_data_consistency_returns_empty_after_merge() -> None:
+    """validate_data_consistency is a no-op after merging 4 dicts into 1."""
     manager = SharedSessionManager()
 
-    manager._session_data.lap_times_graphics[1] = 100000.0
-    manager._session_data.lap_times_logs[1] = 100050.0
-    manager._session_data.lap_times_graphics[2] = 100000.0
-    manager._session_data.lap_times_logs[2] = 100250.0
+    manager.update_lap_timing_from_graphics_shm(1, {"last_laptime_ms": 100000})
+    manager.update_lap_timing_from_graphics_shm(2, {"last_laptime_ms": 100250})
 
     result = manager.validate_data_consistency()
 
     assert "inconsistencies" in result
-    assert len(result["inconsistencies"]) == 1
-    assert "lap 2" in result["inconsistencies"][0]
+    assert len(result["inconsistencies"]) == 0
 
 
-def test_legacy_wrapper_converts_shared_state_to_session_data() -> None:
+def test_update_lap_from_logs_preserves_session_metadata() -> None:
     manager = SharedSessionManager()
     session = SessionData(
         session_id="session-legacy",
@@ -399,17 +411,17 @@ def test_legacy_wrapper_converts_shared_state_to_session_data() -> None:
     )
 
     manager.update_lap_from_logs(lap, session_data=session)
-    wrapper = manager.get_legacy_wrapper()
-    legacy_session = wrapper.to_session_data()
+    metadata = manager.get_session_metadata()
 
-    assert legacy_session.session_id == "session-legacy"
-    assert legacy_session.player_id == "76561198321627695"
-    assert len(legacy_session.laps) == 1
-    assert legacy_session.laps[0].lap_time_ms == 123456
-    assert legacy_session.laps[0].sector2_ms == 41000
+    assert metadata["session_id"] == "session-legacy"
+    identity = manager.get_player_identification()
+    assert identity.steam_id == "76561198321627695"
+    assert manager.get_lap_time(1) == 123456.0
+    sectors = manager.get_sector_times(1)
+    assert sectors.get(2) == 41000
 
 
-def test_to_legacy_session_data_uses_log_lap_time_priority() -> None:
+def test_lap_time_priority_logs_over_graphics() -> None:
     manager = SharedSessionManager()
     session = SessionData(
         session_id="session-priority",
@@ -430,13 +442,11 @@ def test_to_legacy_session_data_uses_log_lap_time_priority() -> None:
     manager.update_lap_from_logs(lap, session_data=session)
     manager.update_lap_timing_from_graphics_shm(2, {"last_laptime_ms": 120000})
 
-    legacy_session = manager.to_legacy_session_data()
-    lap_two = next(l for l in legacy_session.laps if l.lap_number == 2)
     # Log-sourced time (130000) must take priority over graphics SHM (120000).
-    assert lap_two.lap_time_ms == 130000
+    assert manager.get_lap_time(2) == 130000.0
 
 
-def test_legacy_wrapper_preserves_log_derived_outlap_state() -> None:
+def test_update_lap_preserves_log_derived_outlap_state() -> None:
     manager = SharedSessionManager()
     session = SessionData(
         session_id="session-outlap",
@@ -460,9 +470,9 @@ def test_legacy_wrapper_preserves_log_derived_outlap_state() -> None:
 
     manager.update_lap_from_logs(lap, session_data=session)
 
-    legacy_session = manager.to_legacy_session_data()
-    assert legacy_session.laps[0].lap_state == LapState.OUTLAP
-    assert legacy_session.laps[0].lap_type == "OUTLAP"
+    validity = manager.get_lap_validity_data(1)
+    assert validity is not None
+    assert validity.lap_state == "OUTLAP"
 
 
 def test_observer_notified_and_observer_errors_are_isolated() -> None:
@@ -514,13 +524,16 @@ def test_concurrent_updates_are_thread_safe() -> None:
     with ThreadPoolExecutor(max_workers=8) as pool:
         list(pool.map(_write, range(1, 50)))
 
-    # Graphics times are stored in lap_times_graphics and serve as fallback
-    # in get_all_lap_times when no log-sourced times exist.
+    # Graphics times are stored in LapTimingData.completed_lap_time and serve
+    # as fallback in get_all_lap_times when no log-sourced times exist.
     with manager._lock:
-        graphics_count = len(manager._session_data.lap_times_graphics)
+        timing_count = sum(
+            1 for t in manager._session_data.lap_timing.values()
+            if t.completed_lap_time is not None
+        )
     lap_validity = manager.get_all_lap_validity()
     all_lap_times = manager.get_all_lap_times()
-    assert graphics_count == 49
+    assert timing_count == 49
     assert len(lap_validity) == 49
     assert len(all_lap_times) == 49
 
@@ -540,8 +553,11 @@ def test_concurrent_access_performance() -> None:
     # Guard against major regressions while avoiding flaky micro-bench assertions.
     assert elapsed < 8.0
     with manager._lock:
-        graphics_count = len(manager._session_data.lap_times_graphics)
-    assert graphics_count == 1500
+        timing_count = sum(
+            1 for t in manager._session_data.lap_timing.values()
+            if t.completed_lap_time is not None
+        )
+    assert timing_count == 1500
 
 
 def test_memory_usage_optimization() -> None:
@@ -583,9 +599,8 @@ def test_large_session_handling() -> None:
         )
         manager.update_lap_from_logs(lap, session_data=session)
 
-    legacy_session = manager.to_legacy_session_data()
-    assert len(legacy_session.laps) == 2000
     assert manager.get_lap_time(2000) == 102000.0
+    assert manager.get_all_lap_times().get(2000) == 102000.0
 
 
 def test_shm_is_valid_lap_false_with_active_timing_marks_invalid() -> None:
@@ -624,8 +639,9 @@ def test_shm_is_valid_lap_false_with_zero_lap_time_skipped() -> None:
 
 
 def test_shm_invalid_survives_heuristic_valid_log() -> None:
-    """Log parser's completed-lap verdict replaces SHM per-frame flag even when
-    the log verdict is heuristic (no Relevant onSplit)."""
+    """SHM per-frame is_valid_lap=False must survive a later log heuristic VALID.
+    Only the game's ``Relevant onSplit`` broadcast carries authoritative validity;
+    without it the SHM real-time flag is the best available signal."""
     manager = SharedSessionManager()
 
     manager.update_from_graphics_shm({
@@ -650,8 +666,9 @@ def test_shm_invalid_survives_heuristic_valid_log() -> None:
     )
     manager.update_lap_from_logs(lap)
 
-    # Log parser's completed-lap verdict replaces the SHM per-frame flag.
+    # SHM invalid flag survives — log heuristic VALID is not authoritative.
     validity = manager.get_lap_validity_data(2)
     assert validity is not None
-    assert validity.is_valid is True
-    assert validity.source == "logs"
+    assert validity.is_valid is False
+    assert validity.lap_state == "INVALID_GAME"
+    assert validity.source == "shm_graphics"

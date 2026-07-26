@@ -56,8 +56,8 @@ class TestBuildTrack:
         assert isinstance(track, list)
         assert len(track) > 0
 
-    def test_build_track_has_velocity_integration(self):
-        """Test that track points have x, z coordinates from velocity integration."""
+    def test_build_track_has_coordinates(self):
+        """Test that track points have x, z coordinates."""
         frames = load_frames(50)
         
         track = build_track(frames, hz=10.0)
@@ -79,15 +79,15 @@ class TestBuildTrack:
             assert 'speed' in point
             assert isinstance(point['speed'], (int, float))
 
-    def test_build_track_prefers_physics_progress(self):
-        """Test that build_track uses physics-based progress."""
-        # Create mock frames since sample telemetry has all zero data
+    def test_build_track_uses_graphics_progress(self):
+        """Test that build_track uses graphics-based progress."""
+        # Create mock frames with graphics progress data
         from tests.test_telemetry_analyzer_comprehensive import create_mock_frame
         frames = [create_mock_frame(i, position=i * 0.01, speed=50.0) for i in range(50)]
         
         track = build_track(frames, hz=10.0)
         
-        # Check that track points have norm_pos from physics
+        # Check that track points have norm_pos from graphics
         for point in track[:5]:
             assert 'norm_pos' in point
             assert point['norm_pos'] is not None
@@ -110,17 +110,16 @@ class TestDetectLaps:
     """Test lap detection from real telemetry data."""
 
     def test_detect_laps_with_real_data(self):
-        """detect_laps returns a boundary list (or None for no laps)."""
+        """detect_laps returns a boundary list (empty for physics-only frames)."""
         frames = load_frames(100)
         track = build_track(frames, hz=10.0)
         
         boundaries = detect_laps(track, hz=10.0)
         
-        # Real data with position variation should produce boundaries
-        if boundaries is not None:
-            assert isinstance(boundaries, list)
-            assert len(boundaries) >= 1
-            assert all(isinstance(b, int) for b in boundaries)
+        # Real data frames are physics-only (no graphics SHM timing state),
+        # so the simplified detector returns no boundaries.
+        assert isinstance(boundaries, list)
+        assert all(isinstance(b, int) for b in boundaries)
 
     def test_detect_laps_min_lap_time(self):
         """detect_laps called twice with identical params yields the same result."""

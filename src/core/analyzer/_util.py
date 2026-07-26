@@ -1,6 +1,5 @@
 """Shared utility functions extracted from telemetry_analyzer.py."""
 import math
-from collections import defaultdict
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.core.telemetry_capture import FrameData
@@ -133,13 +132,9 @@ def get_graphics(frame: FrameData) -> Dict[str, Any]:
     if graphics.get("has_authoritative_progress") and graphics.get("normalized_car_position") is not None:
         return graphics
 
-    # Fallback: physics dead-reckoning (legacy behaviour for old captures
-    # without a decoded graphics region).
-    physics = frame.physics or {}
+    # Fallback: return graphics dict as-is for non-progress fields.
     return {
-        "normalized_car_position": physics.get("normalized_car_position"),
-        "normalized_position_source": physics.get("normalized_position_source"),
-        "has_authoritative_progress": physics.get("has_authoritative_progress", False),
+        "has_authoritative_progress": False,
         "completed_laps": graphics.get("completed_laps", 0),
         "current_time_ms": graphics.get("current_time_ms", 0),
         "last_time_ms": graphics.get("last_time_ms", 0),
@@ -237,29 +232,7 @@ def _profile_corner_sanity_notes(
                         )
             return notes
 
-    # ── Fallback: Monza-specific legacy checks ──
-    by_name: Dict[str, List[float]] = defaultdict(list)
-    for lap in laps:
-        for corner in lap.get("corners", []):
-            name = (corner.get("name") or "").lower()
-            apex = corner.get("apex_speed")
-            if isinstance(apex, (int, float)) and math.isfinite(apex):
-                by_name[name].append(float(apex))
-
-    notes: List[str] = []
-    for name, speeds in by_name.items():
-        median_apex = _median(speeds)
-        if median_apex is None:
-            continue
-        if "rettifilo" in name and median_apex > 190:
-            notes.append(
-                f"Track profile sanity check failed: {name} median apex is {median_apex:.0f} km/h, which is too fast for the first chicane."
-            )
-        if "curva grande" in name and median_apex < 120:
-            notes.append(
-                f"Track profile sanity check failed: {name} median apex is {median_apex:.0f} km/h, which is too slow for Curva Grande."
-            )
-    return notes
+    return []
 
 
 # ── Corner measurement window ─────────────────────────────────────────────

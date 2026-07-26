@@ -201,7 +201,7 @@ class RegionReader:
                 1314: "ERROR_PRIVILEGE_NOT_HELD - A required privilege is not held by the client",
             }
             return error_messages.get(error_code, f"Unknown error {error_code}")
-        except Exception:
+        except (KeyError, TypeError, OSError):
             return "Unknown"
 
     def read_raw(self) -> bytes:
@@ -214,13 +214,13 @@ class RegionReader:
         if self._view:
             try:
                 kernel32.UnmapViewOfFile(self._view)
-            except Exception:
+            except OSError:
                 pass
             self._view = None
         if self._handle:
             try:
                 kernel32.CloseHandle(self._handle)
-            except Exception:
+            except OSError:
                 pass
             self._handle = None
 
@@ -567,7 +567,7 @@ class TelemetryCapture:
         for key in disconnected:
             try:
                 self._readers[key].close()
-            except Exception:
+            except OSError:
                 pass
             self._readers.pop(key, None)
 
@@ -841,7 +841,7 @@ class TelemetryCapture:
         if self._diag_file:
             try:
                 self._diag_file.close()
-            except Exception:
+            except OSError:
                 pass
             self._diag_file = None
 
@@ -900,7 +900,7 @@ class TelemetryCapture:
         if self._diag_file:
             try:
                 self._diag_file.close()
-            except Exception:
+            except OSError:
                 pass
             self._diag_file = None
 

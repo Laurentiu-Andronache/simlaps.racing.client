@@ -224,23 +224,3 @@ class PBCache:
             Dictionary with (track, car) keys and PersonalBest values
         """
         return {key: value for key, value in self._cache.items()}
-
-
-# Global PB cache instance
-_pb_cache: Optional[PBCache] = None
-
-
-def get_pb_cache(server_url: str) -> PBCache:
-    """
-    Get or create global PB cache instance.
-    
-    Args:
-        server_url: Base URL for API server
-        
-    Returns:
-        PBCache instance
-    """
-    global _pb_cache
-    if _pb_cache is None or _pb_cache.server_url != server_url:
-        _pb_cache = PBCache(server_url)
-    return _pb_cache

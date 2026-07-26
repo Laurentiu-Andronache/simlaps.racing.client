@@ -223,7 +223,6 @@ class TestContextIdentity:
         parser.context.car_uuid = "abc-uuid"
         parser.context.fuel_init_correction = 1.5
         parser.context.prev_hundredmeters = 250
-        parser.context.fuel_spike_count = 3
         parser.context.player_car_uuids.add("other-uuid")
         parser.context.setup_values["brake_balance"] = "55"
 
@@ -232,7 +231,6 @@ class TestContextIdentity:
         # Session-scoped fields cleared.
         assert parser.context.fuel_init_correction == 0.0
         assert parser.context.prev_hundredmeters == 0
-        assert parser.context.fuel_spike_count == 0
         assert parser.context.setup_values == {}
 
         # The current car_uuid is re-seeded into player_car_uuids.

@@ -10,6 +10,7 @@ from enum import Enum
 from ...models import LapData, SessionData
 from ...core.api_client import SubmissionStatus
 from ...utils.helpers import format_lap_time, format_sector_time, format_car_name, format_track_name
+from ...utils.structured_logger import log_error, Component
 
 
 class LapCardStatus(Enum):
@@ -211,7 +212,7 @@ class LapCard(ft.Container):
         """Update the card status and refresh display."""
         if self.data is None:
             # Safety check - data somehow became None
-            print(f"[ERROR] LapCard.data is None, cannot update status to {status}")
+            log_error(Component.LAP_CARD, f"LapCard.data is None, cannot update status to {status}")
             return
         self.data.status = status
         self.data.error_message = error_message

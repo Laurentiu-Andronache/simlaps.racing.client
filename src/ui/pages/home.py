@@ -20,6 +20,7 @@ from ...utils.structured_logger import (
     Component,
     log_debug,
     log_info,
+    log_warning,
     log_exception,
 )
 from ...version import GAME_DISPLAY_NAME
@@ -392,7 +393,7 @@ class HomePage(ft.Column):
                         if self.page:
                             self._update_banner.update()
             except Exception as e:
-                print(f"Update check failed: {e}")
+                log_warning(Component.HOME, f"Update check failed: {e}")
 
         # Run in background if page is available
         if self.page:
@@ -549,16 +550,13 @@ class HomePage(ft.Column):
     
     def set_telemetry_button(self, button, output_path: str):
         """Set the telemetry button and update its path."""
-        print(f"[HOME] set_telemetry_button called: button={button}, output_path={output_path}")
-        if button is not None:
-            print(f"[HOME] Button on_click before setting: {button.on_click}")
+        log_debug(Component.HOME, f"set_telemetry_button called: output_path={output_path}")
         
         self._telemetry_button = button
         if button is None:
             self._telemetry_button_container.content = None
         else:
             self._telemetry_button.update_path(output_path)
-            print(f"[HOME] Button on_click after update_path: {button.on_click}")
             self._telemetry_button_container.content = ft.Container(
                 content=button,
                 padding=ft.Padding.only(left=20, right=20, bottom=8),

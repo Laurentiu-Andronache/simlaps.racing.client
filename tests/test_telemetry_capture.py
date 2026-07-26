@@ -538,8 +538,8 @@ class TestRegionReaderEdgeCases:
     @patch('src.core.telemetry_capture.kernel32')
     def test_region_reader_close_exception_handling(self, mock_kernel32):
         """Test RegionReader.close with exception handling."""
-        mock_kernel32.UnmapViewOfFile.side_effect = Exception("Unmap failed")
-        mock_kernel32.CloseHandle.side_effect = Exception("Close failed")
+        mock_kernel32.UnmapViewOfFile.side_effect = OSError("Unmap failed")
+        mock_kernel32.CloseHandle.side_effect = OSError("Close failed")
         
         reader = RegionReader("test_region", 1024)
         reader._handle = MagicMock()

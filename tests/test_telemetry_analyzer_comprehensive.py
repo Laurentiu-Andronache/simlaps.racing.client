@@ -20,19 +20,34 @@ from src.models import SharedSessionManager
 from datetime import datetime, timezone
 
 
-def create_mock_frame(frame_num: int, speed: float = 100.0, position: float = 0.0) -> FrameData:
-    """Create a mock telemetry frame for testing."""
+def create_mock_frame(frame_num: int, speed: float = 100.0, position: float = 0.0,
+                       last_lap_time_ms: int = None) -> FrameData:
+    """Create a mock telemetry frame for testing.
+
+    Progress data is placed in ``graphics`` (the authoritative source).
+    Pass ``last_lap_time_ms`` to simulate SHM timing-state lap boundaries.
+    """
+    graphics = {
+        "completed_laps": 0,
+        "current_time_ms": 0,
+        "last_time_ms": 0,
+        "best_time_ms": 0,
+        "is_valid_lap": None,
+    }
+    if position is not None:
+        graphics["normalized_car_position"] = position
+        graphics["has_authoritative_progress"] = True
+    if last_lap_time_ms is not None:
+        graphics["last_time_ms"] = last_lap_time_ms
     return FrameData(
         timestamp=datetime.now(timezone.utc).isoformat(),
         frame_number=frame_num,
         physics={
             "speed_kmh": speed,
-            "normalized_car_position": position,
-            "normalized_position_source": "physics_tyre_z",
-            "has_authoritative_progress": True,
             "gear": 3,
             "rpm": 5000,
         },
+        graphics=graphics,
     )
 
 
@@ -48,13 +63,12 @@ class TestBuildTrack:
         assert len(track) == 90  # Should skip first 10 frames
         assert track[0]["frame"] == 10
 
-    def test_build_track_velocity_integration(self):
-        """Test velocity integration in track building."""
+    def test_build_track_with_graphics_progress(self):
+        """Test that track building uses graphics-derived progress."""
         frames = [create_mock_frame(i, speed=50.0, position=i * 0.01) for i in range(50)]
         
         track = build_track(frames, hz=10.0)
         
-        # Check that velocity is integrated
         assert all("speed" in pt for pt in track)
         assert track[0]["speed"] == 50.0
 
@@ -76,41 +90,43 @@ class TestBuildTrack:
 class TestDetectLaps:
     """Test lap detection algorithms."""
 
-    def test_detect_laps_with_velocity_integration(self):
-        """Test lap detection using velocity integration."""
-        # Create frames simulating multiple laps
+    def test_detect_laps_with_timing_state(self):
+        """Test lap detection using SHM timing state (last_lap_time_ms changes)."""
         frames = []
         for lap in range(3):
             for i in range(100):
-                position = (lap + i / 100.0) % 1.0
-                frames.append(create_mock_frame(len(frames), speed=100.0, position=position))
+                frames.append(create_mock_frame(len(frames), speed=100.0, position=0.5,
+                                                last_lap_time_ms=lap * 90000))
         
         track = build_track(frames, hz=10.0)
         lap_bounds = detect_laps(track, hz=10.0)
         
-        # Should detect approximately 3 laps
-        assert len(lap_bounds) >= 1  # At least start
+        # Should detect 2 boundaries (last_lap_time changes at lap 1 and lap 2)
+        assert len(lap_bounds) >= 1
 
-    def test_detect_laps_with_min_lap_time(self):
-        """Test lap detection with minimum lap time filtering."""
-        frames = [create_mock_frame(i, position=i * 0.01) for i in range(200)]
+    def test_detect_laps_no_timing_changes(self):
+        """Test lap detection when last_lap_time_ms never changes."""
+        frames = [create_mock_frame(i, position=i * 0.01, last_lap_time_ms=0) for i in range(200)]
         track = build_track(frames, hz=10.0)
         
         lap_bounds = detect_laps(track, hz=10.0)
         
-        # Linear position won't detect laps, but function should run
-        assert len(lap_bounds) >= 1  # At least end boundary
+        # No timing changes means no lap boundaries
+        assert len(lap_bounds) == 0
 
-    def test_detect_laps_high_min_lap_time(self):
-        """Test lap detection with high minimum lap time filtering."""
-        # Create frames with very short "laps" that should be filtered
-        frames = [create_mock_frame(i, position=i * 0.01) for i in range(50)]
+    def test_detect_laps_filters_short_gaps(self):
+        """Test lap detection filters boundaries too close together."""
+        # Two timing changes only 5 frames apart (below min_lap_frames=10 at 10Hz)
+        frames = []
+        for i in range(50):
+            llt = 90000 if i == 20 else (180000 if i == 25 else 0)
+            frames.append(create_mock_frame(i, position=0.5, last_lap_time_ms=llt))
         track = build_track(frames, hz=10.0)
         
         lap_bounds = detect_laps(track, hz=10.0)
         
-        # Should filter out very short laps
-        assert len(lap_bounds) <= 2  # At most start and end
+        # Second change at frame 25 is only 5 frames after first (filtered)
+        assert len(lap_bounds) <= 1
 
     def test_detect_laps_short_session(self):
         """Test lap detection with very short session."""
@@ -120,26 +136,28 @@ class TestDetectLaps:
         lap_bounds = detect_laps(track, hz=10.0)
         
         # Short sessions should not detect laps
-        assert len(lap_bounds) <= 2
+        assert len(lap_bounds) == 0
 
     def test_detect_laps_no_valid_laps(self):
-        """Test lap detection when no valid laps exist."""
-        # Create frames with no position changes
-        frames = [create_mock_frame(i, position=0.0) for i in range(50)]
+        """Test lap detection when no timing changes exist."""
+        frames = [create_mock_frame(i, position=0.0, last_lap_time_ms=0) for i in range(50)]
         track = build_track(frames, hz=10.0)
         
         lap_bounds = detect_laps(track, hz=10.0)
         
-        assert len(lap_bounds) <= 2
+        assert len(lap_bounds) == 0
 
     def test_detect_laps_single_lap(self):
-        """Test lap detection with exactly one lap."""
-        frames = [create_mock_frame(i, position=i * 0.01) for i in range(100)]
+        """Test lap detection with exactly one timing change."""
+        frames = []
+        for i in range(100):
+            llt = 95000 if i >= 50 else 0
+            frames.append(create_mock_frame(i, position=0.5, last_lap_time_ms=llt))
         track = build_track(frames, hz=10.0)
         
         lap_bounds = detect_laps(track, hz=10.0)
         
-        # Should detect at least one lap
+        # Should detect one boundary at the timing change
         assert len(lap_bounds) >= 1
 
 
@@ -223,7 +241,16 @@ class TestGetPhysics:
         
         assert physics is not None
         assert physics.get("speed_kmh") == 150.0
-        assert physics.get("normalized_car_position") == 0.5
+
+    def test_get_graphics_progress_from_frame(self):
+        """Test that graphics carries normalized_car_position."""
+        frame = create_mock_frame(0, speed=150.0, position=0.5)
+        
+        graphics = frame.graphics
+        
+        assert graphics is not None
+        assert graphics.get("normalized_car_position") == 0.5
+        assert graphics.get("has_authoritative_progress") is True
 
     def test_get_physics_returns_dict(self):
         """Test that get_physics returns a dictionary."""
@@ -1059,10 +1086,11 @@ class TestTelemetryAnalyzer:
         frames = [create_mock_frame(i, speed=90.0 + (i % 40), position=i * 0.01) for i in range(220)]
         manager = SharedSessionManager()
         # Lap times must come from logs (graphics SHM is not authoritative).
-        manager._session_data.lap_times_logs[1] = 200000.0
-        manager._session_data.lap_times_logs[2] = 190000.0
-        manager._session_data.lap_times_logs[3] = 180000.0
-        manager._session_data.lap_times_logs[4] = 170000.0
+        from src.models.shared_session import LapTimingData
+        for lap_num, time_ms in [(1, 200000.0), (2, 190000.0), (3, 180000.0), (4, 170000.0)]:
+            manager._session_data.lap_timing[lap_num] = LapTimingData(
+                lap_number=lap_num, completed_lap_time=time_ms, completed_lap_time_source="logs"
+            )
         manager.update_lap_validity_from_graphics_shm(2, True)
 
         analyzer = TelemetryAnalyzer(output_dir="tests/output", session_manager=manager)
@@ -1096,11 +1124,11 @@ class TestTelemetryAnalyzer:
         frames = [create_mock_frame(i, speed=95.0 + (i % 30), position=i * 0.01) for i in range(180)]
         manager = SharedSessionManager()
         # Lap times must come from logs (graphics SHM is not authoritative).
-        manager._session_data.lap_times_logs[1] = 999000.0
-        manager._session_data.lap_times_logs[2] = 150000.0
-        manager._session_data.lap_times_logs[3] = 140000.0
-        manager._session_data.lap_times_logs[4] = 130000.0
-        manager._session_data.lap_times_logs[5] = 129000.0
+        from src.models.shared_session import LapTimingData
+        for lap_num, time_ms in [(1, 999000.0), (2, 150000.0), (3, 140000.0), (4, 130000.0), (5, 129000.0)]:
+            manager._session_data.lap_timing[lap_num] = LapTimingData(
+                lap_number=lap_num, completed_lap_time=time_ms, completed_lap_time_source="logs"
+            )
 
         analyzer = TelemetryAnalyzer(output_dir="tests/output", session_manager=manager)
         game_markers = [

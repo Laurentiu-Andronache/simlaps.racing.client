@@ -31,12 +31,12 @@ from src.models import SessionData, LapData, SharedSessionManager
 from src.core.api_client import APIClient
 from src.core.security import get_steam_user
 from src.core.discord_notifier import DiscordNotifier
-from src.core.pb_cache import get_pb_cache
+from src.core.pb_cache import PBCache
 from src.core.telemetry_capture import TelemetryCapture
 from src.core.track_catalog import TRACK_CATALOG
 from src.core.analyzer import TelemetryAnalyzer
 from src.utils.structured_logger import log_debug, log_info, log_warning, log_exception, Component
-from src.utils.config import AppConfig, get_config_manager
+from src.utils.config import AppConfig, ConfigManager
 
 
 class AppPage(Enum):
@@ -60,7 +60,7 @@ class SimLapsApp:
         
         # Core services — load config BEFORE page setup so it can use settings
         log_info(Component.APP, "Loading configuration")
-        self._config_manager = get_config_manager()
+        self._config_manager = ConfigManager()
         self._config = self._config_manager.load()
         log_info(Component.APP, "Configuration loaded", server=self._config.server_url)
 
@@ -77,7 +77,7 @@ class SimLapsApp:
         # Discord and PB services
         log_info(Component.APP, "Initializing Discord and PB services")
         self._discord_notifier: Optional[DiscordNotifier] = None
-        self._pb_cache = get_pb_cache(self._config.server_url)
+        self._pb_cache = PBCache(self._config.server_url)
         log_info(Component.APP, "PB cache initialized", initialized=self._pb_cache is not None)
         
         # Monitoring lifecycle service
@@ -608,7 +608,7 @@ class SimLapsApp:
             app=self,
             config=config,
             create_discord_notifier=DiscordNotifier,
-            get_pb_cache_for_server=get_pb_cache,
+            get_pb_cache_for_server=lambda url: PBCache(url),
             create_api_client=APIClient,
             create_log_parser=self._create_log_parser,
         )

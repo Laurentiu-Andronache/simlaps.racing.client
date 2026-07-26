@@ -26,10 +26,7 @@ from ..models import (
     LogContext,
     # Constants
     SECTOR_SUM_TOLERANCE_MS,
-    HYBRID_FUEL_THRESHOLD_L,
-    HYBRID_SPIKE_SESSION_THRESHOLD,
     MIN_FULL_LAP_HUNDREDM,
-    KNOWN_HYBRID_CARS,
     is_hybrid_car,
     SESSION_TYPE_MAP,
     PRACTICE_LIKE,
@@ -138,7 +135,6 @@ class LogParser:
         self._pending_compound_ts: Optional[str] = None
         self._pending_compound_source_car_uuid: Optional[str] = None
         self._pending_compound_updates: dict[int, str] = {}
-        self._pending_compound_confirmed: set[int] = set()
 
         self._compile_patterns()
 
@@ -183,9 +179,6 @@ class LogParser:
 
             "set_compound_old": re.compile(
                 r"setCompound Tyre:\s*(\d+)\s+compound(?: name)?:\s*(\w+)"
-            ),
-            "platformcore_compound": re.compile(
-                r"CarId:\s*([a-f0-9\-]+)\s+Tyre:\s*(\d+)\s+compound:\s*(\d+)"
             ),
 
             "loading_tyre_compound": re.compile(r"LOADING TYRE COMPOUND (.+)"),
@@ -397,37 +390,15 @@ class LogParser:
     def _sync_shared_session(self, session: Optional[SessionData]) -> None:
         if session is None:
             return
-        self._session_manager.update_from_logs(
-            SessionData(
-                session_id=session.session_id,
-                game_version=session.game_version,
-                session_type=session.session_type,
-                car=session.car,
-                track=session.track,
-                weather=session.weather,
-                player_name=session.player_name,
-                player_id=session.player_id,
-                car_uuid=session.car_uuid,
-                tyre_compound=session.tyre_compound,
-                initial_fuel=session.initial_fuel,
-                fuel_used_session=session.fuel_used_session,
-                fuel_reliable=session.fuel_reliable,
-                setup_notes=session.setup_notes,
-                start_time=session.start_time,
-                laps=[],
-                stints=[],
-            )
-        )
+        self._session_manager.update_session_metadata_from_logs(session)
 
     async def _emit_game_status(self, is_running: bool, trigger: str = "unknown") -> None:
         """Emit game status change, logging if duplicate or state change."""
         if self._last_emitted_game_status == is_running:
             log_debug(Component.LOG_PARSER, f"[GAME_STATUS] DUPLICATE EVENT (ignored): is_running={is_running}, trigger={trigger}, last={self._last_emitted_game_status}")
-            print(f"[LOG_PARSER] Duplicate game status {is_running} from {trigger}, ignoring")
             return
         
         log_debug(Component.LOG_PARSER, f"[GAME_STATUS] STATE CHANGE: is_running={is_running}, trigger={trigger}, last={self._last_emitted_game_status}")
-        print(f"[LOG_PARSER] Game status change: {is_running} (trigger: {trigger}, was: {self._last_emitted_game_status})")
         self._last_emitted_game_status = is_running
         
         if self.on_game_status_change:
@@ -579,7 +550,7 @@ class LogParser:
             self.context.car_uuid = car_uuid
             self.context.player_car_uuids.add(car_uuid)
             ers, kers = self._get_shm_hybrid_flags()
-            self.context.car_is_hybrid = is_hybrid_car(car, has_ers_from_shm=ers, has_kers_from_shm=kers)
+            self.context.car_is_hybrid = is_hybrid_car(has_ers_from_shm=ers, has_kers_from_shm=kers)
 
             if car_uuid in self.context.car_meta:
                 meta = self.context.car_meta[car_uuid]
@@ -645,50 +616,6 @@ class LogParser:
                 break
 
     def _handle_compound(self, line: str) -> None:
-        self._handle_compound_v2(line)
-        return
-        # Check for LOADING TYRE COMPOUND format (appears after CarTeleportCompleted)
-        if "LOADING TYRE COMPOUND" in line:
-            m = self._pats["loading_tyre_compound"].search(line)
-            if m and self._last_car_uuid and self._is_player_car(self._last_car_uuid):
-                compound_name = m.group(1).strip()  # Use full name directly
-                # Set all 4 tires to the same compound, replacing any existing values
-                self.context.tyre.set_all(compound_name)
-                log_debug(Component.LOG_PARSER, 
-                    f"[COMPOUND] All tires → {compound_name} "
-                    f"(resolved: {self.context.tyre.compound_name})"
-                )
-            return
-        
-        # TYRE COMPOUND summary lines are ignored - they include all cars in
-        # session. Likewise, platformCore numeric "CarId ... compound: N"
-        # events are not reliable compound identifiers in ACE and can disagree
-        # with the authoritative physics "setCompound ... compound name: XX"
-        # line for the same tyre update.
-        if "setCompound Tyre:" not in line:
-            return
-
-        m = self._pats["set_compound_old"].search(line)
-        if not m:
-            return
-
-        pos = int(m.group(1))
-        code = m.group(2)
-
-        compound_name = code.strip()
-
-        # Only valid tyre positions
-        if pos not in (0, 1, 2, 3):
-            return
-
-        self.context.tyre.set(pos, compound_name)
-
-        log_debug(Component.LOG_PARSER, 
-            f"[COMPOUND] Tyre {pos} → {code} "
-            f"(resolved: {self.context.tyre.compound_name})"
-        )
-
-    def _handle_compound_v2(self, line: str) -> None:
         # Check for LOADING TYRE COMPOUND format (appears after CarTeleportCompleted)
         if "LOADING TYRE COMPOUND" in line:
             self._flush_pending_compound_batch()
@@ -712,26 +639,12 @@ class LogParser:
             return
 
         # TYRE COMPOUND summary lines are ignored - they include all cars in
-        # session. platformCore numeric lines are only used as player-car
-        # confirmation for an adjacent physics setCompound batch.
-        if "setCompound Tyre:" not in line and "CarId:" not in line:
+        # session. Physics setCompound lines are used directly (no platformCore
+        # confirmation step).
+        if "setCompound Tyre:" not in line:
             return
 
         line_ts = self._extract_line_timestamp(line)
-
-        if "setCompound Tyre:" not in line:
-            m = self._pats["platformcore_compound"].search(line)
-            if not m or not self._is_player_car(m.group(1)):
-                return
-            pos = int(m.group(2))
-            if (
-                line_ts
-                and line_ts == self._pending_compound_ts
-                and pos in self._pending_compound_updates
-            ):
-                self._pending_compound_confirmed.add(pos)
-                log_debug(Component.LOG_PARSER, f"[COMPOUND] Player-confirmed tyre {pos} at {line_ts}")
-            return
 
         m = self._pats["set_compound_old"].search(line)
         if not m:
@@ -775,46 +688,30 @@ class LogParser:
         if not self._pending_compound_updates:
             self._pending_compound_ts = None
             self._pending_compound_source_car_uuid = None
-            self._pending_compound_confirmed.clear()
             return
 
         pending = dict(self._pending_compound_updates)
-        confirmed = {
-            pos: pending[pos]
-            for pos in sorted(self._pending_compound_confirmed)
-            if pos in pending
-        }
-        has_full_batch = set(pending) == {0, 1, 2, 3}
-        prelap_window = self.current_session is None or not self.current_session.laps
         source_car_uuid = self._pending_compound_source_car_uuid
         player_scoped = source_car_uuid is not None and self._is_player_car(source_car_uuid)
         legacy_unscoped = source_car_uuid is None
+        prelap_window = self.current_session is None or not self.current_session.laps
 
-        if confirmed:
-            for pos, compound in confirmed.items():
-                self.context.tyre.set(pos, compound)
-            log_debug(Component.LOG_PARSER, 
-                f"[COMPOUND] Applied player-confirmed positions "
-                f"{sorted(confirmed)} -> {self.context.tyre.compound_name}"
-            )
-        elif has_full_batch and prelap_window and (player_scoped or legacy_unscoped):
-            self.context.tyre.reset()
+        if player_scoped or (legacy_unscoped and prelap_window):
             for pos, compound in pending.items():
                 self.context.tyre.set(pos, compound)
             log_debug(Component.LOG_PARSER, 
-                f"[COMPOUND] Applied pre-lap full set at {self._pending_compound_ts} "
-                f"-> {self.context.tyre.compound_name}"
+                f"[COMPOUND] Applied batch at {self._pending_compound_ts} "
+                f"(positions={sorted(pending)}) -> {self.context.tyre.compound_name}"
             )
         else:
             log_debug(Component.LOG_PARSER, 
                 f"[COMPOUND] Ignored unscoped batch at {self._pending_compound_ts} "
-                f"(positions={sorted(pending)} confirmed={sorted(self._pending_compound_confirmed)})"
+                f"(positions={sorted(pending)})"
             )
 
         self._pending_compound_ts = None
         self._pending_compound_source_car_uuid = None
         self._pending_compound_updates.clear()
-        self._pending_compound_confirmed.clear()
 
     def _handle_weather(self, line: str) -> None:
         if "GameModeSelectionWeatherType_" not in line:
@@ -883,7 +780,7 @@ class LogParser:
         self.context.current_car = raw_car
         self.context.weather = raw_weather
         ers, kers = self._get_shm_hybrid_flags()
-        self.context.car_is_hybrid = is_hybrid_car(raw_car, has_ers_from_shm=ers, has_kers_from_shm=kers)
+        self.context.car_is_hybrid = is_hybrid_car(has_ers_from_shm=ers, has_kers_from_shm=kers)
 
         # Preserve setup values across session reset
         preserved_setup_values = self.context.setup_values.copy()
@@ -978,23 +875,6 @@ class LogParser:
                 f"net={net_fuel:.3f} L"
             )
             self.context.fuel_init_correction = 0.0
-
-        # ── Per-lap hybrid spike detection ─────────────────────────────────────
-        # Always mark this individual lap as unreliable if net_fuel is spiked.
-        if net_fuel > HYBRID_FUEL_THRESHOLD_L:
-            self.context.fuel_spike_count += 1
-            self._ip.fuel_reliable = False
-            log_debug(Component.LOG_PARSER, 
-                f"[FUEL] Spike #{self.context.fuel_spike_count}: {net_fuel:.2f} L "
-                f"(> {HYBRID_FUEL_THRESHOLD_L} L)"
-            )
-            # Poison the whole session only after enough repeated spikes.
-            if self.context.fuel_spike_count >= HYBRID_SPIKE_SESSION_THRESHOLD:
-                self.current_session.fuel_reliable = False
-                log_debug(Component.LOG_PARSER, 
-                    "[FUEL] Session fuel marked unreliable "
-                    f"({self.context.fuel_spike_count} spikes)"
-                )
 
         self._ip.fuel_used = net_fuel
         log_debug(Component.LOG_PARSER, 
@@ -1104,12 +984,17 @@ class LogParser:
         ``Relevant onSplit`` flag (handled in ``_handle_lap_validity``).
         This method only decides whether the lap is an outlap (pits / warm-up)
         or a valid lap eligible for timing.
+
+        Outlap detection is log-only (no SHM dependency):
+
+        1. **Log signal** — ``ip.is_outlap`` is set by the explicit
+           ``Outplap split`` marker in the log (see
+           ``_handle_outlap_signals``).
+        2. **Log fallback** — when no ``Outplap split`` was logged, infer
+           outlap from ``physics_lap_num == 1`` in a practice-like session
+           with no recorded splits.  If splits ARE recorded, it's a flying
+           lap.
         """
-        # Primary: explicit 'Outplap split' marker in log.
-        # Fallback: physics lap counter == 1 in a practice session AND no splits
-        # recorded yet (covers the case where the game doesn't log
-        # 'Outplap split' but we can infer it's an outlap because no
-        # timed sectors exist). If splits ARE recorded, it's a flying lap.
         is_practice_outlap = (
             session_type in PRACTICE_LIKE
             and ip.physics_lap_num == 1
@@ -1629,12 +1514,16 @@ class LogParser:
                     f"Session: {self.current_session is not None}"
                 )
 
-                # Discard historical laps — only new ones are emitted
+                # Discard historical laps — only new ones are emitted.
+                # Do NOT clear _pending_lap here: a lap whose authoritative
+                # validity line hasn't arrived yet (common on single-split
+                # tracks like Nordschleife Tourist where the game may never
+                # emit "Relevant onSplit for Combo") must survive into the
+                # live-tail phase so it can be flushed when the session ends.
                 if self.current_session:
                     self.current_session.laps.clear()
                     self.current_session.stints.clear()
                     self._finalise_stints()
-                    self._pending_lap = None
                     self._reset_in_progress()
                     log_debug(Component.LOG_PARSER, 
                         f"Context: track={self.current_session.track} "
@@ -1692,6 +1581,15 @@ class LogParser:
                         # AC Evo: pause-menu "Exit to Menu" — different from
                         # restart, the user is leaving the session entirely.
                         elif "request made GameModeRequestExit" in line:
+                            # Flush any pending lap whose authoritative
+                            # validity never arrived (critical for
+                            # single-split tracks like Nordschleife Tourist
+                            # where the game may not emit a "Relevant
+                            # onSplit for Combo" validity broadcast).
+                            completed = self._flush_pending_lap()
+                            if completed is not None and self.current_session is not None:
+                                await self._emit_lap(self.current_session, completed)
+                            self._finalise_current_session()
                             await self._emit_game_status(False, trigger="GameModeRequestExit")
                         if "END_SESSION" in line:
                             if self._line_mentions_player_car(line):

@@ -7,11 +7,12 @@ Displays all track/car combinations with their best lap times.
 import flet as ft
 from typing import Optional, List, Dict, Any
 from ...core.pb_cache import PBCache
+from ...utils.structured_logger import log_debug, Component
 
 
 def show_pb_cache_dialog(page: ft.Page, pb_cache: PBCache):
     """Show a dialog with personal best cache contents."""
-    print(f"[PB_VIEWER] show_pb_cache_dialog called! Page: {page}, PB Cache: {pb_cache}")
+    log_debug(Component.UI, f"show_pb_cache_dialog called")
     
     def _format_time(time_ms: int) -> str:
         """Format time in minutes:seconds.milliseconds."""
@@ -77,7 +78,7 @@ def show_pb_cache_dialog(page: ft.Page, pb_cache: PBCache):
     )
     
     # Show dialog
-    print(f"[PB_VIEWER] Creating dialog...")
+    log_debug(Component.UI, "Creating PB cache dialog")
     dialog = ft.AlertDialog(
         title=ft.Text("🏆 Personal Best Cache", size=20, weight=ft.FontWeight.BOLD),
         content=content,
@@ -85,7 +86,4 @@ def show_pb_cache_dialog(page: ft.Page, pb_cache: PBCache):
         shape=ft.RoundedRectangleBorder(radius=12),
     )
     
-    print(f"[PB_VIEWER] Showing dialog using page.show_dialog()...")
     page.show_dialog(dialog)
-    
-    print(f"[PB_VIEWER] Dialog should be visible now!")

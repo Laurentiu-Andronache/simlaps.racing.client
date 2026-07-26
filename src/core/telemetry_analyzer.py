@@ -44,8 +44,6 @@ from src.core.analyzer.corner_detection import (
     corner_segment_time,
 )
 from src.core.analyzer.lap_detection import (
-    _detect_laps_by_norm_pos,
-    _detect_laps_by_position,
     _detect_laps_by_timing_state,
     detect_laps,
 )
@@ -214,16 +212,8 @@ class TelemetryAnalyzer:
                 start_frame = track[0]["frame"] if track else 0
                 lap_bounds = [start_frame] + timing_bounds
                 log_info(Component.ANALYZER, "Lap detection successful", method="shared memory timing state", laps=len(lap_bounds))
-            # 3rd priority: Telemetry-based detection (normalized position)
             else:
-                lap_bounds = detect_laps(track, hz=hz, allow_position_fallback=False)
-                if lap_bounds and len(lap_bounds) >= 2:
-                    log_info(Component.ANALYZER, "Lap detection successful", method="telemetry-based (normalized position)", laps=len(lap_bounds))
-                else:
-                    # Try position-based lap detection as final fallback
-                    lap_bounds = detect_laps(track, hz=hz, allow_position_fallback=True)
-                    if lap_bounds and len(lap_bounds) >= 2:
-                        log_info(Component.ANALYZER, "Lap detection successful", method="telemetry-based (position fallback)", laps=len(lap_bounds))
+                lap_bounds = []
 
         if not lap_bounds or len(lap_bounds) < 2:
             log_warning(Component.ANALYZER, "Lap detection failed", reason="no valid boundaries")

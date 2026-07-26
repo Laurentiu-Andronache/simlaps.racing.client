@@ -8,10 +8,7 @@ from .constants import (
     PIT_TELEPORT_DISTANCE_M,
     TRACK_LIMIT_INVALIDATION_THRESHOLD_M,
     SECTOR_SUM_TOLERANCE_MS,
-    HYBRID_FUEL_THRESHOLD_L,
-    HYBRID_SPIKE_SESSION_THRESHOLD,
     MIN_FULL_LAP_HUNDREDM,
-    KNOWN_HYBRID_CARS,
     is_hybrid_car,
     SESSION_TYPE_MAP,
     PRACTICE_LIKE,
@@ -29,7 +26,6 @@ from .shared_session import (
     SessionMetadataData,
     SharedSessionData,
     SharedSessionManager,
-    LegacySessionDataWrapper,
 )
 
 __all__ = [
@@ -37,10 +33,7 @@ __all__ = [
     "PIT_TELEPORT_DISTANCE_M",
     "TRACK_LIMIT_INVALIDATION_THRESHOLD_M",
     "SECTOR_SUM_TOLERANCE_MS",
-    "HYBRID_FUEL_THRESHOLD_L",
-    "HYBRID_SPIKE_SESSION_THRESHOLD",
     "MIN_FULL_LAP_HUNDREDM",
-    "KNOWN_HYBRID_CARS",
     "is_hybrid_car",
     "SESSION_TYPE_MAP",
     "PRACTICE_LIKE",
@@ -61,5 +54,4 @@ __all__ = [
     "SessionMetadataData",
     "SharedSessionData",
     "SharedSessionManager",
-    "LegacySessionDataWrapper",
 ]

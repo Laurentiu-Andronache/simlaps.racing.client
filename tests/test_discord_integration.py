@@ -9,7 +9,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 from datetime import datetime
 
-from src.core.discord_notifier import DiscordNotifier, LapData, create_discord_notifier
+from src.core.discord_notifier import DiscordNotifier, DiscordLapPayload, create_discord_notifier
 from src.core.pb_cache import PBCache, PersonalBest
 from src.models import LapData as SessionLapData, SessionData
 from src.ui.components.lap_card import LapCardStatus
@@ -35,7 +35,7 @@ class TestDiscordNotifier:
         """Test Discord embed creation."""
         notifier = DiscordNotifier("https://discord.com/api/webhooks/test")
         
-        lap_data = LapData(
+        lap_data = DiscordLapPayload(
             track_name="laguna_seca",
             car_name="ks_porsche_992_gt3_cup",
             lap_time_ms=92295,
@@ -69,7 +69,7 @@ class TestDiscordNotifier:
         """Test Discord embed for invalid lap."""
         notifier = DiscordNotifier("https://discord.com/api/webhooks/test")
         
-        lap_data = LapData(
+        lap_data = DiscordLapPayload(
             track_name="brands_hatch",
             car_name="ks_toyota_gr86",
             lap_time_ms=78664,
@@ -98,7 +98,7 @@ class TestDiscordNotifier:
             
             notifier = DiscordNotifier("https://discord.com/api/webhooks/test")
             
-            lap_data = LapData(
+            lap_data = DiscordLapPayload(
                 track_name="test_track",
                 car_name="test_car", 
                 lap_time_ms=60000,
@@ -118,7 +118,7 @@ class TestDiscordNotifier:
             
             notifier = DiscordNotifier("https://discord.com/api/webhooks/test")
             
-            lap_data = LapData(
+            lap_data = DiscordLapPayload(
                 track_name="test_track",
                 car_name="test_car",
                 lap_time_ms=60000,
@@ -348,7 +348,7 @@ class TestIntegration:
             is_pb1 = cache.check_and_update_pb("test_track", "test_car", 65000)
             assert is_pb1 is True
             
-            lap_data1 = LapData(
+            lap_data1 = DiscordLapPayload(
                 track_name="test_track",
                 car_name="test_car",
                 lap_time_ms=65000,
@@ -364,7 +364,7 @@ class TestIntegration:
             is_pb2 = cache.check_and_update_pb("test_track", "test_car", 60000)
             assert is_pb2 is True
             
-            lap_data2 = LapData(
+            lap_data2 = DiscordLapPayload(
                 track_name="test_track",
                 car_name="test_car",
                 lap_time_ms=60000,

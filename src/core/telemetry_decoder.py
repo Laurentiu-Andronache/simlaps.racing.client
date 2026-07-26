@@ -21,17 +21,6 @@ class AC_STATUS(Enum):
     AC_PAUSE = 3
 
 
-class AC_SESSION_TYPE(Enum):
-    AC_UNKNOWN = -1
-    AC_PRACTICE = 0
-    AC_QUALIFY = 1
-    AC_RACE = 2
-    AC_HOTLAP = 3
-    AC_TIME_ATTACK = 4
-    AC_DRIFT = 5
-    AC_DRAG = 6
-
-
 class AC_FLAG_TYPE(Enum):
     AC_NO_FLAG = 0
     AC_BLUE_FLAG = 1
@@ -47,10 +36,6 @@ PHYSICS_SHM_SIZE = 1024
 GRAPHICS_SHM_SIZE = 4096
 STATIC_SHM_SIZE = 2048
 
-GRAPHICS_STRUCT_SIZE = 2048
-STATIC_HEADER_SIZE = 404
-STATIC_STRUCT_SIZE = 820
-MAX_GRAPHICS_CARS = 60
 
 
 @dataclass
@@ -463,7 +448,7 @@ def _sanitize_physics_payload(result: Dict[str, Any]) -> Dict[str, Any]:
                 estimated_norm = (z_coord + 2000) / 4000
                 estimated_norm = max(0.0, min(1.0, estimated_norm))
                 result["normalized_car_position"] = estimated_norm
-                result["normalized_position_source"] = "physics_tyre_z"
+                result["normalized_position_source"] = "physics_tyre_z_deprecated"
 
     result["has_authoritative_progress"] = False
     core_fields = ["speed_kmh", "gas", "brake", "gear", "rpms", "steer_angle"]
@@ -487,7 +472,7 @@ def _sanitize_graphics_payload(result: Dict[str, Any]) -> Dict[str, Any]:
                 estimated_norm = (z_coord + 1000) / 2000
                 estimated_norm = max(0.0, min(1.0, estimated_norm))
                 result["normalized_car_position"] = estimated_norm
-                result["normalized_position_source"] = "calculated_from_z"
+                result["normalized_position_source"] = "graphics_z_deprecated"
 
     active_cars = result.get("active_cars") or 0
     if isinstance(result.get("car_coordinates"), list):
@@ -918,6 +903,7 @@ def decode_graphics_evo(data: bytes) -> Optional[Dict[str, Any]]:
         global_flag = struct.unpack_from("<i", data, _GE_GLOBAL_FLAG)[0]
         max_gears = struct.unpack_from("<I", data, _GE_MAX_GEARS)[0]
         engine_type = struct.unpack_from("<i", data, _GE_ENGINE_TYPE)[0]
+        has_kers = bool(data[_GE_HAS_KERS])
 
         diff_coast_raw_value = struct.unpack_from("<f", data, _GE_DIFF_COAST_RAW_VALUE)[0]
         diff_power_raw_value = struct.unpack_from("<f", data, _GE_DIFF_POWER_RAW_VALUE)[0]
@@ -1083,6 +1069,7 @@ def decode_graphics_evo(data: bytes) -> Optional[Dict[str, Any]]:
         "gear_int": gear_int,
         "max_gears": max_gears,
         "engine_type": engine_type,
+        "has_kers": has_kers,
         "gas_percent": gas_percent,
         "brake_percent": brake_percent,
         "clutch_percent": clutch_percent,
@@ -1211,144 +1198,6 @@ def decode_graphics_evo(data: bytes) -> Optional[Dict[str, Any]]:
         "last_sector_time_ms": None,
         "number_of_laps": None,
     }
-
-
-def decode_graphics_ac(data: bytes) -> Optional[Dict[str, Any]]:
-    try:
-        if len(data) < GRAPHICS_STRUCT_SIZE:
-            return None
-
-        r = R(data[:GRAPHICS_STRUCT_SIZE])
-        packet_id = r.i()
-        status = r.i()
-        session = r.i()
-        current_time = r.s(15)
-        last_time = r.s(15)
-        best_time = r.s(15)
-        split = r.s(15)
-        completed_laps = r.i()
-        position = r.i()
-        current_time_ms = r.i()
-        last_time_ms = r.i()
-        best_time_ms = r.i()
-        session_time_left = r.f()
-        distance_traveled = r.f()
-        is_in_pit = bool(r.i())
-        current_sector_index = r.i()
-        last_sector_time_ms = r.i()
-        number_of_laps = r.i()
-        tyre_compound = r.s(33, pad=2)
-        replay_time_multiplier = r.f()
-        normalized_car_position = r.f()
-        active_cars = max(0, min(r.i(), MAX_GRAPHICS_CARS))
-        car_coordinates = [_coords_to_dict(coords) for coords in r.coords_list(MAX_GRAPHICS_CARS)]
-        car_ids = r.ia(MAX_GRAPHICS_CARS)
-        player_car_id = r.i()
-        penalty_time = r.f()
-        flag = r.i()
-
-        return {
-            "_decoder": "acc_graphics_structure",
-            "buffer_size": len(data),
-            "parsed_size": GRAPHICS_STRUCT_SIZE,
-            "extra_bytes": max(0, len(data) - GRAPHICS_STRUCT_SIZE),
-            "packet_id": packet_id,
-            "status": status,
-            "status_name": _enum_name(AC_STATUS, status),
-            "session": session,
-            "session_name": _enum_name(AC_SESSION_TYPE, session),
-            "current_time": current_time,
-            "last_time": last_time,
-            "best_time": best_time,
-            "split": split,
-            "completed_laps": completed_laps,
-            "position": position,
-            "current_time_ms": current_time_ms,
-            "last_time_ms": last_time_ms,
-            "best_time_ms": best_time_ms,
-            "session_time_left": session_time_left,
-            "distance_traveled": distance_traveled,
-            "is_in_pit": is_in_pit,
-            "current_sector_index": current_sector_index,
-            "last_sector_time_ms": last_sector_time_ms,
-            "number_of_laps": number_of_laps,
-            "tyre_compound": tyre_compound,
-            "replay_time_multiplier": replay_time_multiplier,
-            "normalized_car_position": normalized_car_position,
-            "active_cars": active_cars,
-            "car_coordinates": car_coordinates[:active_cars],
-            "car_ids": car_ids[:active_cars],
-            "player_car_id": player_car_id,
-            "penalty_time": penalty_time,
-            "flag": flag,
-            "flag_name": _enum_name(AC_FLAG_TYPE, flag),
-            "penalty": r.i(),
-            "ideal_line_on": bool(r.i()),
-            "is_in_pit_lane": bool(r.i()),
-            "surface_grip": r.f(),
-            "mandatory_pit_done": bool(r.i()),
-            "wind_speed": r.f(),
-            "wind_direction": r.f(),
-            "is_setup_menu_visible": bool(r.i()),
-            "main_display_index": r.i(),
-            "secondary_display_index": r.i(),
-            "tc_level": r.i(),
-            "tc_cut_level": r.i(),
-            "engine_map": r.i(),
-            "abs_level": r.i(),
-            "fuel_per_lap": r.f(),
-            "rain_light": bool(r.i()),
-            "flashing_light": bool(r.i()),
-            "light_stage": r.i(),
-            "exhaust_temp": r.f(),
-            "wiper_stage": r.i(),
-            "driver_stint_total_time_left": r.i(),
-            "driver_stint_time_left": r.i(),
-            "rain_tyres": bool(r.i()),
-            "session_index": r.i(),
-            "used_fuel": r.f(),
-            "delta_lap_time": r.s(15, pad=2),
-            "delta_lap_time_ms": r.i(),
-            "estimated_lap_time": r.s(15, pad=2),
-            "estimated_lap_time_ms": r.i(),
-            "is_delta_positive": bool(r.i()),
-            "split_ms": r.i(),
-            "is_valid_lap": bool(r.i()),
-            "fuel_estimated_laps": r.f(),
-            "track_status": r.s(33, pad=2),
-            "missing_mandatory_pits": r.i(),
-            "clock": r.f(),
-            "direction_light_left": bool(r.i()),
-            "direction_light_right": bool(r.i()),
-            "global_yellow": bool(r.i()),
-            "global_yellow_s1": bool(r.i()),
-            "global_yellow_s2": bool(r.i()),
-            "global_yellow_s3": bool(r.i()),
-            "global_white": bool(r.i()),
-            "global_green": bool(r.i()),
-            "global_chequered": bool(r.i()),
-            "global_red": bool(r.i()),
-            "mfd_tyre_set": r.i(),
-            "mfd_fuel_to_add": r.f(),
-            "mfd_tyre_pressure": r.fa(4),
-            "track_grip_status": r.i(),
-            "rain_intensity": r.i(),
-            "rain_intensity_in_10min": r.i(),
-            "rain_intensity_in_30min": r.i(),
-            "current_tyre_set": r.i(),
-            "strategy_tyre_set": r.i(),
-            "gap_ahead": r.i(),
-            "gap_behind": r.i(),
-            # AC Evo extended fields (may not exist in older ACC format)
-            "gear_rpm_window": r.f() if r._pos + 4 <= len(data) else None,
-            "predicted_lap_time_ms": r.i() if r._pos + 4 <= len(data) else None,
-            "delta_time_ms": r.i() if r._pos + 4 <= len(data) else None,
-            "current_bhp": r.i() if r._pos + 4 <= len(data) else None,
-            "current_torque": r.f() if r._pos + 4 <= len(data) else None,
-            "rpm_percent": r.f() if r._pos + 4 <= len(data) else None,
-        }
-    except Exception:
-        return None
 
 
 # ── SPageFileStaticEvo offsets ────────────────────────────────────────────────
@@ -1490,116 +1339,6 @@ def decode_static_evo(data: bytes) -> Optional[Dict[str, Any]]:
     }
 
 
-def decode_static_ac(data: bytes) -> Optional[Dict[str, Any]]:
-    try:
-        if len(data) < STATIC_HEADER_SIZE:
-            return None
-
-        r = R(data[:min(len(data), STATIC_STRUCT_SIZE)])
-        result = {
-            "_decoder": "acc_static_structure",
-            "buffer_size": len(data),
-            "parsed_size": min(len(data), STATIC_STRUCT_SIZE),
-            "extra_bytes": max(0, len(data) - STATIC_STRUCT_SIZE),
-            "sm_version": r.s(15),
-            "ac_version": r.s(15),
-            "number_of_sessions": r.i(),
-            "num_cars": r.i(),
-            "car_model": r.s(33),
-            "track": r.s(33),
-            "player_name": r.s(33),
-            "player_surname": r.s(33),
-            "player_nick": r.s(33, pad=2),
-            "sector_count": r.i(),
-        }
-
-        if len(data) < STATIC_STRUCT_SIZE:
-            result["layout_confidence"] = "header_only"
-            result["populated_fields"] = sorted(
-                key for key, value in result.items()
-                if key not in {"_decoder", "buffer_size", "parsed_size", "extra_bytes", "layout_confidence"}
-                and _has_meaningful_value(value)
-            )
-            return result
-
-        result.update({
-            "max_torque": r.f(),
-            "max_power": r.f(),
-            "max_rpm": r.i(),
-            "max_fuel": r.f(),
-            "suspension_max_travel": r.fa(4),
-            "tyre_radius": r.fa(4),
-            "max_turbo_boost": r.f(),
-            "deprecated_1": r.f(),
-            "deprecated_2": r.f(),
-            "penalties_enabled": bool(r.i()),
-            "aid_fuel_rate": r.f(),
-            "aid_tire_rate": r.f(),
-            "aid_mechanical_damage": r.f(),
-            "allow_tyre_blankets": r.f(),
-            "aid_stability": r.f(),
-            "aid_auto_clutch": bool(r.i()),
-            "aid_auto_blip": bool(r.i()),
-            "has_drs": bool(r.i()),
-            "has_ers": bool(r.i()),
-            "has_kers": bool(r.i()),
-            "kers_max_j": r.f(),
-            "engine_brake_settings_count": r.i(),
-            "ers_power_controller_count": r.i(),
-            "track_spline_length": r.f(),
-            "track_configuration": r.s(33, pad=2),
-            "ers_max_j": r.f(),
-            "is_timed_race": bool(r.i()),
-            "has_extra_lap": bool(r.i()),
-            "car_skin": r.s(33, pad=2),
-            "reversed_grid_positions": r.i(),
-            "pit_window_start": r.i(),
-            "pit_window_end": r.i(),
-            "is_online": bool(r.i()),
-            "dry_tyres_name": r.s(33),
-            "wet_tyres_name": r.s(33),
-        })
-
-        nonzero_numeric_fields = []
-        if result["max_torque"]:
-            nonzero_numeric_fields.append(_word_candidate(data, 404, "max_torque"))
-        if result["max_power"]:
-            nonzero_numeric_fields.append(_word_candidate(data, 408, "max_power"))
-        if result["max_rpm"]:
-            nonzero_numeric_fields.append(_word_candidate(data, 412, "max_rpm"))
-        if result["max_fuel"]:
-            nonzero_numeric_fields.append(_word_candidate(data, 416, "max_fuel"))
-        if result["max_turbo_boost"]:
-            nonzero_numeric_fields.append(_word_candidate(data, 452, "max_turbo_boost"))
-        if result["track_spline_length"]:
-            nonzero_numeric_fields.append(_word_candidate(data, 520, "track_spline_length"))
-        if result["ers_max_j"]:
-            nonzero_numeric_fields.append(_word_candidate(data, 592, "ers_max_j"))
-
-        result["nonzero_numeric_fields"] = nonzero_numeric_fields
-        result["observed_utf16_strings"] = _scan_utf16_strings(data)
-        result["tail_utf16_strings"] = _scan_utf16_strings(data, start_offset=STATIC_STRUCT_SIZE)
-        result["layout_confidence"] = "partial"
-        result["populated_fields"] = sorted(
-            key for key, value in result.items()
-            if key not in {
-                "_decoder",
-                "buffer_size",
-                "parsed_size",
-                "extra_bytes",
-                "layout_confidence",
-                "populated_fields",
-                "observed_utf16_strings",
-                "tail_utf16_strings",
-                "nonzero_numeric_fields",
-            }
-            and _has_meaningful_value(value)
-        )
-        return result
-    except Exception:
-        return None
-
-
 def decode_physics_fallback(data: bytes) -> Dict[str, Any]:
     """Fallback pattern detection for unknown structures."""
     result = {
@@ -1734,14 +1473,6 @@ def peek_graphics_validity(data: bytes) -> Optional[Dict[str, Any]]:
         "completed_laps": total_lap_count,
         "is_valid_lap": is_valid_lap,
         "current_lap_time_ms": current_lap_time_ms,
-        # These fields are not populated by the peek (lap times come from
-        # logs), but must be present so update_from_graphics_shm doesn't
-        # crash on a KeyError.
-        "session_current_lap": 0,
-        "last_laptime_ms": 0,
-        "best_laptime_ms": 0,
-        "is_invalid": None,
-        "timing_is_invalid": None,
     }
 
 
@@ -1758,15 +1489,11 @@ def decode_graphics(data: bytes) -> Dict[str, Any]:
     """Decode graphics with fallback.
 
     Tries the AC Evo ``SPageFileGraphicEvo`` decoder first (current target
-    game), falls back to the legacy ACC layout decoder, then to the
-    pattern-detection fallback.
+    game), then falls back to the pattern-detection fallback.
     """
     evo = decode_graphics_evo(data)
     if evo:
         return _sanitize_graphics_payload(evo)
-    legacy = decode_graphics_ac(data)
-    if legacy:
-        return _sanitize_graphics_payload(legacy)
     return decode_graphics_fallback(data)
 
 
@@ -1774,15 +1501,11 @@ def decode_static(data: bytes) -> Dict[str, Any]:
     """Decode static with fallback.
 
     Tries the AC Evo ``SPageFileStaticEvo`` decoder first (current target
-    game), falls back to the legacy ACC layout decoder, then to the
-    pattern-detection fallback.
+    game), then falls back to the pattern-detection fallback.
     """
     evo = decode_static_evo(data)
     if evo:
         return _sanitize_static_payload(evo)
-    legacy = decode_static_ac(data)
-    if legacy:
-        return _sanitize_static_payload(legacy)
     return decode_static_fallback(data)
 
 
@@ -1807,17 +1530,3 @@ def physics_to_dict(physics_data: Any) -> Dict[str, Any]:
         return result
 
     return {"error": "Unknown physics data type"}
-
-
-def graphics_to_dict(graphics_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Convert graphics data to a flat dictionary."""
-    if isinstance(graphics_data, dict):
-        return graphics_data
-    return {"error": "Unknown graphics data type"}
-
-
-def static_to_dict(static_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Convert static data to a flat dictionary."""
-    if isinstance(static_data, dict):
-        return static_data
-    return {"error": "Unknown static data type"}

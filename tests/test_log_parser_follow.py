@@ -634,3 +634,130 @@ class TestFollowLiveTailing:
         # Historical laps should have been cleared
         if parser.current_session:
             assert len(parser.current_session.laps) == 0
+
+
+class TestFollowExitFlushesPendingLap:
+    """Regression tests for GameModeRequestExit flushing buffered laps.
+
+    Bug: AC Evo exits via GameModeRequestExit without emitting END_SESSION
+    or a validity broadcast.  The handler previously only emitted
+    game_status=False and never flushed _pending_lap, so laps on
+    single-split tracks (e.g. Nordschleife Tourist) were silently lost.
+    """
+
+    @pytest.mark.asyncio
+    async def test_exit_flushes_pending_lap_without_validity(self, tmp_path):
+        """GameModeRequestExit must flush a pending lap even when no
+        authoritative validity line was ever received."""
+        log_file = tmp_path / "test.log"
+        log_file.write_text("")  # empty historical pass
+
+        laps = []
+
+        async def on_lap(session, lap):
+            laps.append(lap)
+
+        parser = LogParser(
+            log_path=str(log_file), on_lap_complete=on_lap
+        )
+        # Set up a session and player car so _handle_lap_complete buffers
+        parser.current_session = SessionData(
+            track="nurburgring", car="ktm_xbow_gt4", player_id="76561198321627695"
+        )
+        parser.context.player_id = "76561198321627695"
+        parser.context.car_uuid = "4d27cc23-ee6c-e0de-9c38-10448288bcbb"
+        parser.context.tyre.set_all("SM")
+        parser._ip.physics_lap_num = 1
+        parser._ip.splits = {0: 516642}
+        parser._ip.fuel_used = 3.2
+        parser._ip.fuel_reliable = True
+        parser._running = True
+
+        async def append_lines():
+            await asyncio.sleep(0.05)
+            with open(log_file, "a", encoding="utf-8") as f:
+                # New lap — buffered in _pending_lap (no validity line follows)
+                f.write(
+                    "[2026-07-26 19:17:37.000] [gameplay] [info] "
+                    "New lap carId 4d27cc23-ee6c-e0de-9c38-10448288bcbb: 08:36.642\n"
+                )
+                await asyncio.sleep(0.05)
+                # User exits to menu — must flush the pending lap
+                f.write(
+                    "[2026-07-26 19:18:48.000] [gameface] [info] "
+                    "request made GameModeRequestExit \n"
+                )
+
+        appender = asyncio.create_task(append_lines())
+        try:
+            await asyncio.wait_for(
+                parser.follow(poll_interval=0.01), timeout=1.0
+            )
+        except asyncio.TimeoutError:
+            pass
+        finally:
+            parser.stop()
+            await appender
+
+        assert laps, "Pending lap was not flushed on GameModeRequestExit"
+        assert laps[0].lap_time_ms == 516642
+        assert parser._pending_lap is None
+        assert parser.current_session is None  # finalised
+
+
+class TestFollowHistoricalPassPreservesPendingLap:
+    """Regression tests for historical pass not discarding buffered laps.
+
+    Bug: after the silent historical pass, self._pending_lap = None
+    cleared any buffered lap whose validity line hadn't arrived yet,
+    silently dropping it before the live-tail phase could flush it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_historical_pass_preserves_pending_lap(self, tmp_path):
+        """A lap buffered during the historical pass (no validity line)
+        must survive into the live-tail so it can be flushed on exit."""
+        log_file = tmp_path / "test.log"
+        # Historical content: session start + lap completion, no validity
+        log_file.write_text(
+            "[2026-07-26 19:08:04.000] [network] [info] "
+            "76561198321627695 connected on car ktm_xbow_gt4, with new carId "
+            "4d27cc23-ee6c-e0de-9c38-10448288bcbb\n"
+            "[2026-07-26 19:17:37.000] [gameplay] [info] "
+            "New lap carId 4d27cc23-ee6c-e0de-9c38-10448288bcbb: 08:36.642\n"
+        )
+
+        laps = []
+
+        async def on_lap(session, lap):
+            laps.append(lap)
+
+        parser = LogParser(
+            log_path=str(log_file), on_lap_complete=on_lap
+        )
+        parser._running = True
+
+        async def append_exit():
+            await asyncio.sleep(0.1)
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(
+                    "[2026-07-26 19:18:48.000] [gameface] [info] "
+                    "request made GameModeRequestExit \n"
+                )
+
+        appender = asyncio.create_task(append_exit())
+        try:
+            await asyncio.wait_for(
+                parser.follow(poll_interval=0.01), timeout=1.0
+            )
+        except asyncio.TimeoutError:
+            pass
+        finally:
+            parser.stop()
+            await appender
+
+        assert laps, (
+            "Lap buffered during historical pass was discarded before "
+            "live-tail could flush it on exit"
+        )
+        assert laps[0].lap_time_ms == 516642

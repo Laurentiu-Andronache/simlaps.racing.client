@@ -13,13 +13,10 @@ from src.core.telemetry_decoder import (
     decode_graphics_fallback,
     decode_static_fallback,
     physics_to_dict,
-    graphics_to_dict,
-    static_to_dict,
     R,
     Coords,
     Physics,
     AC_STATUS,
-    AC_SESSION_TYPE,
     AC_FLAG_TYPE,
 )
 
@@ -305,40 +302,6 @@ class TestPhysicsToDict:
         assert "error" in result
 
 
-class TestGraphicsToDict:
-    """Test graphics_to_dict conversion function."""
-
-    def test_graphics_to_dict_with_dict(self):
-        """Test conversion when input is already a dict."""
-        input_data = {"status": "replay", "session": "practice"}
-        
-        result = graphics_to_dict(input_data)
-        
-        assert result == input_data
-
-    def test_graphics_to_dict_with_unknown_type(self):
-        """Test conversion with unknown type."""
-        result = graphics_to_dict("invalid")
-        
-        assert "error" in result
-
-
-class TestStaticToDict:
-    """Test static_to_dict conversion function."""
-
-    def test_static_to_dict_with_dict(self):
-        """Test conversion when input is already a dict."""
-        input_data = {"car": "porsche_992", "track": "spa"}
-        
-        result = static_to_dict(input_data)
-        
-        assert result == input_data
-
-    def test_static_to_dict_with_unknown_type(self):
-        """Test conversion with unknown type."""
-        result = static_to_dict("invalid")
-        
-        assert "error" in result
 
 
 class TestACPhysicsDecoder:
@@ -389,12 +352,6 @@ class TestEnums:
         assert AC_STATUS.AC_REPLAY.value == 1
         assert AC_STATUS.AC_LIVE.value == 2
         assert AC_STATUS.AC_PAUSE.value == 3
-
-    def test_ac_session_type_values(self):
-        """Test AC_SESSION_TYPE enum values."""
-        assert AC_SESSION_TYPE.AC_UNKNOWN.value == -1
-        assert AC_SESSION_TYPE.AC_PRACTICE.value == 0
-        assert AC_SESSION_TYPE.AC_RACE.value == 2
 
     def test_ac_flag_type_values(self):
         """Test AC_FLAG_TYPE enum values."""

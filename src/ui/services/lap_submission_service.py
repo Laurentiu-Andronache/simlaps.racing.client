@@ -6,7 +6,7 @@ Owns lap submit result mapping and optional Discord post flow.
 from typing import Awaitable, Callable, Optional
 
 from src.core.api_client import APIClient, SubmissionStatus
-from src.core.discord_notifier import DiscordNotifier, LapData as DiscordLapData
+from src.core.discord_notifier import DiscordNotifier, DiscordLapPayload
 from src.models import LapData, SessionData
 from src.utils.config import AppConfig
 from src.utils.structured_logger import (
@@ -151,7 +151,7 @@ class LapSubmissionService:
             if lap.sector1_ms is not None and lap.sector2_ms is not None and lap.sector3_ms is not None:
                 sector_times = [lap.sector1_ms, lap.sector2_ms, lap.sector3_ms]
 
-            discord_lap = DiscordLapData(
+            discord_lap = DiscordLapPayload(
                 track_name=session.track,
                 car_name=session.car,
                 lap_time_ms=lap.lap_time_ms,

@@ -175,7 +175,7 @@ class ConfigManager:
                     data = json.load(f)
                 self._config = AppConfig.from_dict(data)
             except (json.JSONDecodeError, IOError) as e:
-                print(f"Error loading config: {e}")
+                log_warning(Component.CONFIG, f"Error loading config: {e}")
                 self._config = AppConfig()
         else:
             self._config = AppConfig()
@@ -207,7 +207,7 @@ class ConfigManager:
                 json.dump(self._config.to_dict(), f, indent=2)
             return True
         except IOError as e:
-            print(f"Error saving config: {e}")
+            log_warning(Component.CONFIG, f"Error saving config: {e}")
             return False
     
     def get(self) -> AppConfig:
@@ -279,15 +279,3 @@ class ConfigManager:
         
         if updates:
             self.update(**updates)
-
-
-# Global config manager instance
-_config_manager: Optional[ConfigManager] = None
-
-
-def get_config_manager() -> ConfigManager:
-    """Get the global configuration manager instance."""
-    global _config_manager
-    if _config_manager is None:
-        _config_manager = ConfigManager()
-    return _config_manager

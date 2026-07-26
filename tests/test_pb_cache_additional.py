@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from src.core.pb_cache import PBCache, get_pb_cache
+from src.core.pb_cache import PBCache
 
 
 @pytest.mark.asyncio
@@ -66,12 +66,3 @@ async def test_preload_from_api_skips_invalid_rows_and_bad_timestamps() -> None:
     all_pbs = cache.get_all_pbs()
     assert len(all_pbs) == 1
     assert ("spa", "car") in all_pbs
-
-
-def test_get_pb_cache_reuses_and_replaces_singleton_by_server_url() -> None:
-    cache1 = get_pb_cache("https://a.example")
-    cache2 = get_pb_cache("https://a.example")
-    cache3 = get_pb_cache("https://b.example")
-
-    assert cache1 is cache2
-    assert cache3 is not cache2
