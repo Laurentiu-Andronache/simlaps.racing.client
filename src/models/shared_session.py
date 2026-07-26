@@ -8,11 +8,10 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
-from typing import Any, Callable, Dict, Optional, Set
+from typing import Any, Dict, Optional, Set
 import threading
 import uuid
 
-from ..utils.structured_logger import log_debug, Component
 from .lap import LapData, SessionData
 
 @dataclass
@@ -157,11 +156,6 @@ class SharedSessionManager:
     def __init__(self) -> None:
         self._session_data = SharedSessionData()
         self._lock = threading.RLock()
-        self._observers: list[Callable[[SharedSessionData], None]] = []
-        # Per-frame change gate: only update/log validity when the
-        # (lap, is_invalid) tuple transitions.  Prevents log spam and
-        # redundant observer notifications at capture Hz (~10-20/s).
-        self._last_validity_state: tuple[int, bool] = (0, False)
 
     def _mark_source(self, field_name: str, source: str) -> None:
         if field_name not in self._session_data.data_sources:
@@ -316,8 +310,6 @@ class SharedSessionManager:
 
             self._mark_source("lap_validity", "shm_graphics")
 
-        self.notify_observers()
-
     def update_lap_timing_from_graphics_shm(self, lap_num: int, timing_data: Dict[str, Any]) -> None:
         with self._lock:
             current = self._session_data.lap_timing.get(lap_num)
@@ -358,8 +350,6 @@ class SharedSessionManager:
             ):
                 self._mark_source(field_name, "shm_graphics")
 
-        self.notify_observers()
-
     def update_fuel_from_graphics_shm(self, fuel_data: Dict[str, Any]) -> None:
         with self._lock:
             current_fuel = fuel_data.get("fuel_liter_current_quantity")
@@ -381,8 +371,6 @@ class SharedSessionManager:
             self._mark_source("fuel_consumption_rate", "shm_graphics")
             self._mark_source("fuel_economy", "shm_graphics")
 
-        self.notify_observers()
-
     def update_player_identification_from_logs(self, player_data: Dict[str, Any]) -> None:
         with self._lock:
             ident = self._session_data.player_identification
@@ -394,8 +382,6 @@ class SharedSessionManager:
 
             self._mark_source("player_id", "logs")
             self._mark_source("car_uuid", "logs")
-
-        self.notify_observers()
 
     def update_sector_splits_from_logs(self, lap_num: int, sector_data: Dict[str, Any]) -> None:
         with self._lock:
@@ -419,8 +405,6 @@ class SharedSessionManager:
                 self._session_data.sector_times[lap_num] = legacy
 
             self._mark_source("sector_times", "logs")
-
-        self.notify_observers()
 
     def update_session_metadata_from_static_shm(self, metadata: Dict[str, Any]) -> None:
         with self._lock:
@@ -454,8 +438,6 @@ class SharedSessionManager:
 
             for field_name in ("game_version", "session_type", "track", "is_online", "is_timed_race"):
                 self._mark_source(field_name, "shm_static")
-
-        self.notify_observers()
 
     # Legacy update entry points
     def update_lap_from_logs(self, lap_data: LapData, session_data: Optional[SessionData] = None) -> None:
@@ -564,8 +546,6 @@ class SharedSessionManager:
                 )
             self._mark_source("lap_times", "logs")
 
-        self.notify_observers()
-
     def update_session_metadata_from_logs(self, session_data: SessionData) -> None:
         """Update session metadata and player identification from log SessionData.
 
@@ -667,17 +647,7 @@ class SharedSessionManager:
 
             if is_invalid is not None:
                 is_invalid_bool = bool(is_invalid)
-                # Only call update + log when the (lap, is_invalid) tuple
-                # actually changes — avoids per-frame observer spam and
-                # debug-log eviction at capture Hz (Fable #3, Sol5.6 #3).
-                new_state = (current_lap, is_invalid_bool)
-                if new_state != self._last_validity_state:
-                    self._last_validity_state = new_state
-                    self.update_lap_validity_from_graphics_shm(current_lap, is_invalid_bool)
-                    log_debug(
-                        Component.SHARED_SESSION,
-                        f"[SHM_VALIDITY] current_lap={current_lap} is_invalid={is_invalid_bool}",
-                    )
+                self.update_lap_validity_from_graphics_shm(current_lap, is_invalid_bool)
 
         self.update_fuel_from_graphics_shm(graphics_data)
 
@@ -702,8 +672,6 @@ class SharedSessionManager:
 
             self._mark_source("session_summary", "shm_graphics")
 
-        self.notify_observers()
-
     def update_from_physics_shm(self, physics_data: Dict[str, Any]) -> None:
         with self._lock:
             speed_kmh = physics_data.get("speed_kmh")
@@ -725,8 +693,6 @@ class SharedSessionManager:
             self._mark_source("max_speed", "shm_physics")
             self._mark_source("car_setup", "shm_physics")
 
-        self.notify_observers()
-
     def update_from_telemetry(self, telemetry_data: Dict[str, Any]) -> None:
         with self._lock:
             max_speed = telemetry_data.get("max_speed")
@@ -742,8 +708,6 @@ class SharedSessionManager:
                 self._session_data.tyre_compound = tyre_compound
 
             self._mark_source("telemetry_summary", "calculated")
-
-        self.notify_observers()
 
     def get_data_sources(self) -> Dict[str, Set[str]]:
         """Return a snapshot of data source tracking (thread-safe)."""
@@ -764,24 +728,4 @@ class SharedSessionManager:
             # Re-attach player identification — Steam ID / car UUID don't change
             # between sessions and must not be wiped.
             self._session_data.player_identification = old_ident
-
-        self.notify_observers()
-
-    # Observer pattern
-    def subscribe(self, callback: Callable[[SharedSessionData], None]) -> None:
-        with self._lock:
-            if callback not in self._observers:
-                self._observers.append(callback)
-
-    def notify_observers(self) -> None:
-        with self._lock:
-            observers = list(self._observers)
-            snapshot = self._session_data
-
-        for callback in observers:
-            try:
-                callback(snapshot)
-            except Exception:
-                # Observer failures must not break data flow.
-                continue
 

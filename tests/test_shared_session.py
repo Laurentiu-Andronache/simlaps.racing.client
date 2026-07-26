@@ -289,8 +289,8 @@ def test_shm_invalid_does_not_block_log_invalid_split() -> None:
     assert validity.source == "logs"
 
 
-def test_shm_validity_change_gate_prevents_duplicate_updates() -> None:
-    """Repeated SHM frames with same (lap, is_invalid) must not call update twice."""
+def test_shm_validity_repeated_frames_are_idempotent() -> None:
+    """Repeated SHM frames with same (lap, is_invalid) should produce consistent validity."""
     manager = SharedSessionManager()
 
     # First frame: lap 1, invalid=False
@@ -298,23 +298,20 @@ def test_shm_validity_change_gate_prevents_duplicate_updates() -> None:
         "session_current_lap": 1,
         "is_invalid": False,
     })
-    assert manager._last_validity_state == (1, False)
+    assert manager.get_lap_validity(1) is True
 
-    # Second frame: same state — should be gated, no new update
-    # We verify by checking that the change gate tuple hasn't triggered a re-notification.
-    # The gate is working if the state tuple is unchanged and no exception occurs.
+    # Second frame: same state — validity should remain unchanged
     manager.update_from_graphics_shm({
         "session_current_lap": 1,
         "is_invalid": False,
     })
-    assert manager._last_validity_state == (1, False)
+    assert manager.get_lap_validity(1) is True
 
     # Third frame: is_invalid transitions to True — should update
     manager.update_from_graphics_shm({
         "session_current_lap": 1,
         "is_invalid": True,
     })
-    assert manager._last_validity_state == (1, True)
     assert manager.get_lap_validity(1) is False
 
 
@@ -473,25 +470,6 @@ def test_update_lap_preserves_log_derived_outlap_state() -> None:
     validity = manager.get_lap_validity_data(1)
     assert validity is not None
     assert validity.lap_state == "OUTLAP"
-
-
-def test_observer_notified_and_observer_errors_are_isolated() -> None:
-    manager = SharedSessionManager()
-    notifications: list[int] = []
-
-    def _ok_observer(snapshot) -> None:
-        notifications.append(snapshot.current_lap or 0)
-
-    def _failing_observer(_snapshot) -> None:
-        raise RuntimeError("observer failure")
-
-    manager.subscribe(_failing_observer)
-    manager.subscribe(_ok_observer)
-
-    manager.update_from_graphics_shm({"session_current_lap": 7, "last_laptime_ms": 111111})
-
-    assert notifications
-    assert notifications[-1] == 7
 
 
 def test_update_from_physics_shm_updates_car_setup_and_max_speed() -> None:
