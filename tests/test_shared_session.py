@@ -650,3 +650,63 @@ def test_shm_invalid_survives_heuristic_valid_log() -> None:
     assert validity.is_valid is False
     assert validity.lap_state == "INVALID_GAME"
     assert validity.source == "shm_graphics"
+
+
+# ── Regression: SHM stale last_laptime_ms scrubbing ────────────────────────
+
+def test_shm_stale_last_laptime_scrubbed_when_no_laps_completed() -> None:
+    """Regression: stale ``last_laptime_ms`` from a previous game session
+    must NOT be stored as a completed lap time for lap 1 of a new session.
+
+    When ``total_lap_count == 0`` and ``current_lap <= 1``, no laps have
+    been finished in the current session — any non-zero ``last_laptime_ms``
+    is a carryover from the previous game's Windows file mapping.
+    """
+    manager = SharedSessionManager()
+
+    # Simulate SHM data at session start: lap 1 in progress, no laps completed,
+    # but last_laptime_ms carries a stale value from the previous session.
+    manager.update_from_graphics_shm({
+        "session_current_lap": 0,       # fallback path
+        "total_lap_count": 0,           # no laps completed yet
+        "last_laptime_ms": 83456,       # stale! (1:23.456 from old session)
+        "current_lap_time_ms": 5000,
+        "best_laptime_ms": 0,
+    })
+
+    timing = manager.get_lap_timing_data(1)
+    assert timing is not None
+    # The stale last_laptime_ms must NOT become a completed_lap_time.
+    assert timing.completed_lap_time is None, (
+        f"Stale last_laptime_ms should have been scrubbed, "
+        f"but completed_lap_time={timing.completed_lap_time}"
+    )
+    # last_lap_time_ms should also be zeroed.
+    assert timing.last_lap_time_ms == 0, (
+        f"Stale last_laptime_ms should have been scrubbed, "
+        f"but last_lap_time_ms={timing.last_lap_time_ms}"
+    )
+
+
+def test_shm_stale_last_laptime_not_scrubbed_when_laps_exist() -> None:
+    """When laps have already been completed, ``last_laptime_ms`` is legitimate
+    and must NOT be scrubbed.
+    """
+    manager = SharedSessionManager()
+
+    # Simulate SHM data mid-session: lap 3 in progress, 2 laps completed.
+    manager.update_from_graphics_shm({
+        "session_current_lap": 3,
+        "total_lap_count": 2,
+        "last_laptime_ms": 120123,      # legitimate last lap time
+        "current_lap_time_ms": 61234,
+        "best_laptime_ms": 119999,
+    })
+
+    timing = manager.get_lap_timing_data(3)
+    assert timing is not None
+    # Legitimate last_laptime_ms must be preserved.
+    assert timing.last_lap_time_ms == 120123, (
+        f"Legitimate last_laptime_ms should be preserved, "
+        f"but got {timing.last_lap_time_ms}"
+    )

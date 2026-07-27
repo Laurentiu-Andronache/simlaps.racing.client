@@ -503,8 +503,23 @@ class SimLapsApp:
                     ConnectionStatus.CONNECTED,
                     "Session active - recording laps",
                 )
+                # Log shared session state before reset
+                best_before = self._session_manager.get_best_lap_time()
+                all_times_before = self._session_manager.get_all_lap_times()
+                log_info(Component.APP,
+                    f"[GAME_STATUS] True — resetting shared session. "
+                    f"Best lap before reset: {best_before}, "
+                    f"timing entries: {len(all_times_before)}"
+                )
                 # Clear stale lap validity / timing data from the previous session.
                 self._session_manager.reset()
+                best_after = self._session_manager.get_best_lap_time()
+                all_times_after = self._session_manager.get_all_lap_times()
+                log_info(Component.APP,
+                    f"[GAME_STATUS] Reset complete. "
+                    f"Best lap after reset: {best_after}, "
+                    f"timing entries: {len(all_times_after)}"
+                )
                 # Start telemetry capture
                 log_info(Component.APP, "Triggering telemetry capture start (session active)")
                 await self._start_telemetry_capture()

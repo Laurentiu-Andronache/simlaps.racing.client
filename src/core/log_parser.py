@@ -377,9 +377,10 @@ class LogParser:
 
     async def _emit_lap(self, session: SessionData, lap: LapData) -> None:
         self._session_manager.update_lap_from_logs(lap, session_data=session)
-        log_debug(Component.LOG_PARSER, 
+        log_debug(Component.LOG_PARSER,
             f"[EMIT_LAP] #{lap.lap_number} {lap.lap_time_str} "
-            f"state={lap.lap_state.value}"
+            f"state={lap.lap_state.value}  car={session.car}  track={session.track}  "
+            f"session_id={session.session_id[:8]}..."
         )
         if self.on_lap_complete:
             try:
@@ -395,10 +396,17 @@ class LogParser:
     async def _emit_game_status(self, is_running: bool, trigger: str = "unknown") -> None:
         """Emit game status change, logging if duplicate or state change."""
         if self._last_emitted_game_status == is_running:
-            log_debug(Component.LOG_PARSER, f"[GAME_STATUS] DUPLICATE EVENT (ignored): is_running={is_running}, trigger={trigger}, last={self._last_emitted_game_status}")
+            log_debug(Component.LOG_PARSER,
+                f"[GAME_STATUS] DUPLICATE DROPPED: is_running={is_running}, "
+                f"trigger={trigger}, last={self._last_emitted_game_status}  "
+                f"⚠️ reset() will NOT be called for this event"
+            )
             return
         
-        log_debug(Component.LOG_PARSER, f"[GAME_STATUS] STATE CHANGE: is_running={is_running}, trigger={trigger}, last={self._last_emitted_game_status}")
+        log_debug(Component.LOG_PARSER,
+            f"[GAME_STATUS] STATE CHANGE: is_running={is_running}, "
+            f"trigger={trigger}, last={self._last_emitted_game_status}"
+        )
         self._last_emitted_game_status = is_running
         
         if self.on_game_status_change:
@@ -758,15 +766,43 @@ class LogParser:
         """Parse 'Game Started!' and initialise a fresh SessionData.
         Returns True if a new session was created (caller should short-circuit).
         """
-        if "Game Started!" not in line or "GameModeType_" not in line:
+        if "Game Started!" not in line:
+            return False
+        # The line contains "Game Started!" but may have an unrecognised format
+        # (e.g. the game version changed the field names).  Still reset the
+        # shared session so stale data doesn't leak in.
+        if "GameModeType_" not in line:
+            log_debug(Component.LOG_PARSER,
+                "[SESSION_START] 'Game Started!' line missing 'GameModeType_' — "
+                "unrecognised format, session NOT created.  "
+                "Resetting shared session anyway."
+            )
+            self._session_manager.reset()
             return False
         m = self._pats["game_started"].search(line)
         if not m:
+            log_debug(Component.LOG_PARSER,
+                "[SESSION_START] 'Game Started!' line did NOT match regex — "
+                "session NOT created, old session persists!  "
+                "Resetting shared session anyway to clear stale data."
+            )
+            # Even though we can't parse the new session, we know a new game
+            # session is starting.  Clear the shared session to prevent stale
+            # lap timing/validity data from the previous session leaking in.
+            self._session_manager.reset()
             return False
 
         self._flush_pending_compound_batch()
 
+        old_car = self.current_session.car if self.current_session else "None"
+        old_laps = len(self.current_session.laps) if self.current_session else 0
+        old_pending = self._pending_lap is not None
         if self.current_session:
+            log_debug(Component.LOG_PARSER,
+                f"[SESSION_START] Finalising previous session: car={old_car}  "
+                f"laps={old_laps}  pending_lap={old_pending}  "
+                f"session_id={self.current_session.session_id[:8]}..."
+            )
             self._finalise_current_session()
         self._session_active_from_logs = True
 
@@ -813,9 +849,16 @@ class LogParser:
         self._reset_in_progress()
         self._finalise_stints()
 
+        # ── Reset shared session before syncing the new session ─────────
+        # _finalise_current_session() (above) may have pushed the old session's
+        # laps into the shared session via update_from_logs().  The dedup guard
+        # in _emit_game_status() can also prevent the app-level reset() from
+        # firing.  Explicitly clearing here guarantees the new session starts
+        # with a clean shared state regardless of either code path.
+        self._session_manager.reset()
         self._sync_shared_session(self.current_session)
 
-        log_debug(Component.LOG_PARSER, 
+        log_debug(Component.LOG_PARSER,
             f"[SESSION] New: type={session_type} track={track} "
             f"car={raw_car} hybrid={self.context.car_is_hybrid}"
         )
@@ -1127,7 +1170,7 @@ class LogParser:
             distance_hundredm=ip.distance_hundredm,
         )
 
-        log_debug(Component.LOG_PARSER, 
+        log_debug(Component.LOG_PARSER,
             f"[LAP] #{lap_number} phys={physics_lap_number} "
             f"{time_str}  state={lap_state.value}  "
             f"compound={compound}  fuel={fuel_used}  "
@@ -1143,9 +1186,12 @@ class LogParser:
         self._pending_lap = completed_lap
         if prior_pending is not None:
             self.current_session.laps.append(prior_pending)
-            log_debug(Component.LOG_PARSER, 
-                f"[LAP] flushed pending #{prior_pending.lap_number} via "
-                f"heuristic (no authoritative validity seen)"
+            log_debug(Component.LOG_PARSER,
+                f"[LAP] ⚠️ FLUSHING PRIOR PENDING LAP: "
+                f"#{prior_pending.lap_number} {prior_pending.lap_time_str} "
+                f"state={prior_pending.lap_state.value}  "
+                f"via heuristic (no authoritative validity seen)  "
+                f"session_car={self.current_session.car}"
             )
             return prior_pending
         return None
@@ -1329,12 +1375,22 @@ class LogParser:
         )
         self._reset_in_progress()
         self._finalise_stints()
+        # Reset shared session to prevent stale data from any prior session
+        # leaking into this fallback session.
+        self._session_manager.reset()
         self._sync_shared_session(self.current_session)
         log_debug(Component.LOG_PARSER, f"[SESSION] Fallback session created: type={session_type}")
 
     def _finalise_current_session(self) -> None:
         if not self.current_session:
             return
+        session_car = self.current_session.car
+        session_lap_count = len(self.current_session.laps)
+        has_pending = self._pending_lap is not None
+        log_debug(Component.LOG_PARSER,
+            f"[FINALISE] car={session_car}  laps={session_lap_count}  "
+            f"pending_lap={has_pending}  session_id={self.current_session.session_id[:8]}..."
+        )
         self._flush_pending_compound_batch()
         # Session-end metadata should reflect the latest known tyre state even
         # if no lap was completed after the final pit/setup change.
@@ -1343,11 +1399,24 @@ class LogParser:
         # (e.g. game quit immediately after lap completion). Emission is
         # handled by callers that have an event loop; here we only ensure
         # the lap is recorded in `session.laps`.
-        self._flush_pending_lap()
+        flushed_pending = self._flush_pending_lap()
+        if flushed_pending is not None:
+            log_debug(Component.LOG_PARSER,
+                f"[FINALISE] flushed pending lap #{flushed_pending.lap_number} "
+                f"{flushed_pending.lap_time_str} into session {session_car}"
+            )
         # Emit aborted lap if the session ends mid-lap
-        self._maybe_emit_aborted_lap()
+        aborted = self._maybe_emit_aborted_lap()
+        if aborted is not None:
+            log_debug(Component.LOG_PARSER,
+                f"[FINALISE] emitted ABORTED lap #{aborted.lap_number} for session {session_car}"
+            )
         self._finalise_stints()
         self._session_manager.update_from_logs(self.current_session)
+        log_debug(Component.LOG_PARSER,
+            f"[FINALISE] pushed {len(self.current_session.laps)} laps into shared session "
+            f"for car={session_car}"
+        )
         if self.current_session.laps:
             self.sessions.append(self.current_session)
         self.current_session = None
@@ -1521,14 +1590,24 @@ class LogParser:
                 # emit "Relevant onSplit for Combo") must survive into the
                 # live-tail phase so it can be flushed when the session ends.
                 if self.current_session:
+                    pending_info = ""
+                    if self._pending_lap is not None:
+                        pending_info = (
+                            f"  ⚠️ PENDING LAP PRESERVED: "
+                            f"#{self._pending_lap.lap_number} "
+                            f"{self._pending_lap.lap_time_str} "
+                            f"car={self.current_session.car}"
+                        )
+                    log_debug(Component.LOG_PARSER,
+                        f"[HISTORICAL] Clearing laps from session: "
+                        f"car={self.current_session.car}  "
+                        f"track={self.current_session.track}"
+                        f"{pending_info}"
+                    )
                     self.current_session.laps.clear()
                     self.current_session.stints.clear()
                     self._finalise_stints()
                     self._reset_in_progress()
-                    log_debug(Component.LOG_PARSER, 
-                        f"Context: track={self.current_session.track} "
-                        f"car={self.current_session.car}"
-                    )
 
                 self._emit_callbacks = True
 
@@ -1586,8 +1665,15 @@ class LogParser:
                             # single-split tracks like Nordschleife Tourist
                             # where the game may not emit a "Relevant
                             # onSplit for Combo" validity broadcast).
+                            session_car = self.current_session.car if self.current_session else "None"
                             completed = self._flush_pending_lap()
                             if completed is not None and self.current_session is not None:
+                                log_debug(Component.LOG_PARSER,
+                                    f"[EXIT] Flushing pending lap on GameModeRequestExit: "
+                                    f"#{completed.lap_number} {completed.lap_time_str}  "
+                                    f"session_car={session_car}  "
+                                    f"lap_state={completed.lap_state.value}"
+                                )
                                 await self._emit_lap(self.current_session, completed)
                             self._finalise_current_session()
                             await self._emit_game_status(False, trigger="GameModeRequestExit")
@@ -1614,6 +1700,14 @@ class LogParser:
                         if completed:
                             session = self.current_session or SessionData(
                                 track="Unknown", car="Unknown"
+                            )
+                            using_fallback = self.current_session is None
+                            log_debug(Component.LOG_PARSER,
+                                f"[LIVE_EMIT] Emitting lap #{completed.lap_number} "
+                                f"{completed.lap_time_str}  "
+                                f"session_car={session.car}  "
+                                f"fallback_session={using_fallback}  "
+                                f"lap_state={completed.lap_state.value}"
                             )
                             try:
                                 await self._emit_lap(session, completed)

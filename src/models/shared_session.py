@@ -613,6 +613,35 @@ class SharedSessionManager:
             current_lap = completed_laps + 1
 
         if current_lap > 0:
+            # ── Guard against stale SHM last_laptime_ms at session start ─
+            # When completed_laps == 0 AND we are on lap 1 (current_lap <= 1),
+            # no laps have been finished in the current session.  Any non-zero
+            # last_laptime_ms is stale data carried over from a previous game
+            # session via the Windows file mapping.  Scrub it so
+            # update_lap_timing_from_graphics_shm does not store it as a
+            # completed lap time for lap 1.
+            #
+            # We also check current_lap <= 1 because some decoders provide
+            # session_current_lap but not total_lap_count; a current_lap > 1
+            # implies laps have been completed and last_laptime_ms is legit.
+            shm_last = graphics_data.get("last_laptime_ms")
+            if shm_last and int(shm_last) > 0 and completed_laps == 0 and current_lap <= 1:
+                existing = self._session_data.lap_timing.get(current_lap)
+                already_stored = (
+                    existing is not None
+                    and existing.completed_lap_time is not None
+                    and existing.completed_lap_time > 0
+                )
+                if not already_stored:
+                    from ..utils.structured_logger import log_debug, Component
+                    log_debug(Component.SHARED_SESSION,
+                        f"[SHM_STALE] Discarding stale last_laptime_ms={shm_last} ms "
+                        f"for lap {current_lap} with completed_laps=0 — "
+                        f"likely carryover from previous game session"
+                    )
+                # Scrub the stale value before it reaches the timing update
+                graphics_data = dict(graphics_data)
+                graphics_data["last_laptime_ms"] = 0
             self.update_lap_timing_from_graphics_shm(current_lap, graphics_data)
 
             # ── Wire SHM validity flags into shared session ──────────────
@@ -723,9 +752,17 @@ class SharedSessionManager:
         same driver is still logged in.
         """
         with self._lock:
+            old_timing_count = len(self._session_data.lap_timing)
+            old_validity_count = len(self._session_data.lap_validity)
             old_ident = self._session_data.player_identification
             self._session_data = SharedSessionData()
             # Re-attach player identification — Steam ID / car UUID don't change
             # between sessions and must not be wiped.
             self._session_data.player_identification = old_ident
+            from ..utils.structured_logger import log_debug, Component
+            log_debug(Component.SHARED_SESSION,
+                f"[RESET] Cleared shared session: dropped {old_timing_count} timing entries, "
+                f"{old_validity_count} validity entries. "
+                f"Car model after reset: {old_ident.car_model}"
+            )
 
