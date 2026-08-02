@@ -149,6 +149,9 @@ class TestSubmitLap:
                 "ac_evo_version": "1.2.3",
             }
         )
+        # Lap's own time is authoritative; shared SHM timing is fallback only.
+        # Set the lap's time to an unusable value so the shared value fills in.
+        sample_lap.lap_time_ms = 0
         manager.update_lap_timing_from_graphics_shm(sample_lap.lap_number, {"last_laptime_ms": 123456})
         manager.update_sector_splits_from_logs(
             sample_lap.lap_number,
@@ -183,6 +186,44 @@ class TestSubmitLap:
         assert payload["fuelUsed"] == 2.7
         # The per-km rate must NOT appear as fuelUsed
         assert payload.get("fuelUsed") != 0.04
+
+    @pytest.mark.asyncio
+    @patch('src.core.api_client.is_game_running')
+    @patch('httpx.AsyncClient.post')
+    async def test_submit_lap_prefers_lap_time_over_stale_shared_shm_time(
+        self,
+        mock_post,
+        mock_game_running,
+        sample_session,
+        sample_lap,
+    ):
+        """Regression: while lap N is in progress, the shared SHM lap-N entry
+        holds lap N-1's last_laptime_ms. The lap's own log-parser time must win
+        so sectors (also from logs) match the submitted total time."""
+        mock_game_running.return_value = GameProcessStatus.RUNNING
+        mock_response = MagicMock()
+        mock_response.status_code = 201
+        mock_response.json.return_value = {"id": "lap-789"}
+        mock_post.return_value = mock_response
+
+        sample_lap.lap_number = 2
+        sample_lap.lap_time_ms = 111933
+        sample_lap.sector1_ms = 43329
+        sample_lap.sector2_ms = 25008
+        sample_lap.sector3_ms = 43596
+
+        manager = SharedSessionManager()
+        # Simulate the incident state: SHM last_laptime_ms for the lap-2 entry
+        # is lap 1's completed time (116010), not lap 2's.
+        manager.update_lap_timing_from_graphics_shm(2, {"last_laptime_ms": 116010})
+
+        client = APIClient(session_manager=manager)
+        result = await client.submit_lap(sample_session, sample_lap)
+
+        assert result.status == SubmissionStatus.SUCCESS
+        payload = mock_post.call_args.kwargs["json"]
+        assert payload["time"] == 111933
+        assert payload["sector1"] + payload["sector2"] + payload["sector3"] == payload["time"]
 
     @pytest.mark.asyncio
     @patch('src.core.api_client.is_game_running')

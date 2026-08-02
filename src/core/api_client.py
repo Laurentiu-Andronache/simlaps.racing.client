@@ -170,12 +170,17 @@ class APIClient:
         track_id = self._normalize_track_id(effective_track)
         log_debug(Component.API, "Track normalization", effective_track=effective_track, track_id=track_id, car=effective_car, lap_time_ms=lap.lap_time_ms, shared_lap_time_ms=getattr(shared_lap_timing, 'last_lap_time_ms', None))
 
-        # Ensure time is int and positive
-        final_time_candidate = None
-        if shared_lap_timing is not None:
+        # Ensure time is int and positive.
+        # The log-parser LapData is authoritative for this specific lap number.
+        # Shared SHM last_lap_time_ms is session-global: in the lap-N entry it
+        # holds lap N-1's time while lap N is in progress, so it must only be
+        # a fallback when the lap's own time is missing.
+        final_time_candidate = lap.lap_time_ms
+        if (
+            (not isinstance(final_time_candidate, (int, float)) or int(final_time_candidate) <= 0)
+            and shared_lap_timing is not None
+        ):
             final_time_candidate = shared_lap_timing.last_lap_time_ms
-        if not isinstance(final_time_candidate, (int, float)) or int(final_time_candidate) <= 0:
-            final_time_candidate = lap.lap_time_ms
 
         final_time = int(final_time_candidate)
         if final_time <= 0:
