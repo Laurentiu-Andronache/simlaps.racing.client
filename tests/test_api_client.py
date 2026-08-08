@@ -282,14 +282,23 @@ class TestSubmitLap:
 
     @pytest.mark.asyncio
     @patch('src.core.api_client.is_game_running')
-    async def test_submit_lap_respects_shared_session_lap_validity(
+    @patch('httpx.AsyncClient.post')
+    async def test_submit_lap_parser_validity_wins_over_shm_invalid(
         self,
+        mock_post,
         mock_game_running,
         sample_session,
         sample_lap,
     ):
-        """Shared lap validity should block submission when marked invalid."""
+        """SHM is_valid_lap cannot distinguish contact from track cuts, and
+        contact must never invalidate a lap — the parser's completed-lap
+        verdict is authoritative, so an SHM invalid verdict must not block
+        submission of a log-valid lap."""
         mock_game_running.return_value = GameProcessStatus.RUNNING
+        mock_response = MagicMock()
+        mock_response.status_code = 201
+        mock_response.json.return_value = {"id": "lap-789", "status": "ok"}
+        mock_post.return_value = mock_response
 
         manager = SharedSessionManager()
         manager.update_lap_validity_from_graphics_shm(sample_lap.lap_number, True)
@@ -297,7 +306,8 @@ class TestSubmitLap:
         client = APIClient(session_manager=manager)
         result = await client.submit_lap(sample_session, sample_lap, submit_invalid=False)
 
-        assert result.status == SubmissionStatus.INVALID_LAP
+        assert result.status == SubmissionStatus.SUCCESS
+        assert mock_post.call_args.kwargs["json"]["valid"] is True
     
     @pytest.mark.asyncio
     @patch('src.core.api_client.is_game_running')
@@ -310,6 +320,30 @@ class TestSubmitLap:
         
         assert result.status == SubmissionStatus.GAME_NOT_RUNNING
     
+    @pytest.mark.asyncio
+    @patch('src.core.api_client.is_game_running')
+    @patch('httpx.AsyncClient.post')
+    async def test_submit_lap_ignores_shm_invalid_verdict_in_race_session(
+        self, mock_post, mock_game_running, sample_session, sample_lap
+    ):
+        """SHM is_valid_lap uses hotlap semantics (False on contact/damage);
+        a log-valid race lap must not be rejected because of it."""
+        mock_game_running.return_value = GameProcessStatus.RUNNING
+        mock_response = MagicMock()
+        mock_response.status_code = 201
+        mock_response.json.return_value = {"id": "lap-race-1", "status": "ok"}
+        mock_post.return_value = mock_response
+
+        sample_session.session_type = "RACE"
+        manager = SharedSessionManager()
+        manager.update_lap_validity_from_graphics_shm(sample_lap.lap_number, True)
+
+        client = APIClient(session_manager=manager)
+        result = await client.submit_lap(sample_session, sample_lap)
+
+        assert result.status == SubmissionStatus.SUCCESS
+        assert mock_post.call_args.kwargs["json"]["valid"] is True
+
     @pytest.mark.asyncio
     @patch('src.core.api_client.is_game_running')
     async def test_submit_lap_game_detection_unknown(self, mock_game_running, sample_session, sample_lap):

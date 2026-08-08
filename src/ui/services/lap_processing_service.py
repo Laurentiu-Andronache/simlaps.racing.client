@@ -74,13 +74,14 @@ class LapProcessingService:
                 lap_number=lap.lap_number,
             )
 
-        # Determine if we should submit this lap (prefer authoritative shared validity)
-        shared_lap_validity = session_manager.get_lap_validity_data(lap.lap_number)
-        effective_is_valid = (
-            shared_lap_validity.is_valid
-            if shared_lap_validity is not None
-            else lap.is_valid
-        )
+        # Determine if we should submit this lap. The log parser's verdict
+        # is authoritative for completed laps: it uses the game's own
+        # ``Relevant onSplit`` broadcast when available and structural
+        # classification otherwise. The SHM is_valid_lap flag cannot
+        # distinguish contact from track cuts, and contact must never
+        # invalidate a lap, so SHM validity is only used for the real-time
+        # in-progress display — never to override a completed-lap verdict.
+        effective_is_valid = lap.is_valid
         should_submit = config.auto_submit and (
             effective_is_valid or config.submit_invalid_laps
         )

@@ -34,7 +34,10 @@ def _make_deps(*, auto_submit: bool = False, submit_invalid_laps: bool = False, 
 
 
 @pytest.mark.asyncio
-async def test_handle_lap_complete_auto_submits_when_shared_validity_overrides_parser_invalid():
+async def test_handle_lap_complete_shm_valid_cannot_resurrect_parser_invalid():
+    """The parser's verdict is authoritative for completed laps in both
+    directions: an SHM "valid" flag must not resurrect a lap the parser
+    classified invalid."""
     deps = _make_deps(auto_submit=True, submit_invalid_laps=False)
     deps["session_manager"].get_lap_validity_data.return_value = MagicMock(is_valid=True)
     deps["pb_cache"].check_and_update_pb.return_value = True
@@ -50,6 +53,75 @@ async def test_handle_lap_complete_auto_submits_when_shared_validity_overrides_p
         lap_time_str="1:29.556",
         is_valid=False,
         timestamp="2026-04-29T00:21:00",
+    )
+
+    service = LapProcessingService()
+    await service.handle_lap_complete(
+        session=session,
+        lap=lap,
+        create_history_entry=lambda **kwargs: SimpleNamespace(**kwargs),
+        **deps,
+    )
+
+    deps["home_page"].add_lap.assert_called_once_with(session, lap, LapCardStatus.INVALID)
+    deps["submit_lap"].assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_handle_lap_complete_ignores_shm_invalid_verdict_in_race_session():
+    """Race laps count regardless of contact; SHM is_valid_lap uses hotlap
+    semantics (False on contact/damage) and must not suppress a log-valid
+    race lap."""
+    deps = _make_deps(auto_submit=True, submit_invalid_laps=False)
+    deps["session_manager"].get_lap_validity_data.return_value = MagicMock(is_valid=False)
+    deps["pb_cache"].check_and_update_pb.return_value = False
+
+    card = MagicMock()
+    deps["home_page"].add_lap.return_value = card
+
+    session = SessionData(session_type="RACE", track="Nordschleife", car="Ferrari 296 GT3")
+    lap = SessionLapData(
+        lap_number=1,
+        physics_lap_number=1,
+        lap_time_ms=441811,
+        lap_time_str="7:21.811",
+        is_valid=True,
+        timestamp="2026-08-08T00:07:34",
+    )
+
+    service = LapProcessingService()
+    await service.handle_lap_complete(
+        session=session,
+        lap=lap,
+        create_history_entry=lambda **kwargs: SimpleNamespace(**kwargs),
+        **deps,
+    )
+
+    deps["home_page"].add_lap.assert_called_once_with(session, lap, LapCardStatus.SUBMITTING)
+    deps["submit_lap"].assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_handle_lap_complete_ignores_shm_invalid_verdict_in_practice_session():
+    """SHM is_valid_lap cannot distinguish contact from track cuts, and
+    contact must never invalidate a lap — the parser verdict wins in
+    practice-like sessions too (cut detection comes from the game's
+    ``Relevant onSplit`` broadcast in the log)."""
+    deps = _make_deps(auto_submit=True, submit_invalid_laps=False)
+    deps["session_manager"].get_lap_validity_data.return_value = MagicMock(is_valid=False)
+    deps["pb_cache"].check_and_update_pb.return_value = False
+
+    card = MagicMock()
+    deps["home_page"].add_lap.return_value = card
+
+    session = SessionData(session_type="PRACTICE", track="Laguna Seca", car="Ferrari 296 GT3")
+    lap = SessionLapData(
+        lap_number=3,
+        physics_lap_number=3,
+        lap_time_ms=90000,
+        lap_time_str="1:30.000",
+        is_valid=True,
+        timestamp="2026-08-08T00:07:34",
     )
 
     service = LapProcessingService()

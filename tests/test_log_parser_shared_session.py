@@ -38,9 +38,9 @@ async def test_emit_lap_updates_shared_session_manager() -> None:
     validity = manager.get_lap_validity_data(2)
     assert validity is not None
     assert validity.is_valid is True
-    # Heuristic lap (no ``Relevant onSplit``) → source is left mutable
-    # so SHM can contribute validity data when telemetry connects.
-    assert validity.source is None
+    # Log verdict is always authoritative for completed laps — SHM
+    # is_valid_lap cannot distinguish contact from track cuts.
+    assert validity.source == "logs"
 
     sectors = manager.get_sector_split_data(2)
     assert sectors is not None

@@ -117,10 +117,12 @@ class APIClient:
         """
         log_debug(Component.API, "submit_lap called", lap_time=lap.lap_time_str, lap_time_ms=lap.lap_time_ms, is_valid=lap.is_valid, submit_invalid=submit_invalid)
 
-        shared_lap_validity = self._session_manager.get_lap_validity_data(lap.lap_number)
-        effective_is_valid = (
-            shared_lap_validity.is_valid if shared_lap_validity is not None else lap.is_valid
-        )
+        # The log parser's verdict is authoritative for completed laps (game's
+        # ``Relevant onSplit`` broadcast when available, structural
+        # classification otherwise). SHM is_valid_lap cannot distinguish
+        # contact from track cuts, and contact must never invalidate a lap,
+        # so it is never used to override a completed-lap verdict.
+        effective_is_valid = lap.is_valid
         log_debug(Component.API, "Effective validity", effective_is_valid=effective_is_valid)
         
         # Anti-cheat: Verify game is running before submission (fail-closed)

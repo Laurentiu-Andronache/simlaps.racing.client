@@ -486,64 +486,20 @@ class SharedSessionManager:
                 self._mark_source("lap_times", "logs")
 
             # ── Validity ───────────────────────────────────────────────
-            # Merge strategy for log vs. SHM validity:
-            #
-            # 1. Authoritative log (``validity_source == "authoritative"``
-            #    from the game's ``Relevant onSplit`` broadcast): log wins;
-            #    SHM is permanently frozen (``source="logs"``).
-            #
-            # 2. Log structural classifications (OUTLAP, ABORTED, and the
-            #    currently-unused INVALID_SPLIT / INVALID_SECTORS /
-            #    INVALID_PENALTY / INVALID_TRACK_LIMIT): log wins because
-            #    SHM only knows VALID / INVALID_GAME.  ``source="logs"``
-            #    protects these from being flattened to VALID by SHM.
-            #
-            # 3. Log heuristic VALID (the default when no ``Relevant
-            #    onSplit`` arrived): SHM wins if it already captured a
-            #    verdict while the lap was in-progress.  Otherwise the
-            #    heuristic VALID is stored with ``source=None`` so a
-            #    future SHM update is still accepted.
-            #
-            # This fixes the regression introduced by the Phase-2
-            # simplification (item 4.2) where ALL log verdicts —
-            # including heuristic ones — were treated as authoritative,
-            # permanently silencing SHM-based invalidity detection.
+            # The log parser's verdict is authoritative for completed laps
+            # regardless of whether it came from the game's ``Relevant
+            # onSplit`` broadcast or structural classification.  SHM
+            # is_valid_lap cannot distinguish contact from track cuts, and
+            # contact must never invalidate a lap, so log always wins.
+            # Freeze with source="logs" so future SHM peeks cannot flip
+            # the entry back.
             log_state = lap_data.lap_type or lap_data.lap_state.value
-            log_is_authoritative = (
-                getattr(lap_data, "validity_source", "heuristic") == "authoritative"
+            self._session_data.lap_validity[lap_data.lap_number] = LapValidityData(
+                lap_number=lap_data.lap_number,
+                is_valid=lap_data.is_valid,
+                lap_state=log_state,
+                source="logs",
             )
-
-            # States that SHM cannot provide — log classification wins.
-            _LOG_CLASSIFICATION_STATES = frozenset({
-                "OUTLAP", "ABORTED",
-                "INVALID_SPLIT", "INVALID_SECTORS", "INVALID_PENALTY",
-                "INVALID_TRACK_LIMIT",
-            })
-
-            existing = self._session_data.lap_validity.get(lap_data.lap_number)
-
-            if log_is_authoritative or log_state in _LOG_CLASSIFICATION_STATES:
-                # Authoritative log verdict or structural classification
-                # — freeze SHM.
-                self._session_data.lap_validity[lap_data.lap_number] = LapValidityData(
-                    lap_number=lap_data.lap_number,
-                    is_valid=lap_data.is_valid,
-                    lap_state=log_state,
-                    source="logs",
-                )
-            elif existing is not None and existing.source == "shm_graphics":
-                # SHM already captured a verdict while the lap was
-                # in-progress — preserve it over the log heuristic.
-                pass
-            else:
-                # No prior SHM verdict; store the heuristic log verdict
-                # but leave source mutable so SHM can still contribute.
-                self._session_data.lap_validity[lap_data.lap_number] = LapValidityData(
-                    lap_number=lap_data.lap_number,
-                    is_valid=lap_data.is_valid,
-                    lap_state=log_state,
-                    source=None,
-                )
             self._mark_source("lap_times", "logs")
 
     def update_session_metadata_from_logs(self, session_data: SessionData) -> None:

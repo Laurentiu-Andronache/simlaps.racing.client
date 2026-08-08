@@ -83,11 +83,10 @@ def test_update_lap_from_logs_populates_player_and_sector_data() -> None:
     assert sectors.sector3_ms == 35000
 
 
-def test_shm_invalid_not_overwritten_by_log_heuristic_valid() -> None:
-    """SHM per-frame INVALID_GAME must survive a conflicting log heuristic
-    VALID verdict — the log heuristic is the default when no authoritative
-    ``Relevant onSplit`` broadcast arrived, and SHM captures real-time
-    track-cut / penalty data that the log parser cannot see without it."""
+def test_log_heuristic_valid_overwrites_shm_invalid() -> None:
+    """SHM is_valid_lap cannot distinguish contact from track cuts, and
+    contact must never invalidate a lap.  The log verdict (even heuristic
+    VALID) always wins for completed laps."""
     manager = SharedSessionManager()
 
     # SHM reports lap 2 as invalid (per-frame flag while lap was in progress)
@@ -109,21 +108,21 @@ def test_shm_invalid_not_overwritten_by_log_heuristic_valid() -> None:
     )
     manager.update_lap_from_logs(lap)
 
-    # SHM per-frame invalid flag survives — log heuristic VALID is not
-    # authoritative (no Relevant onSplit) and must not overwrite SHM data.
+    # Log verdict wins — SHM contact-based invalidity must not persist.
     validity = manager.get_lap_validity_data(2)
     assert validity is not None
-    assert validity.is_valid is False
-    assert validity.lap_state == "INVALID_GAME"
-    assert validity.source == "shm_graphics"
+    assert validity.is_valid is True
+    assert validity.lap_state == "VALID"
+    assert validity.source == "logs"
 
 
-def test_shm_invalid_from_total_lap_count_wins_over_log_heuristic() -> None:
+def test_log_heuristic_valid_wins_over_shm_invalid() -> None:
     """AC Evo 0.8.0.1: session_current_lap is 0, so current lap is derived from
     total_lap_count.  When total_lap_count=1 and is_valid_lap=False with an
-    active current_lap_time_ms, the in-progress lap is lap 2.  The SHM
-    invalidity must survive a later heuristic-VALID log verdict because only
-    the game's ``Relevant onSplit`` broadcast is authoritative.
+    active current_lap_time_ms, the in-progress lap is lap 2.  SHM
+    is_valid_lap cannot distinguish contact from track cuts, and contact must
+    never invalidate a lap, so the log verdict (even heuristic VALID) always
+    wins for completed laps.
     """
     manager = SharedSessionManager()
 
@@ -154,12 +153,12 @@ def test_shm_invalid_from_total_lap_count_wins_over_log_heuristic() -> None:
     )
     manager.update_lap_from_logs(lap)
 
-    # SHM invalid verdict survives — log heuristic VALID is not authoritative.
+    # Log verdict wins — SHM contact-based invalidity must not persist.
     validity = manager.get_lap_validity_data(2)
     assert validity is not None
-    assert validity.is_valid is False
-    assert validity.lap_state == "INVALID_GAME"
-    assert validity.source == "shm_graphics"
+    assert validity.is_valid is True
+    assert validity.lap_state == "VALID"
+    assert validity.source == "logs"
 
 
 def test_log_authoritative_invalid_not_overwritten_by_shm_valid() -> None:
@@ -616,10 +615,11 @@ def test_shm_is_valid_lap_false_with_zero_lap_time_skipped() -> None:
     assert manager.get_lap_validity_data(1) is None
 
 
-def test_shm_invalid_survives_heuristic_valid_log() -> None:
-    """SHM per-frame is_valid_lap=False must survive a later log heuristic VALID.
-    Only the game's ``Relevant onSplit`` broadcast carries authoritative validity;
-    without it the SHM real-time flag is the best available signal."""
+def test_log_heuristic_valid_wins_over_shm_invalid_peek_path() -> None:
+    """SHM is_valid_lap cannot distinguish contact from track cuts, and
+    contact must never invalidate a lap.  The log verdict (even heuristic
+    VALID) always wins for completed laps — including the peek path where
+    is_valid_lap arrives via total_lap_count derivation."""
     manager = SharedSessionManager()
 
     manager.update_from_graphics_shm({
@@ -644,12 +644,12 @@ def test_shm_invalid_survives_heuristic_valid_log() -> None:
     )
     manager.update_lap_from_logs(lap)
 
-    # SHM invalid flag survives — log heuristic VALID is not authoritative.
+    # Log verdict wins — SHM contact-based invalidity must not persist.
     validity = manager.get_lap_validity_data(2)
     assert validity is not None
-    assert validity.is_valid is False
-    assert validity.lap_state == "INVALID_GAME"
-    assert validity.source == "shm_graphics"
+    assert validity.is_valid is True
+    assert validity.lap_state == "VALID"
+    assert validity.source == "logs"
 
 
 # ── Regression: SHM stale last_laptime_ms scrubbing ────────────────────────
