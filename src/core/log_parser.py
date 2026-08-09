@@ -1657,9 +1657,13 @@ class LogParser:
                         # have to drive the buffer reset ourselves.
                         if "request made GameModeRequestRestartSession" in line:
                             await self._emit_session_restart()
-                        # AC Evo: pause-menu "Exit to Menu" — different from
-                        # restart, the user is leaving the session entirely.
-                        elif "request made GameModeRequestExit" in line:
+                        # AC Evo: pause-menu "Exit to Menu" (GameModeRequestExit)
+                        # or "Exit to Desktop" (GameModeRequestQuitGame) — the
+                        # user is leaving the session entirely.
+                        elif (
+                            "request made GameModeRequestExit" in line
+                            or "request made GameModeRequestQuitGame" in line
+                        ):
                             # Flush any pending lap whose authoritative
                             # validity never arrived (critical for
                             # single-split tracks like Nordschleife Tourist
@@ -1669,14 +1673,14 @@ class LogParser:
                             completed = self._flush_pending_lap()
                             if completed is not None and self.current_session is not None:
                                 log_debug(Component.LOG_PARSER,
-                                    f"[EXIT] Flushing pending lap on GameModeRequestExit: "
+                                    f"[EXIT] Flushing pending lap on game exit: "
                                     f"#{completed.lap_number} {completed.lap_time_str}  "
                                     f"session_car={session_car}  "
                                     f"lap_state={completed.lap_state.value}"
                                 )
                                 await self._emit_lap(self.current_session, completed)
                             self._finalise_current_session()
-                            await self._emit_game_status(False, trigger="GameModeRequestExit")
+                            await self._emit_game_status(False, trigger="game exit request")
                         if "END_SESSION" in line:
                             if self._line_mentions_player_car(line):
                                 completed = self._flush_pending_lap()

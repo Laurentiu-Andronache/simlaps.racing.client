@@ -646,9 +646,16 @@ class TestFollowExitFlushesPendingLap:
     """
 
     @pytest.mark.asyncio
-    async def test_exit_flushes_pending_lap_without_validity(self, tmp_path):
-        """GameModeRequestExit must flush a pending lap even when no
-        authoritative validity line was ever received."""
+    @pytest.mark.parametrize(
+        "exit_request",
+        ["GameModeRequestExit", "GameModeRequestQuitGame"],
+    )
+    async def test_exit_flushes_pending_lap_without_validity(
+        self, tmp_path, exit_request
+    ):
+        """Exit to Menu (GameModeRequestExit) and Exit to Desktop
+        (GameModeRequestQuitGame) must both flush a pending lap even when
+        no authoritative validity line was ever received."""
         log_file = tmp_path / "test.log"
         log_file.write_text("")  # empty historical pass
 
@@ -682,10 +689,10 @@ class TestFollowExitFlushesPendingLap:
                     "New lap carId 4d27cc23-ee6c-e0de-9c38-10448288bcbb: 08:36.642\n"
                 )
                 await asyncio.sleep(0.05)
-                # User exits to menu — must flush the pending lap
+                # User exits — must flush the pending lap
                 f.write(
                     "[2026-07-26 19:18:48.000] [gameface] [info] "
-                    "request made GameModeRequestExit \n"
+                    f"request made {exit_request} \n"
                 )
 
         appender = asyncio.create_task(append_lines())
@@ -699,7 +706,7 @@ class TestFollowExitFlushesPendingLap:
             parser.stop()
             await appender
 
-        assert laps, "Pending lap was not flushed on GameModeRequestExit"
+        assert laps, f"Pending lap was not flushed on {exit_request}"
         assert laps[0].lap_time_ms == 516642
         assert parser._pending_lap is None
         assert parser.current_session is None  # finalised
