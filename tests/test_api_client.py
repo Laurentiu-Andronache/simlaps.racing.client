@@ -842,3 +842,51 @@ class TestSubmitLapErrorResponses:
         
         assert result.status == SubmissionStatus.ERROR
         assert "Unexpected error" in result.message
+
+
+class TestNoSecret:
+    """Test offline behavior when APP_SECRET is not configured."""
+
+    @pytest.mark.asyncio
+    @patch('httpx.AsyncClient.post')
+    async def test_submit_lap_no_secret(self, mock_post):
+        """Submit is skipped and no network call is made when no secret is set."""
+        from types import SimpleNamespace
+
+        with patch('src.core.api_client.is_secret_configured', return_value=False):
+            client = APIClient()
+            session = SimpleNamespace(player_id="76561198321627695")
+            lap = SimpleNamespace(
+                lap_time_str="1:29.556",
+                lap_time_ms=89556,
+                is_valid=True,
+                tyre_compound="SC",
+            )
+
+            result = await client.submit_lap(session, lap)
+
+        assert result.status == SubmissionStatus.NO_SECRET
+        assert "offline" in result.message.lower()
+        mock_post.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_test_secret_no_secret(self):
+        """test_secret returns an offline message without network activity."""
+        with patch('src.core.api_client.is_secret_configured', return_value=False):
+            client = APIClient()
+            success, message = await client.test_secret()
+
+        assert success is False
+        assert "offline" in message.lower()
+
+    @pytest.mark.asyncio
+    @patch('httpx.AsyncClient.get')
+    async def test_test_connection_no_secret(self, mock_get):
+        """test_connection returns an offline message without contacting the server."""
+        with patch('src.core.api_client.is_secret_configured', return_value=False):
+            client = APIClient()
+            success, message = await client.test_connection()
+
+        assert success is False
+        assert "offline" in message.lower()
+        mock_get.assert_not_called()

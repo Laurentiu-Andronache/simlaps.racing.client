@@ -55,19 +55,25 @@ else:
 # Load from environment variable, fallback to None if not set
 APP_SECRET = os.environ.get("APP_SECRET")
 
-if not APP_SECRET:
-    raise RuntimeError(
-        "APP_SECRET environment variable not set. "
-        "Please set APP_SECRET in your .env file or environment. "
-        "See .env.example for the required format."
-    )
+
+def is_secret_configured() -> bool:
+    """Return True when APP_SECRET is present and non-empty."""
+    return bool(APP_SECRET)
 
 
 def get_app_secret() -> bytes:
     """
     Get the application secret for signing.
     Returns the secret as UTF-8 encoded string bytes (for HMAC compatibility with server).
+    Raises RuntimeError if APP_SECRET is not configured so the app can run without it
+    until a signature is actually required.
     """
+    if not APP_SECRET:
+        raise RuntimeError(
+            "APP_SECRET environment variable not set. "
+            "Please set APP_SECRET in your .env file or environment. "
+            "See .env.example for the required format."
+        )
     return APP_SECRET.encode('utf-8')
 
 

@@ -12,7 +12,7 @@ from enum import Enum
 
 from ..models import SessionData, LapData, SharedSessionManager
 from ..utils.structured_logger import log_debug, log_error, log_info, log_warning, log_exception, Component
-from .security import sign_payload, is_game_running, GameProcessStatus
+from .security import sign_payload, is_game_running, GameProcessStatus, is_secret_configured
 from ..version import VERSION, USER_AGENT
 
 
@@ -27,6 +27,7 @@ class SubmissionStatus(Enum):
     GAME_NOT_RUNNING = "game_not_running"
     NETWORK_ERROR = "network_error"
     PLAUSIBILITY_FAILED = "plausibility_failed"
+    NO_SECRET = "no_secret"
 
 
 @dataclass
@@ -116,6 +117,14 @@ class APIClient:
             SubmissionResult with status and details
         """
         log_debug(Component.API, "submit_lap called", lap_time=lap.lap_time_str, lap_time_ms=lap.lap_time_ms, is_valid=lap.is_valid, submit_invalid=submit_invalid)
+
+        # Offline mode: do not attempt submission if no signing secret is configured.
+        if not is_secret_configured():
+            log_info(Component.API, "Submission skipped: APP_SECRET not configured (offline mode)")
+            return SubmissionResult(
+                status=SubmissionStatus.NO_SECRET,
+                message="APP_SECRET not configured — running in offline mode",
+            )
 
         # The log parser's verdict is authoritative for completed laps (game's
         # ``Relevant onSplit`` broadcast when available, structural
@@ -400,6 +409,9 @@ class APIClient:
         Returns:
             Tuple of (success, message)
         """
+        if not is_secret_configured():
+            return False, "APP_SECRET not configured — running in offline mode"
+
         try:
             client = await self._get_client()
             
@@ -429,13 +441,16 @@ class APIClient:
         Returns:
             Tuple of (success, message)
         """
+        if not is_secret_configured():
+            return False, "APP_SECRET not configured — running in offline mode"
+
         try:
             log_debug(Component.API, "test_secret called")
             from .security import create_signature, get_timestamp, generate_nonce, get_app_secret
             
-            # Log the decoded secret
+            # Log only that the secret is present and its length; never log the value
             secret = get_app_secret()
-            log_debug(Component.API, "get_app_secret result", secret=secret[:20], len=len(secret))
+            log_debug(Component.API, "get_app_secret result", secret_configured=bool(secret), secret_len=len(secret))
             
             # Create a test signature with known test values
             timestamp = get_timestamp()

@@ -233,6 +233,33 @@ async def test_submit_lap_unknown_error_status():
 
 
 @pytest.mark.asyncio
+async def test_submit_lap_no_secret_status():
+    """Test that NO_SECRET status shows the offline message."""
+    service = LapSubmissionService()
+
+    api_client = MagicMock()
+    api_client.submit_lap = AsyncMock(
+        return_value=SimpleNamespace(status=SubmissionStatus.NO_SECRET, message="APP_SECRET not configured")
+    )
+
+    config = SimpleNamespace(submit_invalid_laps=False, server_url="https://simlaps.racing")
+    card = MagicMock()
+
+    await service.submit_lap(
+        api_client=api_client,
+        config=config,
+        card=card,
+        session=SimpleNamespace(track="Laguna Seca", player_id="steam123", player_name="Driver"),
+        lap=SimpleNamespace(lap_time_str="1:29.556", is_valid=True),
+        history_entry=SimpleNamespace(was_submitted=False),
+        pb_was_new=False,
+        post_to_discord=AsyncMock(),
+    )
+
+    card.update_status.assert_any_call(LapCardStatus.FAILED, "APP_SECRET not configured")
+
+
+@pytest.mark.asyncio
 async def test_post_to_discord_disabled_skips():
     service = LapSubmissionService()
 

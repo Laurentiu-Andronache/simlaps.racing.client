@@ -92,6 +92,7 @@ class LapSubmissionService:
             SubmissionStatus.SIGNATURE_ERROR,
             SubmissionStatus.RATE_LIMITED,
             SubmissionStatus.PLAUSIBILITY_FAILED,
+            SubmissionStatus.NO_SECRET,
         }:
             log_warning(
                 Component.APP,

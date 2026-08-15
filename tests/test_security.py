@@ -17,6 +17,7 @@ from src.core.security import (
     get_timestamp,
     generate_nonce,
     get_app_secret,
+    is_secret_configured,
     is_game_running,
     GameProcessStatus,
     get_security_status,
@@ -38,6 +39,21 @@ class TestSecretManagement:
         secret = get_app_secret()
         expected = os.environ["APP_SECRET"].encode('utf-8')
         assert secret == expected
+
+    def test_is_secret_configured_and_get_app_secret_without_secret(self):
+        """Test offline behavior when APP_SECRET is not set."""
+        from src.core import security
+
+        assert is_secret_configured() is True
+
+        original = security.APP_SECRET
+        try:
+            security.APP_SECRET = None
+            assert is_secret_configured() is False
+            with pytest.raises(RuntimeError, match="APP_SECRET environment variable not set"):
+                get_app_secret()
+        finally:
+            security.APP_SECRET = original
 
 
 class TestHMACSigning:
