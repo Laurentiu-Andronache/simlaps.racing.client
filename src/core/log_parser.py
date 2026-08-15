@@ -117,6 +117,9 @@ class LogParser:
         # override our local sector-sum / split heuristics before the lap is
         # emitted to listeners.
         self._pending_lap: Optional[LapData] = None
+        # Fallback penalty hint for the currently in-progress lap. Used only
+        # when no authoritative validity line is seen for that lap.
+        self._pending_penalty_warning: bool = False
 
         # Stint tracking
         self._current_stint: Optional[StintData] = None
@@ -244,6 +247,12 @@ class LogParser:
                 r"\d+@\d+: laptime (\d+), valid (true|false), "
                 r"flags (\d+), lap (\d+)"
             ),
+            # Flexible field extraction for authoritative validity lines when
+            # the channel/prefix/order changes between game versions.
+            "lap_validity_laptime": re.compile(r"\blaptime\s+(\d+)\b", re.IGNORECASE),
+            "lap_validity_valid": re.compile(r"\bvalid\s+(true|false)\b", re.IGNORECASE),
+            "lap_validity_flags": re.compile(r"\bflags\s+(\d+)\b", re.IGNORECASE),
+            "lap_validity_lap_number": re.compile(r"\blap\s+(\d+)\b", re.IGNORECASE),
 
             # AC Evo emits the same `UINotificationType_SessionPenalty`
             # notification line for BOTH penalty additions and clearances.
@@ -254,6 +263,9 @@ class LogParser:
             # generic notification line caused every penalty *clear* to flip
             # `has_penalty=True`, invalidating clean racing laps.
             "penalty": re.compile(r"\{PENALTY_ADDED_KEY\}"),
+            "penalty_warning_type": re.compile(
+                r"Penalty Type PenaltyType_Warning has no tranformation"
+            ),
             "setup_group": re.compile(
                 r"KS-SETUP-GROUP\s+(.+)$"
             ),
@@ -341,6 +353,43 @@ class LogParser:
 
     def _reset_in_progress(self) -> None:
         self._ip = InProgressLap()
+        self._pending_penalty_warning = False
+
+    def _parse_authoritative_lap_validity(
+        self,
+        line: str,
+    ) -> Optional[tuple[int, str, int, int]]:
+        """Parse an authoritative per-lap validity line.
+
+        Primary path: strict legacy ``Relevant onSplit for Combo ...`` regex.
+        Fallback path: field-based extraction for format/channel variations.
+        """
+        strict = self._pats["lap_validity"].search(line)
+        if strict:
+            return (
+                int(strict.group(1)),
+                strict.group(2).lower(),
+                int(strict.group(3)),
+                int(strict.group(4)),
+            )
+
+        if "onsplit" not in line.lower():
+            return None
+
+        laptime_match = self._pats["lap_validity_laptime"].search(line)
+        valid_match = self._pats["lap_validity_valid"].search(line)
+        flags_match = self._pats["lap_validity_flags"].search(line)
+        lap_match = self._pats["lap_validity_lap_number"].search(line)
+
+        if not (laptime_match and valid_match and flags_match and lap_match):
+            return None
+
+        return (
+            int(laptime_match.group(1)),
+            valid_match.group(1).lower(),
+            int(flags_match.group(1)),
+            int(lap_match.group(1)),
+        )
 
     # ── Log buffer ────────────────────────────────────────────────────────────
 
@@ -926,6 +975,53 @@ class LogParser:
             f"reliable={self._ip.fuel_reliable}"
         )
 
+    def _handle_penalty_signals(self, line: str) -> None:
+        """Capture log-only penalty hints as fallback invalidation triggers.
+
+        These hints are only decisive when authoritative validity is absent.
+        A signal in the brief window after completion (in-progress not started)
+        belongs to the buffered lap. Once the next lap has started accumulating,
+        the hint is recorded for that in-progress lap instead.
+        """
+        saw_penalty_warning = bool(self._pats["penalty_warning_type"].search(line))
+        saw_penalty_added = bool(self._pats["penalty"].search(line))
+        if not (saw_penalty_warning or saw_penalty_added):
+            return
+
+        trigger = "PenaltyType_Warning" if saw_penalty_warning else "PENALTY_ADDED_KEY"
+        ip = self._ip
+        in_progress_started = bool(
+            ip.splits
+            or ip.is_outlap
+            or ip.fuel_used is not None
+            or ip.distance_hundredm is not None
+            or ip.physics_lap_num is not None
+        )
+
+        pending = self._pending_lap
+        if (
+            pending is not None
+            and pending.validity_source != "authoritative"
+            and not in_progress_started
+        ):
+            if pending.lap_state != LapState.OUTLAP:
+                pending.lap_state = LapState.INVALID_PENALTY
+                pending.lap_type = LapState.INVALID_PENALTY.value
+                pending.is_valid = False
+                log_debug(
+                    Component.LOG_PARSER,
+                    f"[VALIDITY] Fallback penalty trigger ({trigger}) demoted "
+                    f"pending lap #{pending.lap_number} -> INVALID_PENALTY",
+                )
+            return
+
+        self._pending_penalty_warning = True
+        log_debug(
+            Component.LOG_PARSER,
+            f"[VALIDITY] Fallback penalty trigger ({trigger}) recorded for "
+            "current in-progress lap",
+        )
+
     def _handle_splits_race(self, line: str) -> None:
         if "Split completed for car" not in line:
             return
@@ -1112,6 +1208,15 @@ class LogParser:
         # ── Lap state ─────────────────────────────────────────────────────────
         lap_state = self._determine_lap_state(ip, session_type)
         is_valid = lap_state == LapState.VALID
+        if self._pending_penalty_warning and lap_state != LapState.OUTLAP:
+            lap_state = LapState.INVALID_PENALTY
+            is_valid = False
+            log_debug(
+                Component.LOG_PARSER,
+                "[VALIDITY] Fallback penalty trigger applied at lap completion "
+                f"-> #{max([lap.lap_number for lap in self.current_session.laps], default=0) + 1} "
+                "INVALID_PENALTY",
+            )
 
         # ── Sector consistency flag ────────────────────────────────────────────
         sectors_consistent: Optional[bool] = None
@@ -1221,10 +1326,8 @@ class LogParser:
         Returns the now-finalised lap so the caller can emit it; otherwise
         returns None.
         """
-        if "Relevant onSplit for Combo" not in line:
-            return None
-        m = self._pats["lap_validity"].search(line)
-        if not m:
+        parsed = self._parse_authoritative_lap_validity(line)
+        if parsed is None:
             return None
         if not self.current_session:
             return None
@@ -1232,13 +1335,11 @@ class LogParser:
         if pending is None:
             return None
 
-        laptime_ms = int(m.group(1))
+        laptime_ms, valid_text, validity_flags, game_lap_number = parsed
         if laptime_ms != pending.lap_time_ms:
             # Mismatch — likely a stale broadcast for a different car.
             return None
 
-        valid_text = m.group(2)
-        validity_flags = int(m.group(3))
         # Since AC Evo 0.7.0 the text boolean can be false on a completed,
         # accepted lap at session end, while flags still carries the useful
         # validity class: 1 = invalid, 2 = valid.
@@ -1248,7 +1349,7 @@ class LogParser:
             game_valid = valid_text == "true"
         # The Relevant onSplit message carries the authoritative game lap number.
         # Correct any physics-derived lap_number (which can be off-by-one) here.
-        pending.lap_number = int(m.group(4))
+        pending.lap_number = game_lap_number
         prev_state = pending.lap_state
         prev_valid = pending.is_valid
 
@@ -1492,6 +1593,7 @@ class LogParser:
 
     def _process_session_events(self, line: str) -> None:
         """Handle in-session events (fuel, sector splits, physics lap)."""
+        self._handle_penalty_signals(line)
         self._handle_fuel(line)
         self._handle_splits_race(line)
         self._handle_splits_practice(line)

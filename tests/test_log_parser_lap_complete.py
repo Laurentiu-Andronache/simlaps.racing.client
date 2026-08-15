@@ -288,12 +288,119 @@ class TestHandleLapCompleteWithData:
         assert result.lap_type == "VALID"
         assert parser._pending_lap is None
 
+    def test_handle_lap_validity_accepts_flexible_field_order(self):
+        """Authoritative validity parsing should survive format/order changes."""
+        parser = LogParser()
+        parser.current_session = SessionData(
+            track="spa",
+            car="porsche",
+            player_id="76561198321627695",
+            session_type="RACE",
+        )
+        parser.context.player_id = "76561198321627695"
+        parser.context.car_uuid = "abc123-def456"
+        parser.context.tyre.set_all("S")
+
+        parser._ip.physics_lap_num = 2
+        parser._ip.splits = {0: 42000, 1: 45000, 2: 38000}  # sum = 125000
+
+        parser._handle_lap_complete(
+            "[2026-04-26 00:10:41.450] [gameplay] [info] "
+            "New lap carId abc123-def456: 02:05.000"
+        )
+
+        result = parser._handle_lap_validity(
+            "[2026-04-26 00:10:41.462] [network] [warning] "
+            "Relevant onSplit payload changed: flags 1, lap 2, laptime 125000, valid false"
+        )
+
+        assert result is not None
+        assert result.lap_number == 2
+        assert result.lap_time_ms == 125000
+        assert result.lap_state == LapState.INVALID_GAME
+        assert result.is_valid is False
+        assert parser._pending_lap is None
+
+    def test_penalty_warning_before_lap_completion_demotes_to_invalid_penalty(self):
+        """Penalty warning should mark the next completed lap invalid as fallback."""
+        parser = LogParser()
+        parser.current_session = SessionData(
+            track="laguna_seca",
+            car="ks_mazda_mx5_nd_cup",
+            player_id="76561198321627695",
+            session_type="RACE",
+        )
+        parser.context.player_id = "76561198321627695"
+        parser.context.car_uuid = "abc123-def456"
+        parser.context.tyre.set_all("S")
+
+        parser._ip.physics_lap_num = 3
+        parser._ip.splits = {0: 43000, 1: 45000, 2: 36000}
+
+        parser._process_line(
+            "[2026-08-13 22:24:23.707] [gameplay] [info] "
+            "Penalty Type PenaltyType_Warning has no tranformation"
+        )
+        parser._handle_lap_complete(
+            "[2026-08-13 22:24:28.867] [gameplay] [info] "
+            "New lap carId abc123-def456: 02:04.000"
+        )
+
+        assert parser._pending_lap is not None
+        assert parser._pending_lap.lap_state == LapState.INVALID_PENALTY
+        assert parser._pending_lap.is_valid is False
+
+    def test_penalty_during_next_lap_does_not_demote_pending_previous_lap(self):
+        """A penalty after the next lap has started belongs to that lap."""
+        parser = LogParser()
+        parser.current_session = SessionData(
+            track="laguna_seca",
+            car="ks_mazda_mx5_nd_cup",
+            player_id="76561198321627695",
+            session_type="RACE",
+        )
+        parser.context.player_id = "76561198321627695"
+        parser.context.car_uuid = "abc123-def456"
+        parser.context.tyre.set_all("S")
+
+        parser._ip.physics_lap_num = 2
+        parser._ip.splits = {0: 43000, 1: 45000, 2: 36000}
+        flushed = parser._handle_lap_complete(
+            "[2026-08-13 22:24:28.867] [gameplay] [info] "
+            "New lap carId abc123-def456: 02:04.000"
+        )
+        assert flushed is None
+        assert parser._pending_lap is not None
+        assert parser._pending_lap.lap_state == LapState.VALID
+
+        parser._ip.physics_lap_num = 3
+        parser._ip.splits = {0: 42000, 1: 44000, 2: 37000}
+        parser._process_line(
+            "[2026-08-13 22:26:30.100] [gameplay] [info] "
+            "Penalty Type PenaltyType_Warning has no tranformation"
+        )
+
+        assert parser._pending_lap.lap_state == LapState.VALID
+        assert parser._pending_penalty_warning is True
+
+        flushed = parser._handle_lap_complete(
+            "[2026-08-13 22:28:32.000] [gameplay] [info] "
+            "New lap carId abc123-def456: 02:03.000"
+        )
+        assert flushed is not None
+        assert flushed.lap_state == LapState.VALID
+        assert flushed.is_valid is True
+        assert parser._pending_lap is not None
+        assert parser._pending_lap.lap_state == LapState.INVALID_PENALTY
+        assert parser._pending_lap.is_valid is False
+
     def test_handle_lap_validity_upgrades_stale_penalty(self):
         """Game's valid flag must override a stale heuristic penalty.
 
-        Regression (Nurburgring Tourist): with heuristics removed, the lap
-        defaults to VALID. The game's authoritative ``Relevant onSplit ...
-        valid true, flags 2`` confirms it stays VALID.
+        Regression (Nurburgring Tourist): fallback penalty hints can demote
+        a pending lap to INVALID_PENALTY before authoritative validity arrives.
+        The game's authoritative ``Relevant onSplit ... valid true, flags 2``
+        must upgrade it back to VALID.
 
         Reference: logs/game_logs_20260606_221943.txt lines 20680-20684
             New lap carId 4d19cc73858c594e-1fb0a71f9cba54a7: 06:18.351
@@ -321,9 +428,13 @@ class TestHandleLapCompleteWithData:
         result = parser._handle_lap_complete(line_new_lap)
         assert result is None  # deferred emit
         assert parser._pending_lap is not None
-        # Default heuristic state is VALID
-        assert parser._pending_lap.lap_state == LapState.VALID
-        assert parser._pending_lap.is_valid is True
+
+        parser._process_line(
+            "[2026-06-06 22:09:00.630] [gameplay] [info] "
+            "Penalty Type PenaltyType_Warning has no tranformation"
+        )
+        assert parser._pending_lap.lap_state == LapState.INVALID_PENALTY
+        assert parser._pending_lap.is_valid is False
 
         line_validity = (
             "[2026-06-06 22:09:00.633] [network] [info] "
