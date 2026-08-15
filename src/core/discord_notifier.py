@@ -48,7 +48,7 @@ class DiscordNotifier:
         self.webhook_url = webhook_url
         self.timeout = timeout
     
-    def create_lap_embed(self, lap_data: LapData) -> Dict[str, Any]:
+    def create_lap_embed(self, lap_data: DiscordLapPayload) -> Dict[str, Any]:
         """
         Create Discord embed for lap data.
         
