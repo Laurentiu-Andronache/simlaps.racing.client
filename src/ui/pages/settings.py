@@ -438,7 +438,7 @@ class SettingsPage(ft.Container):
         show_snackbar(self.page, "Settings reset to defaults", "#7c3aed")
     
     def update_config(self, config: AppConfig):
-        """Update form with new config."""
+        """Reload the form from the application's active configuration."""
         self.config = config
         self._server_url_field.value = config.server_url
         self._submit_invalid_switch.value = config.submit_invalid_laps
@@ -452,5 +452,16 @@ class SettingsPage(ft.Container):
         self._telemetry_enabled_switch.value = config.telemetry_enabled
         self._telemetry_output_path_field.value = config.telemetry_output_path
         self._telemetry_debug_logs_switch.value = config.telemetry_debug_logs
-        
+
+        # Connection-test feedback belongs to the abandoned form state too.
+        self._connection_status.value = ""
+        self._discord_test_status.value = ""
+
+        # Settings may be refreshed immediately before it is mounted. Current
+        # Flet raises when ``update()`` is called on an unmounted control; the
+        # subsequent page.add() will render these values without an update.
+        try:
+            self.page
+        except RuntimeError:
+            return
         self.update()

@@ -364,6 +364,10 @@ class SimLapsApp:
         if page == AppPage.HOME:
             self.page.add(self._home_page)
         elif page == AppPage.SETTINGS:
+            # The page instance is reused across navigation. Reload controls
+            # from the active config so edits abandoned without Save never
+            # reappear when Settings is opened again.
+            self._settings_page.update_config(self._config)
             self.page.add(self._settings_page)
         elif page == AppPage.HISTORY:
             self._history_page.set_entries(self._history_entries)
