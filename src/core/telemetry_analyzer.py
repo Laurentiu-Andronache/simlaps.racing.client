@@ -508,6 +508,14 @@ class TelemetryAnalyzer:
             sum(lap["fuel_used"] for lap in _laps_with_fuel) / len(_laps_with_fuel)
             if _laps_with_fuel else None
         )
+        _prev = _load_previous_summary(self._output_dir, _track_label, _car)
+        if _prev:
+            _delta = best_lap["lap_time_s"] - _prev["best_lap_time_s"]
+            _delta_str = f"+{_delta:.2f}s" if _delta > 0 else f"{_delta:.2f}s"
+            analysis_notes.append(
+                f"Last session best: {_prev['best_lap_time_str']} "
+                f"(today {best_lap['lap_time_str']}, {_delta_str})."
+            )
         _write_session_summary(
             self._output_dir,
             _track_label,
@@ -517,14 +525,6 @@ class TelemetryAnalyzer:
             len(laps),
             _avg_fuel,
         )
-        _prev = _load_previous_summary(self._output_dir, _track_label, _car)
-        if _prev:
-            _delta = best_lap["lap_time_s"] - _prev["best_lap_time_s"]
-            _delta_str = f"+{_delta:.2f}s" if _delta > 0 else f"{_delta:.2f}s"
-            analysis_notes.append(
-                f"Last session best: {_prev['best_lap_time_str']} "
-                f"(today {best_lap['lap_time_str']}, {_delta_str})."
-            )
 
         telemetry_summary = {
             "max_speed": max((lap.get("max_speed") or 0.0) for lap in laps),

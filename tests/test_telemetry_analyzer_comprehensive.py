@@ -1158,6 +1158,53 @@ class TestTelemetryAnalyzer:
         assert any("realigned" in note for note in data["analysis_notes"])
 
     @pytest.mark.asyncio
+    async def test_analyze_compares_with_summary_before_persisting_current_session(self, tmp_path):
+        """Session notes must compare against the preceding run, not themselves."""
+        from src.core.analyzer.session_summary import _write_session_summary
+        from src.core.telemetry_analyzer import TelemetryAnalyzer
+        from src.models.lap import SessionData
+
+        manager = SharedSessionManager()
+        manager.update_from_logs(SessionData(car="Test Car", track="Test Track"))
+        _write_session_summary(
+            str(tmp_path),
+            "Test Track",
+            "Test Car",
+            best_lap_time_s=70.0,
+            top_speed=150.0,
+            lap_count=1,
+            avg_fuel_per_lap=None,
+        )
+        frames = [
+            create_mock_frame(i, speed=100.0, position=(i % 100) / 100)
+            for i in range(220)
+        ]
+        analyzer = TelemetryAnalyzer(output_dir=str(tmp_path), session_manager=manager)
+
+        with (
+            patch.object(analyzer, "_generate_html", new=AsyncMock(return_value="report.html")),
+            patch.object(
+                analyzer,
+                "_generate_ai_prompt",
+                new=AsyncMock(return_value="prompt.txt"),
+            ) as prompt_spy,
+        ):
+            result = await analyzer.analyze(
+                frames,
+                hz=10.0,
+                track_name="Test Track",
+                game_lap_boundaries=[
+                    (100, 70000, 1, "VALID"),
+                    (200, 65000, 2, "VALID"),
+                ],
+                output_prefix="session_comparison",
+            )
+
+        assert result.best_lap_time == pytest.approx(65.0)
+        analysis_data = prompt_spy.await_args.args[0]
+        assert "Last session best: 1:10.00 (today 1:05.00, -5.00s)." in analysis_data["analysis_notes"]
+
+    @pytest.mark.asyncio
     async def test_analyze_uses_outlap_boundary_but_excludes_outlap(self):
         """Structural boundaries delimit timed laps without becoming reports."""
         from src.core.telemetry_analyzer import TelemetryAnalyzer
