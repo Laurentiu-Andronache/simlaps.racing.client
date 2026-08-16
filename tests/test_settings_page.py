@@ -70,6 +70,37 @@ def test_update_config_discards_unsaved_form_edits() -> None:
     assert page._connection_status.value == ""
 
 
+def test_discord_pb_filter_is_scoped_and_disabled_with_posting() -> None:
+    page = SettingsPage(
+        config=AppConfig(discord_enabled=False, discord_pb_only=True)
+    )
+
+    assert page._discord_pb_only_switch.disabled is True
+    assert page._discord_pb_only_switch.value is True
+
+    page._discord_enabled_switch.value = True
+    page._discord_enabled_changed(None)
+
+    assert page._discord_pb_only_switch.disabled is False
+    assert page._discord_pb_only_switch.value is True
+
+    labels = []
+
+    def collect_text(control) -> None:
+        value = getattr(control, "value", None)
+        if isinstance(control, type(page._connection_status)) and value:
+            labels.append(value)
+        content = getattr(control, "content", None)
+        if content is not None:
+            collect_text(content)
+        for child in getattr(control, "controls", None) or []:
+            collect_text(child)
+
+    collect_text(page)
+    assert "Post personal bests only" in labels
+    assert "Only post new personal best laps to Discord" in labels
+
+
 def test_opening_settings_reloads_active_config() -> None:
     app = SimLapsApp.__new__(SimLapsApp)
     app.page = MagicMock()

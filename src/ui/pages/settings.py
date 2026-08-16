@@ -67,11 +67,13 @@ class SettingsPage(ft.Container):
         self._discord_enabled_switch = ft.Switch(
             value=config.discord_enabled,
             active_color="#7c3aed",
+            on_change=self._discord_enabled_changed,
         )
         
         self._discord_pb_only_switch = ft.Switch(
             value=config.discord_pb_only,
             active_color="#7c3aed",
+            disabled=not config.discord_enabled,
         )
         
         self._discord_test_status = ft.Text(
@@ -194,8 +196,8 @@ class SettingsPage(ft.Container):
                     self._discord_enabled_switch,
                 ),
                 self._build_switch_row(
-                    "Personal bests only",
-                    "Only post new personal best laps",
+                    "Post personal bests only",
+                    "Only post new personal best laps to Discord",
                     self._discord_pb_only_switch,
                 ),
             ],
@@ -314,6 +316,17 @@ class SettingsPage(ft.Container):
             ],
             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
         )
+
+    def _discord_enabled_changed(self, e) -> None:
+        """Keep the Discord-only PB filter inactive when posting is off."""
+        self._discord_pb_only_switch.disabled = not bool(
+            self._discord_enabled_switch.value
+        )
+        try:
+            self._discord_pb_only_switch.update()
+        except RuntimeError:
+            # Tests and pre-mount form refreshes have no Flet page yet.
+            pass
     
     async def _test_connection(self, e):
         """Test server connection."""
@@ -417,6 +430,7 @@ class SettingsPage(ft.Container):
         self._discord_webhook_field.value = self.config.discord_webhook_url or ""
         self._discord_enabled_switch.value = self.config.discord_enabled
         self._discord_pb_only_switch.value = self.config.discord_pb_only
+        self._discord_pb_only_switch.disabled = not self.config.discord_enabled
         self._discord_test_status.value = ""
 
         # Reset Telemetry fields
@@ -447,6 +461,7 @@ class SettingsPage(ft.Container):
         self._discord_webhook_field.value = config.discord_webhook_url or ""
         self._discord_enabled_switch.value = config.discord_enabled
         self._discord_pb_only_switch.value = config.discord_pb_only
+        self._discord_pb_only_switch.disabled = not config.discord_enabled
         
         # Update Telemetry fields
         self._telemetry_enabled_switch.value = config.telemetry_enabled
