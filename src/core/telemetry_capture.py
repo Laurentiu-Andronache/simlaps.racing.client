@@ -25,11 +25,14 @@ from src.utils.structured_logger import log_debug, log_info, log_warning, log_er
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Callable, Tuple, TextIO
 
-# Windows-specific imports for safe shared memory access
+# Windows-specific imports for safe shared memory access. Keep the public
+# handle defined on every platform so tests and callers can replace the
+# backend, while production non-Windows runs fail closed in RegionReader.open.
+FILE_MAP_READ = 0x0004
+kernel32 = None
+
 if sys.platform == "win32":
     from ctypes import wintypes
-
-    FILE_MAP_READ = 0x0004
 
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.OpenFileMappingW.argtypes = [
@@ -148,7 +151,7 @@ class RegionReader:
 
     def open(self) -> bool:
         """Open shared memory region for reading only."""
-        if sys.platform != "win32":
+        if kernel32 is None:
             return False
 
         # Build candidate paths from the module-level templates.
