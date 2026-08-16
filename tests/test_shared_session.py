@@ -74,6 +74,8 @@ def test_graphics_lap_counter_transition_snapshots_completed_lap() -> None:
     assert completion.completed_laps == 1
     assert completion.lap_time_ms == 75684
     assert completion.is_valid is False
+    assert manager.get_all_lap_times() == {1: 75684.0}
+    assert manager.get_lap_time(2) is None
 
 
 def test_graphics_timer_reset_snapshots_invalid_lap_before_counter_advances() -> None:

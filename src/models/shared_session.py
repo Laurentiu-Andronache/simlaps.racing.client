@@ -355,7 +355,13 @@ class SharedSessionManager:
 
             self._mark_source("lap_validity", "shm_graphics")
 
-    def update_lap_timing_from_graphics_shm(self, lap_num: int, timing_data: Dict[str, Any]) -> None:
+    def update_lap_timing_from_graphics_shm(
+        self,
+        lap_num: int,
+        timing_data: Dict[str, Any],
+        *,
+        completed_lap_num: Optional[int] = None,
+    ) -> None:
         with self._lock:
             current = self._session_data.lap_timing.get(lap_num)
             if current is None:
@@ -379,11 +385,20 @@ class SharedSessionManager:
             self._session_data.delta_time_ms = current.delta_time_ms
 
             if current.last_lap_time_ms and current.last_lap_time_ms > 0:
+                # Graphics exposes the previous lap's completed time alongside
+                # the new current lap. Callers that know the completed-lap
+                # counter must map that value back to the previous lap rather
+                # than creating a duplicate completed time on the current lap.
+                completed_num = completed_lap_num or lap_num
+                completed = self._session_data.lap_timing.get(completed_num)
+                if completed is None:
+                    completed = LapTimingData(lap_number=completed_num)
+                    self._session_data.lap_timing[completed_num] = completed
                 # Only store graphics-sourced completed time if logs haven't
                 # already set one (logs are authoritative).
-                if current.completed_lap_time_source != "logs":
-                    current.completed_lap_time = float(current.last_lap_time_ms)
-                    current.completed_lap_time_source = "shm_graphics"
+                if completed.completed_lap_time_source != "logs":
+                    completed.completed_lap_time = float(current.last_lap_time_ms)
+                    completed.completed_lap_time_source = "shm_graphics"
                 self._mark_source("lap_times", "shm_graphics")
 
             for field_name in (
@@ -715,7 +730,11 @@ class SharedSessionManager:
                 # Scrub the stale value before it reaches the timing update
                 graphics_data = dict(graphics_data)
                 graphics_data["last_laptime_ms"] = 0
-            self.update_lap_timing_from_graphics_shm(current_lap, graphics_data)
+            self.update_lap_timing_from_graphics_shm(
+                current_lap,
+                graphics_data,
+                completed_lap_num=completed_laps if completed_laps > 0 else None,
+            )
 
             # ── Wire SHM validity flags into shared session ──────────────
             # Priority 1: is_valid_lap (SPageFileGraphicEvo at offset 3121)
