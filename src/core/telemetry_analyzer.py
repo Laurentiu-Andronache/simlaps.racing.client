@@ -426,26 +426,45 @@ class TelemetryAnalyzer:
             if isinstance(shared_validity, bool):
                 lap["is_valid"] = shared_validity
 
+        valid_laps = [lap for lap in laps if lap.get("is_valid", True)]
         profile_sanity_notes = _profile_corner_sanity_notes(
-            laps,
+            valid_laps or laps,
             profile_corners=track_profile.get("corners", []) if track_profile else None,
         )
         if profile_sanity_notes:
             analysis_mode = "diagnostic"
             analysis_notes.extend(profile_sanity_notes)
 
-        best_lap = min(laps, key=lambda lap: lap["lap_time_s"])
-        laps_with_corners = [lap for lap in laps if lap.get("corners")]
-        ref_lap = min(laps_with_corners, key=lambda lap: lap["lap_time_s"]) if laps_with_corners else best_lap
-        coachable_laps = [lap for lap in laps_with_corners if lap.get("confidence_label") != "low"]
-        comparison_pool = coachable_laps or laps_with_corners or [best_lap]
+        best_lap = min(valid_laps, key=lambda lap: lap["lap_time_s"]) if valid_laps else None
+        laps_with_corners = [lap for lap in valid_laps if lap.get("corners")]
+        ref_lap = (
+            min(laps_with_corners, key=lambda lap: lap["lap_time_s"])
+            if laps_with_corners
+            else best_lap
+        )
+        coachable_laps = [
+            lap
+            for lap in laps_with_corners
+            if lap.get("confidence_label") != "low"
+        ]
+        comparison_pool = coachable_laps or laps_with_corners or ([best_lap] if best_lap else [])
         comparison_pool = sorted(comparison_pool, key=lambda lap: lap["lap_time_s"])
-        comparison_lap = comparison_pool[len(comparison_pool) // 2]
-        ref_corners = ref_lap.get("corners", [])
+        comparison_lap = (
+            comparison_pool[len(comparison_pool) // 2]
+            if comparison_pool
+            else None
+        )
+        ref_corners = ref_lap.get("corners", []) if ref_lap else []
+
+        if best_lap is None:
+            analysis_mode = "diagnostic"
+            analysis_notes.append(
+                "No valid completed laps were available; invalid laps are shown for diagnostics only."
+            )
 
         log_info(Component.ANALYZER, "Analysis complete", 
                 laps=len(laps), 
-                best_lap_time=f"{best_lap['lap_time_s']:.1f}s", 
+                best_lap_time=(f"{best_lap['lap_time_s']:.1f}s" if best_lap else "none"),
                 coachable_laps=len(coachable_laps))
 
         if not ref_corners:
@@ -482,9 +501,9 @@ class TelemetryAnalyzer:
             "track_label": track_profile["display_name"] if track_profile else track_name,
             "car": self._session_manager.get_car(),
             "laps": laps,
-            "best_lap_num": best_lap["lap_num"],
-            "reference_lap_num": ref_lap["lap_num"],
-            "comparison_lap_num": comparison_lap["lap_num"],
+            "best_lap_num": best_lap["lap_num"] if best_lap else None,
+            "reference_lap_num": ref_lap["lap_num"] if ref_lap else None,
+            "comparison_lap_num": comparison_lap["lap_num"] if comparison_lap else None,
             "ref_corners": ref_corners,
             "profile_corners": track_profile.get("corners", []) if track_profile else [],
             "corner_data": corner_data,
@@ -508,23 +527,28 @@ class TelemetryAnalyzer:
             sum(lap["fuel_used"] for lap in _laps_with_fuel) / len(_laps_with_fuel)
             if _laps_with_fuel else None
         )
-        _prev = _load_previous_summary(self._output_dir, _track_label, _car)
-        if _prev:
+        _prev = (
+            _load_previous_summary(self._output_dir, _track_label, _car)
+            if best_lap
+            else None
+        )
+        if _prev and best_lap:
             _delta = best_lap["lap_time_s"] - _prev["best_lap_time_s"]
             _delta_str = f"+{_delta:.2f}s" if _delta > 0 else f"{_delta:.2f}s"
             analysis_notes.append(
                 f"Last session best: {_prev['best_lap_time_str']} "
                 f"(today {best_lap['lap_time_str']}, {_delta_str})."
             )
-        _write_session_summary(
-            self._output_dir,
-            _track_label,
-            _car,
-            best_lap["lap_time_s"],
-            max((lap.get("max_speed") or 0.0) for lap in laps),
-            len(laps),
-            _avg_fuel,
-        )
+        if best_lap:
+            _write_session_summary(
+                self._output_dir,
+                _track_label,
+                _car,
+                best_lap["lap_time_s"],
+                max((lap.get("max_speed") or 0.0) for lap in laps),
+                len(laps),
+                _avg_fuel,
+            )
 
         telemetry_summary = {
             "max_speed": max((lap.get("max_speed") or 0.0) for lap in laps),
@@ -541,7 +565,7 @@ class TelemetryAnalyzer:
             html_path=html_path,
             ai_prompt_path=ai_prompt_path,
             laps_detected=len(laps),
-            best_lap_time=best_lap["lap_time_s"],
+            best_lap_time=best_lap["lap_time_s"] if best_lap else 0.0,
             track_name=data.get("track_label") or data.get("track_name"),
         )
 
