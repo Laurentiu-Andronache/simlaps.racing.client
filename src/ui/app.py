@@ -19,6 +19,7 @@ from .pages.history import HistoryPage, HistoryEntry
 from .components.lap_card import LapCard, LapCardStatus
 from .components.status_bar import ConnectionStatus
 from .components.telemetry_status import TelemetryButton
+from .components.feedback import show_snackbar
 from .services.app_lifecycle_service import AppLifecycleService
 from .services.lap_processing_service import LapProcessingService
 from .services.lap_submission_service import LapSubmissionService
@@ -296,12 +297,11 @@ class SimLapsApp:
             if not output_path:
                 log_warning(Component.APP, "No telemetry output path configured")
                 if self.page:
-                    self.page.snack_bar = ft.SnackBar(
-                        content=ft.Text("Telemetry output path not configured"),
-                        bgcolor="#dc2626",
+                    show_snackbar(
+                        self.page,
+                        "Telemetry output path not configured",
+                        "#dc2626",
                     )
-                    self.page.snack_bar.open = True
-                    self.page.update()
                 return
             
             # Create directory if it doesn't exist
@@ -329,12 +329,7 @@ class SimLapsApp:
         except Exception as ex:
             log_exception(Component.APP, "Failed to open telemetry location", ex, output_path=output_path)
             if self.page:
-                self.page.snack_bar = ft.SnackBar(
-                    content=ft.Text(f"Failed to open folder: {ex}"),
-                    bgcolor="#dc2626",
-                )
-                self.page.snack_bar.open = True
-                self.page.update()
+                show_snackbar(self.page, f"Failed to open folder: {ex}", "#dc2626")
     
     def _init_pages(self):
         """Initialize page components."""
@@ -633,16 +628,10 @@ class SimLapsApp:
         if self._discord_notifier:
             success = await self._discord_notifier.send_test_message()
             if success:
-                self.page.snack_bar = ft.SnackBar(
-                    content=ft.Text("Test message sent successfully!", color="#ffffff"),
-                    bgcolor="#51cf66",
-                )
+                show_snackbar(self.page, "Test message sent successfully!", "#51cf66")
                 return True, "Test message sent successfully"
             else:
-                self.page.snack_bar = ft.SnackBar(
-                    content=ft.Text("Failed to send test message", color="#ffffff"),
-                    bgcolor="#ff6b6b",
-                )
+                show_snackbar(self.page, "Failed to send test message", "#ff6b6b")
                 return False, "Failed to send test message"
         else:
             return False, "Discord notifier not initialized"
@@ -660,8 +649,8 @@ class SimLapsApp:
     
     async def _test_connection(self, server_url: str) -> tuple[bool, str]:
         """Test connection to server."""
-        test_client = APIClient(server_url=server_url)
-        return await test_client.test_connection()
+        async with APIClient(server_url=server_url) as test_client:
+            return await test_client.test_connection()
     
     def _cleanup(self):
         """Cleanup resources before exit."""

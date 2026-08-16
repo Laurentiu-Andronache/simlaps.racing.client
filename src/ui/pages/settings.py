@@ -5,9 +5,12 @@ Simplified: No API key required (uses signed payloads).
 """
 
 import flet as ft
+from dataclasses import replace
 from typing import Optional, Callable
 
 from ...utils.config import AppConfig, DEFAULT_SERVER_URL
+from ...utils.structured_logger import Component, log_exception
+from ..components.feedback import show_snackbar
 
 
 class SettingsPage(ft.Container):
@@ -217,7 +220,7 @@ class SettingsPage(ft.Container):
         )
         
         # Save button
-        save_button = ft.ElevatedButton(
+        save_button = ft.Button(
             "Save Settings",
             icon=ft.Icons.SAVE,
             on_click=self._save_settings,
@@ -366,35 +369,45 @@ class SettingsPage(ft.Container):
     
     def _save_settings(self, e):
         """Save current settings."""
-        # Update config from form fields
-        self.config.server_url = self._server_url_field.value or DEFAULT_SERVER_URL
-        self.config.submit_invalid_laps = self._submit_invalid_switch.value
+        # Build a new value so Settings edits do not mutate the application's
+        # active configuration before runtime reconciliation succeeds.
+        updated_config = replace(
+            self.config,
+            server_url=self._server_url_field.value or DEFAULT_SERVER_URL,
+            submit_invalid_laps=self._submit_invalid_switch.value,
+            discord_webhook_url=self._discord_webhook_field.value.strip() or None,
+            discord_enabled=self._discord_enabled_switch.value,
+            discord_pb_only=self._discord_pb_only_switch.value,
+            telemetry_enabled=self._telemetry_enabled_switch.value,
+            telemetry_output_path=self._telemetry_output_path_field.value or "",
+            telemetry_debug_logs=self._telemetry_debug_logs_switch.value,
+        )
         
-        # Discord settings
-        self.config.discord_webhook_url = self._discord_webhook_field.value.strip() or None
-        self.config.discord_enabled = self._discord_enabled_switch.value
-        self.config.discord_pb_only = self._discord_pb_only_switch.value
-        
-        # Telemetry settings
-        self.config.telemetry_enabled = self._telemetry_enabled_switch.value
-        self.config.telemetry_output_path = self._telemetry_output_path_field.value or ""
-        self.config.telemetry_debug_logs = self._telemetry_debug_logs_switch.value
-        
-        if self.on_save:
-            self.on_save(self.config)
+        try:
+            if self.on_save:
+                self.on_save(updated_config)
+        except Exception as exc:
+            log_exception(Component.UI, "Could not save settings", exc)
+            show_snackbar(self.page, f"Could not save settings: {exc}", "#ff6b6b")
+            return
+        self.config = updated_config
         
         # Show success feedback
-        self.page.snack_bar = ft.SnackBar(
-            content=ft.Text("Settings saved!", color="#ffffff"),
-            bgcolor="#51cf66",
-        )
-        self.page.snack_bar.open = True
-        self.page.update()
+        show_snackbar(self.page, "Settings saved!", "#51cf66")
     
     def _reset_settings(self, e):
         """Reset settings to defaults and persist immediately."""
-        # Reset config to factory defaults
-        self.config = AppConfig()
+        default_config = AppConfig()
+        try:
+            if self.on_save:
+                self.on_save(default_config)
+        except Exception as exc:
+            log_exception(Component.UI, "Could not reset settings", exc)
+            show_snackbar(self.page, f"Could not reset settings: {exc}", "#ff6b6b")
+            return
+
+        # Update the page only after the defaults were applied successfully.
+        self.config = default_config
 
         # Update UI fields from the new default config
         self._server_url_field.value = self.config.server_url
@@ -421,17 +434,8 @@ class SettingsPage(ft.Container):
         self._telemetry_output_path_field.update()
         self._telemetry_debug_logs_switch.update()
 
-        # Persist the default config immediately (same path as Save button)
-        if self.on_save:
-            self.on_save(self.config)
-
         # Show feedback
-        self.page.snack_bar = ft.SnackBar(
-            content=ft.Text("Settings reset to defaults", color="#ffffff"),
-            bgcolor="#7c3aed",
-        )
-        self.page.snack_bar.open = True
-        self.page.update()
+        show_snackbar(self.page, "Settings reset to defaults", "#7c3aed")
     
     def update_config(self, config: AppConfig):
         """Update form with new config."""

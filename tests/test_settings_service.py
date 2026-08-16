@@ -2,6 +2,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from src.ui.services.settings_service import SettingsService
+from src.ui.components.telemetry_status import TelemetryButton
 from src.utils.config import AppConfig
 
 
@@ -84,6 +85,62 @@ def test_apply_disabling_telemetry_switches_to_validity_only_mode():
     assert app._telemetry_capture is telemetry_capture
     assert app._telemetry_analyzer is None
     assert app._telemetry_button is None
+
+
+def test_apply_reconfigures_validity_only_capture():
+    app = _make_app()
+    telemetry_capture = MagicMock()
+    telemetry_capture.record_frames = False
+    app._telemetry_capture = telemetry_capture
+    app._config.telemetry_output_path = "C:/old"
+
+    config = AppConfig(
+        server_url="https://simlaps.racing",
+        telemetry_enabled=False,
+        telemetry_output_path="C:/new",
+        telemetry_debug_logs=True,
+    )
+    SettingsService().apply(
+        app=app,
+        config=config,
+        create_discord_notifier=MagicMock(),
+        get_pb_cache_for_server=MagicMock(),
+        create_api_client=MagicMock(return_value=MagicMock()),
+        create_log_parser=MagicMock(return_value=MagicMock()),
+    )
+
+    telemetry_capture.configure.assert_called_once_with(
+        output_dir="C:/new",
+        debug_logs=True,
+    )
+
+
+def test_apply_enables_existing_validity_only_capture_without_import_error():
+    """Exercise the exact Settings checkbox branch used by the desktop UI."""
+    app = _make_app()
+    telemetry_capture = MagicMock()
+    telemetry_capture.record_frames = False
+    telemetry_capture.is_capturing.return_value = True
+    app._telemetry_capture = telemetry_capture
+    app._telemetry_analyzer = None
+    app._telemetry_button = None
+    app._open_telemetry_location = MagicMock()
+
+    config = AppConfig(server_url="https://simlaps.racing", telemetry_enabled=True)
+    SettingsService().apply(
+        app=app,
+        config=config,
+        create_discord_notifier=MagicMock(),
+        get_pb_cache_for_server=MagicMock(),
+        create_api_client=MagicMock(return_value=MagicMock()),
+        create_log_parser=MagicMock(return_value=MagicMock()),
+    )
+
+    telemetry_capture.set_record_frames.assert_called_once_with(True)
+    assert app._telemetry_analyzer is not None
+    assert isinstance(app._telemetry_button, TelemetryButton)
+    app._attach_telemetry_ui.assert_called_once_with()
+    app._config_manager.set.assert_called_once_with(config)
 
 
 def test_apply_restarts_monitoring_when_parser_was_running():
