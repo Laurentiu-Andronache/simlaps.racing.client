@@ -32,6 +32,14 @@ def _detect_laps_by_timing_state(track: List[Dict], hz: float = 1.0) -> Optional
                 and last_laptime != prev_last_laptime
             )
         )
+        # ACE can synthesize a final lap time while tearing down a race (for
+        # example after a disqualification) even though the player never
+        # crossed the timing line. The graphics page already labels that
+        # sample as Ended, so it is a shutdown snapshot rather than a physical
+        # completed-lap boundary.
+        if completed_transition and pt.get("session_phase") == "Ended":
+            prev_last_laptime = last_laptime
+            continue
         if completed_transition:
             frame = pt["frame"]
             if not boundaries or (frame - boundaries[-1]) >= min_lap_frames:

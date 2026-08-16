@@ -106,6 +106,32 @@ class TestDetectLaps:
         # Should detect 2 boundaries (last_lap_time changes at lap 1 and lap 2)
         assert len(lap_bounds) >= 1
 
+    def test_detect_laps_ignores_synthetic_shutdown_lap_time(self):
+        """An Ended-session timing update is not a finish-line crossing."""
+        frames = []
+        for i in range(30):
+            if i < 10:
+                last_lap_time_ms = 0
+                session_phase = "Session"
+            elif i < 20:
+                last_lap_time_ms = 70_975
+                session_phase = "Session"
+            else:
+                last_lap_time_ms = 241_661
+                session_phase = "Ended"
+            frame = create_mock_frame(
+                i,
+                speed=100.0,
+                position=0.5,
+                last_lap_time_ms=last_lap_time_ms,
+            )
+            frame.graphics["session_phase"] = session_phase
+            frames.append(frame)
+
+        track = build_track(frames, hz=10.0)
+
+        assert detect_laps(track, hz=10.0) == [10]
+
     def test_detect_laps_no_timing_changes(self):
         """Test lap detection when last_lap_time_ms never changes."""
         frames = [create_mock_frame(i, position=i * 0.01, last_lap_time_ms=0) for i in range(200)]

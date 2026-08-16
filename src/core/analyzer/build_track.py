@@ -123,6 +123,8 @@ def build_track(frames: List[FrameData], hz: float = 1.0, start_idx: int = 0) ->
             "lap_time_ms": gr.get("current_time_ms"),
             "last_lap_time_ms": gr.get("last_time_ms"),
             "best_lap_time_ms": gr.get("best_time_ms"),
+            "status_name": gr.get("status_name"),
+            "session_phase": gr.get("session_phase"),
             "tyre_temp_fl": tyre_core_temp[0] if len(tyre_core_temp) > 0 else 0,
             "tyre_temp_fr": tyre_core_temp[1] if len(tyre_core_temp) > 1 else 0,
             "tyre_temp_rl": tyre_core_temp[2] if len(tyre_core_temp) > 2 else 0,
