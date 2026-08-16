@@ -1337,6 +1337,31 @@ class TestFixedMeasurementWindow:
         assert c["segment_time_s"] == pytest.approx(0.7, abs=0.1)
         assert c["confidence_label"] == "medium"
 
+    def test_detect_profiled_corners_skips_missing_progress_samples(self):
+        """Shutdown frames may lose graphics progress inside a lap segment."""
+        from src.core.telemetry_analyzer import detect_profiled_corners
+
+        track = [
+            {
+                "frame": i,
+                "norm_pos": None if i >= 80 else i / 100.0,
+                "speed": 80.0 if 20 <= i < 30 else 100.0,
+                "x": float(i),
+                "z": 0.0,
+            }
+            for i in range(100)
+        ]
+        profile = {
+            "corners": [
+                {"id": 1, "start": 0.20, "end": 0.30, "name": "Corner 1"},
+            ]
+        }
+
+        corners = detect_profiled_corners(track, 0, 100, profile, hz=10.0)
+
+        assert len(corners) == 1
+        assert corners[0]["name"] == "Corner 1"
+
     def test_detect_profiled_corners_fallback_without_norm_pos(self):
         """Without norm_pos confidence is LOW and segment_time_s is None."""
         from src.core.telemetry_analyzer import detect_profiled_corners, corner_segment_time
