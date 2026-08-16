@@ -955,18 +955,12 @@ class TestFollowMissingValidityBroadcast:
         assert emitted[0].lap_state == LapState.INVALID_GAME
 
 
-class TestFollowHistoricalPassPreservesPendingLap:
-    """Regression tests for historical pass not discarding buffered laps.
-
-    Bug: after the silent historical pass, self._pending_lap = None
-    cleared any buffered lap whose validity line hadn't arrived yet,
-    silently dropping it before the live-tail phase could flush it.
-    """
+class TestFollowHistoricalPassDoesNotEmitPendingLap:
+    """Historical context must never become a live lap callback."""
 
     @pytest.mark.asyncio
-    async def test_historical_pass_preserves_pending_lap(self, tmp_path):
-        """A lap buffered during the historical pass (no validity line)
-        must survive into the live-tail so it can be flushed on exit."""
+    async def test_historical_pending_lap_is_not_flushed_on_later_exit(self, tmp_path):
+        """A missing historical validity line must not replay the lap on exit."""
         log_file = tmp_path / "test.log"
         # Historical content: session start + lap completion, no validity
         log_file.write_text(
@@ -1006,8 +1000,5 @@ class TestFollowHistoricalPassPreservesPendingLap:
             parser.stop()
             await appender
 
-        assert laps, (
-            "Lap buffered during historical pass was discarded before "
-            "live-tail could flush it on exit"
-        )
-        assert laps[0].lap_time_ms == 516642
+        assert laps == []
+        assert parser._pending_lap is None

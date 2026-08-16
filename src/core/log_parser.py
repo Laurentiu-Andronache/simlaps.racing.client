@@ -1883,29 +1883,30 @@ class LogParser:
                     f"Session: {self.current_session is not None}"
                 )
 
-                # Discard historical laps — only new ones are emitted.
-                # Do NOT clear _pending_lap here: a lap whose authoritative
-                # validity line hasn't arrived yet (common on single-split
-                # tracks like Nordschleife Tourist where the game may never
-                # emit "Relevant onSplit for Combo") must survive into the
-                # live-tail phase so it can be flushed when the session ends.
+                # Discard historical laps — only lines observed after the
+                # live-tail boundary may produce callbacks. In particular, a
+                # historical final lap with no Relevant onSplit verdict must
+                # not survive as ``_pending_lap`` and get emitted when the
+                # user later exits the session. Genuine live pending laps are
+                # still preserved and flushed by the exit/session-end paths.
                 if self.current_session:
-                    pending_info = ""
-                    if self._pending_lap is not None:
-                        pending_info = (
-                            f"  ⚠️ PENDING LAP PRESERVED: "
-                            f"#{self._pending_lap.lap_number} "
-                            f"{self._pending_lap.lap_time_str} "
-                            f"car={self.current_session.car}"
-                        )
+                    historical_pending = self._pending_lap
                     log_debug(Component.LOG_PARSER,
                         f"[HISTORICAL] Clearing laps from session: "
                         f"car={self.current_session.car}  "
-                        f"track={self.current_session.track}"
-                        f"{pending_info}"
+                        f"track={self.current_session.track}  "
+                        f"pending_discarded={historical_pending is not None}"
                     )
                     self.current_session.laps.clear()
                     self.current_session.stints.clear()
+                    self._pending_lap = None
+                    self._pending_lap_since = None
+                    self._reconciled_lap = None
+                    self._shm_emitted_laps.clear()
+                    latest_completion = self._session_manager.get_latest_lap_completion()
+                    self._last_shm_completion_observed_at = (
+                        latest_completion.observed_at if latest_completion else 0.0
+                    )
                     self._finalise_stints()
                     self._reset_in_progress()
 
