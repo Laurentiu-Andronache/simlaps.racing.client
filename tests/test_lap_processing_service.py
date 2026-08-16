@@ -279,11 +279,13 @@ async def test_handle_lap_complete_records_telemetry_boundary_when_capturing():
         **deps,
     )
 
-    deps["telemetry_capture"].record_lap_boundary.assert_called_once_with(90000, 1)
+    deps["telemetry_capture"].record_lap_boundary.assert_called_once_with(
+        90000, 1, "VALID"
+    )
 
 
 @pytest.mark.asyncio
-async def test_handle_lap_complete_does_not_record_telemetry_boundary_for_outlap():
+async def test_handle_lap_complete_records_structural_outlap_boundary():
     deps = _make_deps(telemetry_enabled=True)
     deps["telemetry_capture"] = MagicMock()
     deps["telemetry_capture"].is_capturing.return_value = True
@@ -310,7 +312,9 @@ async def test_handle_lap_complete_does_not_record_telemetry_boundary_for_outlap
         **deps,
     )
 
-    deps["telemetry_capture"].record_lap_boundary.assert_not_called()
+    deps["telemetry_capture"].record_lap_boundary.assert_called_once_with(
+        120000, 1, "OUTLAP"
+    )
 
 
 @pytest.mark.asyncio

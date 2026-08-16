@@ -1079,6 +1079,32 @@ class TestTelemetryAnalyzer:
         assert abs(result.best_lap_time - 152.001) < 0.001
 
     @pytest.mark.asyncio
+    async def test_analyze_uses_outlap_boundary_but_excludes_outlap(self):
+        """Structural boundaries delimit timed laps without becoming reports."""
+        from src.core.telemetry_analyzer import TelemetryAnalyzer
+
+        frames = [
+            create_mock_frame(i, speed=100.0, position=(i % 50) / 50)
+            for i in range(180)
+        ]
+        analyzer = TelemetryAnalyzer(output_dir="tests/output")
+        markers = [
+            (50, 120000, 0, "OUTLAP"),
+            (100, 150000, 1, "VALID"),
+            (150, 140000, 2, "VALID"),
+        ]
+
+        result = await analyzer.analyze(
+            frames,
+            hz=10.0,
+            game_lap_boundaries=markers,
+            output_prefix="test_structural_outlap",
+        )
+
+        assert result.laps_detected == 2
+        assert result.best_lap_time == pytest.approx(140.0)
+
+    @pytest.mark.asyncio
     async def test_analyze_prefers_shared_session_lap_data(self):
         """Analyzer should use shared-session lap timing/validity when available."""
         from src.core.telemetry_analyzer import TelemetryAnalyzer

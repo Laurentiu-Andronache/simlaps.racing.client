@@ -67,7 +67,7 @@ class TelemetryAnalyzer:
     def __init__(
         self,
         output_dir: str,
-        track_catalog: dict = None,
+        track_catalog: Optional[dict] = None,
         session_manager: Optional[SharedSessionManager] = None,
     ):
         self._output_dir = output_dir
@@ -167,7 +167,7 @@ class TelemetryAnalyzer:
         lap_bounds = None
         lap_times_ms = None
         lap_numbers = None
-        prefer_game_lap_times = False
+        lap_types = None
 
         # 1st priority: Game log boundaries (most definitive)
         if game_lap_boundaries and len(game_lap_boundaries) >= 1:
@@ -185,6 +185,7 @@ class TelemetryAnalyzer:
                             int(b[0]),
                             b[1] if len(b) > 1 else None,
                             int(b[2]) if len(b) > 2 and b[2] is not None else None,
+                            str(b[3]) if len(b) > 3 and b[3] is not None else "VALID",
                         )
                         for b in game_lap_boundaries
                     ),
@@ -197,7 +198,7 @@ class TelemetryAnalyzer:
                     marker[2] if marker[2] is not None else initial_completed_laps + idx + 1
                     for idx, marker in enumerate(sorted_markers)
                 ]
-                prefer_game_lap_times = True
+                lap_types = [marker[3] for marker in sorted_markers]
                 if initial_completed_laps > 0 and (not lap_numbers or lap_numbers[0] > 1):
                     analysis_notes.append(
                         f"Capture started after {initial_completed_laps} completed game lap(s); earlier laps are omitted from telemetry."
@@ -225,6 +226,9 @@ class TelemetryAnalyzer:
         for i in range(len(lap_bounds) - 1):
             s, e = lap_bounds[i], lap_bounds[i + 1]
             game_lap_num = lap_numbers[i] if lap_numbers and i < len(lap_numbers) else i + 1
+            lap_type = lap_types[i] if lap_types and i < len(lap_types) else "VALID"
+            if lap_type in {"OUTLAP", "INLAP", "ABORTED"}:
+                continue
             lap_track = [pt for pt in track if s <= pt["frame"] < e]
             if len(lap_track) < 20:
                 continue
@@ -241,7 +245,11 @@ class TelemetryAnalyzer:
             canonical_lap = _build_canonical_lap(lap_track, lap_start_frame=s, hz=hz, bins=200)
             uses_canonical_progress = canonical_lap is not None
 
-            if track_profile and track_profile.get("corners") and uses_canonical_progress:
+            if (
+                track_profile
+                and track_profile.get("corners")
+                and canonical_lap is not None
+            ):
                 corners = _detect_profiled_corners_canonical(
                     canonical_lap["samples"],
                     track_profile,
@@ -255,8 +263,13 @@ class TelemetryAnalyzer:
                 corners = detect_corners(track, s, e, hz=hz)
 
             # Use game-reported lap times when available.
-            if lap_times_ms and i < len(lap_times_ms) and lap_times_ms[i] is not None:
-                lap_time = lap_times_ms[i] / 1000.0  # Convert ms to seconds
+            game_lap_time_ms = (
+                lap_times_ms[i]
+                if lap_times_ms and i < len(lap_times_ms)
+                else None
+            )
+            if game_lap_time_ms is not None:
+                lap_time = game_lap_time_ms / 1000.0
             else:
                 # Fall back to telemetry-derived duration so laps without
                 # game-reported times (e.g. invalid/aborted laps) are still
@@ -361,8 +374,8 @@ class TelemetryAnalyzer:
             analysis_mode = "diagnostic"
             analysis_notes.append("No trustworthy canonical corners were available for comparison.")
 
-        corner_data = defaultdict(dict)
-        corner_speeds = defaultdict(dict)
+        corner_data: Dict[Any, Dict[Any, Dict[str, Any]]] = defaultdict(dict)
+        corner_speeds: Dict[Any, Dict[Any, float]] = defaultdict(dict)
         for lap in laps:
             if track_profile and track_profile.get("corners"):
                 matched = match_profiled_corners(ref_corners, lap["corners"])
