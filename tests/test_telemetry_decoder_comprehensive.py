@@ -18,7 +18,26 @@ from src.core.telemetry_decoder import (
     Physics,
     AC_STATUS,
     AC_FLAG_TYPE,
+    peek_graphics_validity,
 )
+
+
+def test_lightweight_graphics_peek_includes_completed_lap_time() -> None:
+    data = bytearray(4096)
+    struct.pack_into("<i", data, 188, 125)
+    struct.pack_into("<i", data, 2384, 2)
+    struct.pack_into("<i", data, 2396, 75147)
+    data[3121] = 1
+
+    result = peek_graphics_validity(bytes(data))
+
+    assert result == {
+        "total_lap_count": 2,
+        "completed_laps": 2,
+        "is_valid_lap": True,
+        "current_lap_time_ms": 125,
+        "last_laptime_ms": 75147,
+    }
 
 
 class TestBinaryReader:

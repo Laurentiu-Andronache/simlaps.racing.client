@@ -81,6 +81,10 @@ obfuscated/
 # Local AST/RAG artifacts
 .clinerules
 
+# Local agent guidance and working documentation
+/AGENTS.md
+/docs/
+
 # game files
 extracted.7z
 tests/output/

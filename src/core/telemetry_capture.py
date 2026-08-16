@@ -11,6 +11,7 @@ import json
 import os
 import sys
 import time
+import traceback
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 
@@ -23,7 +24,7 @@ from src.core.telemetry_decoder import (
 from src.models import SharedSessionManager
 from src.utils.structured_logger import log_debug, log_info, log_warning, log_error, log_exception, Component
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Callable, Tuple, TextIO
+from typing import Any, Dict, List, Optional, Callable, NamedTuple, TextIO
 
 # Windows-specific imports for safe shared memory access. Keep the public
 # handle defined on every platform so tests and callers can replace the
@@ -127,6 +128,15 @@ class CaptureMetadata:
         return asdict(self)
 
 
+class LapBoundary(NamedTuple):
+    """Authoritative log boundary aligned to a captured frame."""
+
+    frame_index: int
+    lap_time_ms: Optional[float]
+    lap_number: Optional[int]
+    lap_type: str = "VALID"
+
+
 class RegionReader:
     """Reads a single shared memory region."""
 
@@ -135,7 +145,7 @@ class RegionReader:
         self.size = size
         self._handle = None
         self._view = None
-        self._path_used = None
+        self._path_used: Optional[str] = None
         self._diag_file = diag_file
 
     def _log(self, msg: str):
@@ -283,9 +293,12 @@ class TelemetryCapture:
         self._all_disconnected_since: Optional[float] = None
         self._output_prefix: Optional[str] = None
         self._idle_since: Optional[float] = None
-        self._lap_boundaries: List[Tuple[int, Optional[float], Optional[int]]] = []  # (frame_idx, lap_time_ms, lap_number)
+        self._lap_boundaries: List[LapBoundary] = []
         self._diag_file: Optional[TextIO] = None
         self._session_manager = session_manager or SharedSessionManager()
+        self._last_sample_had_data = False
+        self._recording_awaiting_boundary = False
+        self._awaiting_lap_time_ms: Optional[int] = None
 
     def is_capturing(self) -> bool:
         """Check if currently capturing."""
@@ -314,8 +327,54 @@ class TelemetryCapture:
             # memory and prevent stale data from being analyzed later.
             self._frames.clear()
             self._lap_boundaries.clear()
+            self._recording_awaiting_boundary = False
+            self._awaiting_lap_time_ms = None
             log_info(Component.TELEMETRY, "Switched to validity-only mode",
                      frames_dropped="cleared")
+        elif record and not was_recording:
+            self._frames.clear()
+            self._lap_boundaries.clear()
+            self._recording_awaiting_boundary = self._running
+            self._awaiting_lap_time_ms = None
+            log_info(
+                Component.TELEMETRY,
+                "Telemetry recording armed",
+                starts_at="next_lap_boundary" if self._running else "session_start",
+            )
+
+    def configure(self, *, output_dir: str, debug_logs: bool) -> None:
+        """Apply telemetry output/debug settings without replacing capture."""
+        new_output_dir = output_dir or get_default_output_dir()
+        output_changed = self._output_dir != new_output_dir
+        debug_changed = self._debug_logs != debug_logs
+        self._output_dir = new_output_dir
+
+        reopen_diagnostics = output_changed and debug_logs and self._running
+        if not debug_changed and not reopen_diagnostics:
+            return
+
+        self._debug_logs = debug_logs
+        if self._diag_file and (not debug_logs or reopen_diagnostics):
+            try:
+                self._diag_file.close()
+            except OSError:
+                pass
+            self._diag_file = None
+
+        if debug_logs and self._running and self._diag_file is None:
+            try:
+                os.makedirs(self._output_dir, exist_ok=True)
+                diag_path = os.path.join(
+                    self._output_dir,
+                    f"telemetry_diagnostics_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log",
+                )
+                self._diag_file = open(diag_path, "w", encoding="utf-8")
+            except OSError as exc:
+                log_error(
+                    Component.TELEMETRY,
+                    "Could not apply telemetry debug-log setting",
+                    error=str(exc),
+                )
 
     def get_stop_reason(self) -> Optional[str]:
         """Get the reason why capture stopped (None if still running)."""
@@ -341,6 +400,7 @@ class TelemetryCapture:
         self,
         lap_time_ms: Optional[float] = None,
         lap_number: Optional[int] = None,
+        lap_type: str = "VALID",
     ) -> None:
         """Record the current frame index as a lap boundary.
 
@@ -353,14 +413,100 @@ class TelemetryCapture:
         Args:
             lap_time_ms: The lap time in milliseconds from the game log
             lap_number: The game-reported completed lap number
+            lap_type: The authoritative log classification for the lap
         """
-        frame_idx = max(0, len(self._frames) - 1)
-        self._lap_boundaries.append((frame_idx, lap_time_ms, lap_number))
-        log_info(Component.TELEMETRY, "Lap boundary recorded",
-                 frame=frame_idx, lap_time_ms=lap_time_ms, lap_number=lap_number)
+        if not self._record_frames:
+            return
 
-    def get_lap_boundaries(self) -> List[Tuple[int, Optional[float], Optional[int]]]:
-        """Return game-reported lap boundaries (frame_idx, lap_time_ms, lap_number)."""
+        if self._recording_awaiting_boundary:
+            self._frames.clear()
+            self._lap_boundaries.clear()
+            self._recording_awaiting_boundary = False
+            self._awaiting_lap_time_ms = None
+            log_info(
+                Component.TELEMETRY,
+                "Telemetry recording started at clean lap boundary",
+                lap_number=lap_number,
+                lap_type=lap_type,
+            )
+            return
+
+        if not self._frames:
+            return
+
+        # Analyzer track points are indexed relative to the retained frame
+        # buffer. Absolute sample numbers continue across the armed outlap and
+        # therefore point at the wrong lap after that prefix is discarded.
+        frame_idx = len(self._frames) - 1
+        self._lap_boundaries.append(
+            LapBoundary(frame_idx, lap_time_ms, lap_number, lap_type)
+        )
+        log_info(Component.TELEMETRY, "Lap boundary recorded",
+                 frame=frame_idx, lap_time_ms=lap_time_ms,
+                 lap_number=lap_number, lap_type=lap_type)
+
+    def _start_recording_at_timing_boundary(self, frame: FrameData) -> bool:
+        """Start an armed recording when ACE resets its live lap timer.
+
+        ACE does not consistently publish the pit outlap through the log path,
+        so waiting only for ``record_lap_boundary`` can discard the first timed
+        lap. The normalized track spline does not necessarily wrap at the
+        timing line; the authoritative graphics-SHM lap timer does. A race
+        standing start is already a clean boundary, so it must be retained
+        from lap 1 instead of being treated like a practice pit outlap.
+        """
+        if not self._record_frames or not self._recording_awaiting_boundary:
+            return False
+
+        graphics = frame.graphics if isinstance(frame.graphics, dict) else {}
+        status_name = graphics.get("status_name")
+        if status_name not in (None, "AC_LIVE"):
+            self._awaiting_lap_time_ms = None
+            return False
+
+        current = graphics.get("current_lap_time_ms")
+        if not isinstance(current, int) or isinstance(current, bool) or current < 0:
+            self._awaiting_lap_time_ms = None
+            return False
+
+        static = frame.static if isinstance(frame.static, dict) else {}
+        session_name = static.get("session_name")
+        completed_laps = graphics.get("completed_laps")
+        if (
+            isinstance(session_name, str)
+            and session_name.casefold() == "race"
+            and completed_laps == 0
+            and current <= 1_000
+        ):
+            self._frames.clear()
+            self._lap_boundaries.clear()
+            self._recording_awaiting_boundary = False
+            self._awaiting_lap_time_ms = None
+            log_info(
+                Component.TELEMETRY,
+                "Telemetry recording started at race standing-start boundary",
+                frame=frame.frame_number,
+            )
+            return True
+
+        previous = self._awaiting_lap_time_ms
+        self._awaiting_lap_time_ms = current
+        if previous is None or previous < 5_000 or current > 1_000:
+            return False
+
+        self._frames.clear()
+        self._lap_boundaries.clear()
+        self._recording_awaiting_boundary = False
+        self._awaiting_lap_time_ms = None
+        log_info(
+            Component.TELEMETRY,
+            "Telemetry recording started at shared-memory timing boundary",
+            frame=frame.frame_number,
+        )
+        return True
+
+    def get_lap_boundaries(self) -> List[LapBoundary]:
+        """Return authoritative game-log lap boundaries."""
         return self._lap_boundaries.copy()
 
     def save_raw_dump(self, output_path: str) -> bool:
@@ -515,9 +661,10 @@ class TelemetryCapture:
                 self._region_paths[key] = reader._path_used or ""
                 log_debug(Component.TELEMETRY, "Reconnected to region", key=key, region=region_name)
 
-    def _capture_frame(self, frame_num: int) -> Optional[FrameData]:
+    def _capture_frame(self, frame_num: int) -> FrameData:
         """Capture a single frame from shared memory."""
-        frame = {
+        self._last_sample_had_data = False
+        frame: Dict[str, Any] = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "frame_number": frame_num,
             "physics": {},
@@ -543,6 +690,7 @@ class TelemetryCapture:
                 continue
 
             # Save raw bytes for later reverse-engineering
+            self._last_sample_had_data = True
             frame[f"{key}_raw"] = raw.hex()
 
             # ── Lightweight peek: always feed lap validity to shared state ──
@@ -601,14 +749,8 @@ class TelemetryCapture:
             frame["graphics_raw"] = None
             frame["static_raw"] = None
 
-        # When telemetry recording is disabled (_record_frames=False) we
-        # still read every SHM region and push validity/timing/fuel data to
-        # the shared session, but do NOT accumulate FrameData objects in
-        # memory and do NOT produce analysis outputs.  This keeps the
-        # real-time lap validity pipeline active at all times.
-        if not self._record_frames:
-            return None
-
+        # The caller decides whether to retain this transient frame. In
+        # validity-only mode it is discarded after updating shared state.
         return FrameData(**frame)
 
     async def start_capture(self) -> bool:
@@ -647,6 +789,8 @@ class TelemetryCapture:
         self._running = True
         self._frames = []
         self._lap_boundaries = []
+        self._recording_awaiting_boundary = self._record_frames
+        self._awaiting_lap_time_ms = None
         self._metadata = None
         self._session_start_time = datetime.now(timezone.utc)
         self._output_prefix = self._make_output_prefix()
@@ -665,7 +809,6 @@ class TelemetryCapture:
 
             e = task.exception()
             if e is not None:
-                import traceback
                 log_error(Component.TELEMETRY, "Capture task exception", error=str(e))
                 traceback.print_exception(type(e), e, e.__traceback__)
                 self._stop_reason = f"task_exception: {e}"
@@ -680,8 +823,7 @@ class TelemetryCapture:
         try:
             await self._capture_loop()
         except Exception as e:
-            log_error(Component.TELEMETRY, "Unhandled capture exception", error=str(e))
-            log_debug(Component.TELEMETRY, "Traceback", traceback=traceback.format_exc())
+            log_exception(Component.TELEMETRY, "Unhandled capture exception", e)
             self._stop_reason = f"unhandled_exception: {e}"
             self._running = False
             self._close_readers()
@@ -703,7 +845,6 @@ class TelemetryCapture:
         frame_num = 0
         next_deadline = time.perf_counter()
         next_reconnect = time.perf_counter()
-        last_disconnect_check = time.perf_counter()
         first_connection_logged = False
 
         # Metadata will be created once we have our first connection
@@ -715,11 +856,10 @@ class TelemetryCapture:
 
                 # Continuously try to connect to missing regions
                 if now_mono >= next_reconnect:
-                    had_readers = bool(self._readers)
                     self._reconnect_missing(self._readers)
 
                     # Log when we first connect to the game
-                    if not had_readers and self._readers and not first_connection_logged:
+                    if self._readers and not first_connection_logged:
                         log_info(Component.TELEMETRY, "Connected to game", regions=len(self._readers))
                         first_connection_logged = True
 
@@ -736,8 +876,29 @@ class TelemetryCapture:
 
                     next_reconnect = now_mono + 0.5  # Retry every 500ms
 
-                # If no readers yet, just wait for game to start
+                # Before the first connection, wait for ACE to publish its
+                # mappings. After connecting once, loss of every mapping is
+                # a real disconnect and must terminate cleanly.
                 if not self._readers:
+                    if first_connection_logged:
+                        if self._all_disconnected_since is None:
+                            self._all_disconnected_since = now_mono
+                        elif now_mono - self._all_disconnected_since > self.DISCONNECT_TIMEOUT_SECONDS:
+                            log_warning(
+                                Component.TELEMETRY,
+                                "Disconnect timeout",
+                                timeout=f"{self.DISCONNECT_TIMEOUT_SECONDS:.1f}s",
+                            )
+                            self._stop_reason = (
+                                f"disconnect_timeout ({self.DISCONNECT_TIMEOUT_SECONDS:.1f}s)"
+                            )
+                            self._running = False
+                            break
+
+                        if is_game_running() != GameProcessStatus.RUNNING:
+                            self._stop_reason = "game_not_running"
+                            self._running = False
+                            break
                     await asyncio.sleep(0.1)
                     continue
 
@@ -750,22 +911,6 @@ class TelemetryCapture:
                         self._running = False
                         break
 
-                # Check for complete disconnection timeout
-                if now_mono - last_disconnect_check > 1.0:  # Check every second
-                    last_disconnect_check = now_mono
-                    if not self._readers:
-                        # All regions disconnected - check how long
-                        if self._all_disconnected_since is not None:
-                            if now_mono - self._all_disconnected_since > self.DISCONNECT_TIMEOUT_SECONDS:
-                                log_warning(Component.TELEMETRY, "Disconnect timeout", timeout=f"{self.DISCONNECT_TIMEOUT_SECONDS:.1f}s")
-                                self._stop_reason = f"disconnect_timeout ({self.DISCONNECT_TIMEOUT_SECONDS:.1f}s)"
-                                self._running = False
-                                break
-                        else:
-                            self._all_disconnected_since = now_mono
-                    else:
-                        self._all_disconnected_since = None
-
                 # Check if game process is still running (treat UNKNOWN as NOT_RUNNING for safety)
                 if is_game_running() != GameProcessStatus.RUNNING:
                     log_warning(Component.TELEMETRY, "Game process no longer running or detection uncertain - stopping capture")
@@ -774,49 +919,54 @@ class TelemetryCapture:
                     break
 
                 frame = self._capture_frame(frame_num)
-                if frame is not None:
-                    # Accept all frames regardless of content - capture everything
-                    # The decoder may return fallback data or empty dicts if structure doesn't match
+                if self._last_sample_had_data:
                     self._last_valid_frame_time = now_mono
-                    if frame:
-                        # frame is a FrameData object (record_frames=True)
+                    self._start_recording_at_timing_boundary(frame)
+                    if (
+                        self._record_frames
+                        and not self._recording_awaiting_boundary
+                    ):
                         self._frames.append(frame)
-                    # else frame is an empty falsy value? Not possible since
-                    # _capture_frame always returns FrameData or None.
                     frame_num += 1
-                    # Reset disconnect timer on valid frame
                     self._all_disconnected_since = None
                     
-                    # Check for idle state (speed = 0 for extended period = race exit to menu).
-                    # Skip this check once laps are being recorded — the "remove car" log
-                    # signal is the authoritative session-end trigger for active races.
-                    physics = frame.physics if (frame and frame.physics) else {}
-                    speed_kmh = physics.get("speed_kmh", 0) if isinstance(physics, dict) else 0
-                    if speed_kmh < 1.0:  # Consider speed < 1 km/h as idle
-                        if not self._lap_boundaries:  # Only idle-timeout before first lap
-                            if self._idle_since is None:
-                                self._idle_since = now_mono
-                            elif now_mono - self._idle_since > self.IDLE_TIMEOUT_SECONDS:
-                                log_warning(Component.TELEMETRY, "Idle timeout", timeout=f"{self.IDLE_TIMEOUT_SECONDS:.1f}s")
-                                self._stop_reason = f"idle_timeout ({self.IDLE_TIMEOUT_SECONDS:.1f}s)"
-                                self._running = False
-                                break
+                    # Idle timeout is only meaningful once full recording has
+                    # started. Validity-only capture must remain available for
+                    # the lifetime of ACE, and an armed recorder may sit in the
+                    # pits for several minutes before its clean start boundary.
+                    if self._record_frames and not self._recording_awaiting_boundary:
+                        physics = frame.physics if frame.physics else {}
+                        speed_kmh = (
+                            physics.get("speed_kmh", 0)
+                            if isinstance(physics, dict)
+                            else 0
+                        )
+                        if speed_kmh < 1.0:
+                            if not self._lap_boundaries:
+                                if self._idle_since is None:
+                                    self._idle_since = now_mono
+                                elif now_mono - self._idle_since > self.IDLE_TIMEOUT_SECONDS:
+                                    log_warning(
+                                        Component.TELEMETRY,
+                                        "Idle timeout",
+                                        timeout=f"{self.IDLE_TIMEOUT_SECONDS:.1f}s",
+                                    )
+                                    self._stop_reason = (
+                                        f"idle_timeout ({self.IDLE_TIMEOUT_SECONDS:.1f}s)"
+                                    )
+                                    self._running = False
+                                    break
+                            else:
+                                self._idle_since = None
                         else:
-                            self._idle_since = None  # Laps recorded — ignore idle
+                            self._idle_since = None
                     else:
-                        self._idle_since = None  # Reset idle timer when moving
+                        self._idle_since = None
                     
                     # Debug: log first frame
                     if frame_num == 1:
                         mode_label = "validity-only" if not self._record_frames else "telemetry active"
                         log_info(Component.TELEMETRY, f"First frame captured - {mode_label}")
-                else:
-                    # _capture_frame returned None — all SHM regions are
-                    # disconnected.  Update the heartbeat timer so we don't
-                    # time out while waiting for the game to publish SHM,
-                    # and bump frame_num so the reconnect logic still runs.
-                    self._last_valid_frame_time = now_mono
-
                 if frame_num % int(self._hz * 5) == 0 and frame_num > 0:
                     if frame_num % int(self._hz * 30) == 0:  # Log every 30 seconds at 10Hz
                         log_info(Component.TELEMETRY, "Capture progress", frames=frame_num)
@@ -828,7 +978,6 @@ class TelemetryCapture:
                 else:
                     next_deadline = time.perf_counter()
         except Exception as e:
-            import traceback
             log_error(Component.TELEMETRY, "Capture loop error", error=str(e))
             traceback.print_exc()
             self._stop_reason = f"capture_error: {e}"

@@ -278,7 +278,7 @@ class TestTelemetryCapture:
         
         assert len(capture.get_lap_boundaries()) == 1
         assert capture.get_lap_boundaries()[0][0] == 9  # Last frame index
-        assert capture.get_lap_boundaries()[0][1:] == (123456, 7)
+        assert capture.get_lap_boundaries()[0][1:] == (123456, 7, "VALID")
 
     def test_capture_get_lap_boundaries(self):
         """Test getting lap boundaries."""

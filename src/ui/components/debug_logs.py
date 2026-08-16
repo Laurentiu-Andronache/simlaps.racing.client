@@ -13,6 +13,8 @@ from datetime import datetime
 
 import flet as ft
 
+from .feedback import show_snackbar
+
 
 class SimpleLogCapture:
     """Simple, non-intrusive log capture system."""
@@ -171,12 +173,7 @@ class DebugLogsViewer:
     
     def _show_snackbar(self, message: str, bgcolor: str):
         """Helper to show a snackbar message."""
-        self.page.snack_bar = ft.SnackBar(
-            content=ft.Text(message),
-            bgcolor=bgcolor
-        )
-        self.page.snack_bar.open = True
-        self.page.update()
+        show_snackbar(self.page, message, bgcolor)
 
     def _close_dialog(self, e=None):
         """Close the debug logs dialog."""

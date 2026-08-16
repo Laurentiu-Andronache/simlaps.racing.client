@@ -5,9 +5,12 @@ Simplified: No API key required (uses signed payloads).
 """
 
 import flet as ft
+from dataclasses import replace
 from typing import Optional, Callable
 
 from ...utils.config import AppConfig, DEFAULT_SERVER_URL
+from ...utils.structured_logger import Component, log_exception
+from ..components.feedback import show_snackbar
 
 
 class SettingsPage(ft.Container):
@@ -64,11 +67,13 @@ class SettingsPage(ft.Container):
         self._discord_enabled_switch = ft.Switch(
             value=config.discord_enabled,
             active_color="#7c3aed",
+            on_change=self._discord_enabled_changed,
         )
         
         self._discord_pb_only_switch = ft.Switch(
             value=config.discord_pb_only,
             active_color="#7c3aed",
+            disabled=not config.discord_enabled,
         )
         
         self._discord_test_status = ft.Text(
@@ -191,8 +196,8 @@ class SettingsPage(ft.Container):
                     self._discord_enabled_switch,
                 ),
                 self._build_switch_row(
-                    "Personal bests only",
-                    "Only post new personal best laps",
+                    "Post personal bests only",
+                    "Only post new personal best laps to Discord",
                     self._discord_pb_only_switch,
                 ),
             ],
@@ -217,7 +222,7 @@ class SettingsPage(ft.Container):
         )
         
         # Save button
-        save_button = ft.ElevatedButton(
+        save_button = ft.Button(
             "Save Settings",
             icon=ft.Icons.SAVE,
             on_click=self._save_settings,
@@ -311,6 +316,17 @@ class SettingsPage(ft.Container):
             ],
             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
         )
+
+    def _discord_enabled_changed(self, e) -> None:
+        """Keep the Discord-only PB filter inactive when posting is off."""
+        self._discord_pb_only_switch.disabled = not bool(
+            self._discord_enabled_switch.value
+        )
+        try:
+            self._discord_pb_only_switch.update()
+        except RuntimeError:
+            # Tests and pre-mount form refreshes have no Flet page yet.
+            pass
     
     async def _test_connection(self, e):
         """Test server connection."""
@@ -366,35 +382,45 @@ class SettingsPage(ft.Container):
     
     def _save_settings(self, e):
         """Save current settings."""
-        # Update config from form fields
-        self.config.server_url = self._server_url_field.value or DEFAULT_SERVER_URL
-        self.config.submit_invalid_laps = self._submit_invalid_switch.value
+        # Build a new value so Settings edits do not mutate the application's
+        # active configuration before runtime reconciliation succeeds.
+        updated_config = replace(
+            self.config,
+            server_url=self._server_url_field.value or DEFAULT_SERVER_URL,
+            submit_invalid_laps=self._submit_invalid_switch.value,
+            discord_webhook_url=self._discord_webhook_field.value.strip() or None,
+            discord_enabled=self._discord_enabled_switch.value,
+            discord_pb_only=self._discord_pb_only_switch.value,
+            telemetry_enabled=self._telemetry_enabled_switch.value,
+            telemetry_output_path=self._telemetry_output_path_field.value or "",
+            telemetry_debug_logs=self._telemetry_debug_logs_switch.value,
+        )
         
-        # Discord settings
-        self.config.discord_webhook_url = self._discord_webhook_field.value.strip() or None
-        self.config.discord_enabled = self._discord_enabled_switch.value
-        self.config.discord_pb_only = self._discord_pb_only_switch.value
-        
-        # Telemetry settings
-        self.config.telemetry_enabled = self._telemetry_enabled_switch.value
-        self.config.telemetry_output_path = self._telemetry_output_path_field.value or ""
-        self.config.telemetry_debug_logs = self._telemetry_debug_logs_switch.value
-        
-        if self.on_save:
-            self.on_save(self.config)
+        try:
+            if self.on_save:
+                self.on_save(updated_config)
+        except Exception as exc:
+            log_exception(Component.UI, "Could not save settings", exc)
+            show_snackbar(self.page, f"Could not save settings: {exc}", "#ff6b6b")
+            return
+        self.config = updated_config
         
         # Show success feedback
-        self.page.snack_bar = ft.SnackBar(
-            content=ft.Text("Settings saved!", color="#ffffff"),
-            bgcolor="#51cf66",
-        )
-        self.page.snack_bar.open = True
-        self.page.update()
+        show_snackbar(self.page, "Settings saved!", "#51cf66")
     
     def _reset_settings(self, e):
         """Reset settings to defaults and persist immediately."""
-        # Reset config to factory defaults
-        self.config = AppConfig()
+        default_config = AppConfig()
+        try:
+            if self.on_save:
+                self.on_save(default_config)
+        except Exception as exc:
+            log_exception(Component.UI, "Could not reset settings", exc)
+            show_snackbar(self.page, f"Could not reset settings: {exc}", "#ff6b6b")
+            return
+
+        # Update the page only after the defaults were applied successfully.
+        self.config = default_config
 
         # Update UI fields from the new default config
         self._server_url_field.value = self.config.server_url
@@ -404,6 +430,7 @@ class SettingsPage(ft.Container):
         self._discord_webhook_field.value = self.config.discord_webhook_url or ""
         self._discord_enabled_switch.value = self.config.discord_enabled
         self._discord_pb_only_switch.value = self.config.discord_pb_only
+        self._discord_pb_only_switch.disabled = not self.config.discord_enabled
         self._discord_test_status.value = ""
 
         # Reset Telemetry fields
@@ -421,20 +448,11 @@ class SettingsPage(ft.Container):
         self._telemetry_output_path_field.update()
         self._telemetry_debug_logs_switch.update()
 
-        # Persist the default config immediately (same path as Save button)
-        if self.on_save:
-            self.on_save(self.config)
-
         # Show feedback
-        self.page.snack_bar = ft.SnackBar(
-            content=ft.Text("Settings reset to defaults", color="#ffffff"),
-            bgcolor="#7c3aed",
-        )
-        self.page.snack_bar.open = True
-        self.page.update()
+        show_snackbar(self.page, "Settings reset to defaults", "#7c3aed")
     
     def update_config(self, config: AppConfig):
-        """Update form with new config."""
+        """Reload the form from the application's active configuration."""
         self.config = config
         self._server_url_field.value = config.server_url
         self._submit_invalid_switch.value = config.submit_invalid_laps
@@ -443,10 +461,22 @@ class SettingsPage(ft.Container):
         self._discord_webhook_field.value = config.discord_webhook_url or ""
         self._discord_enabled_switch.value = config.discord_enabled
         self._discord_pb_only_switch.value = config.discord_pb_only
+        self._discord_pb_only_switch.disabled = not config.discord_enabled
         
         # Update Telemetry fields
         self._telemetry_enabled_switch.value = config.telemetry_enabled
         self._telemetry_output_path_field.value = config.telemetry_output_path
         self._telemetry_debug_logs_switch.value = config.telemetry_debug_logs
-        
+
+        # Connection-test feedback belongs to the abandoned form state too.
+        self._connection_status.value = ""
+        self._discord_test_status.value = ""
+
+        # Settings may be refreshed immediately before it is mounted. Current
+        # Flet raises when ``update()`` is called on an unmounted control; the
+        # subsequent page.add() will render these values without an update.
+        try:
+            self.page
+        except RuntimeError:
+            return
         self.update()

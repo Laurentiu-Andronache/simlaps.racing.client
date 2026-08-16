@@ -59,11 +59,11 @@ class LapProcessingService:
         # detection) and is already set on lap.fuel_used before this point.
         if telemetry_capture and telemetry_capture.is_capturing():
             lap_type = getattr(lap, "lap_type", None) or getattr(getattr(lap, "lap_state", None), "value", None)
-            if lap_type != "OUTLAP":
-                telemetry_capture.record_lap_boundary(
-                    lap.lap_time_ms,
-                    lap.lap_number,
-                )
+            telemetry_capture.record_lap_boundary(
+                lap.lap_time_ms,
+                lap.lap_number,
+                lap_type or "VALID",
+            )
 
         elif config.telemetry_enabled and telemetry_capture:
             # A lap-complete event is too late to begin a useful capture

@@ -8,7 +8,7 @@ import os
 import json
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
-from typing import ClassVar, Optional
+from typing import Any, Optional
 
 from src.utils.structured_logger import Component, log_warning
 
@@ -209,6 +209,19 @@ class ConfigManager:
         except IOError as e:
             log_warning(Component.CONFIG, f"Error saving config: {e}")
             return False
+
+    def set(self, config: AppConfig) -> bool:
+        """Replace the active configuration and persist it."""
+        previous_config = self._config
+        previous_loaded = self._loaded
+        self._config = config
+        self._loaded = True
+        if self.save():
+            return True
+
+        self._config = previous_config
+        self._loaded = previous_loaded
+        return False
     
     def get(self) -> AppConfig:
         """
@@ -267,7 +280,7 @@ class ConfigManager:
             pb_only: Whether to only post personal bests
             post_invalid: Whether to post invalid laps
         """
-        updates = {}
+        updates: dict[str, Any] = {}
         if webhook_url is not None:
             updates["discord_webhook_url"] = webhook_url
         if enabled is not None:

@@ -61,13 +61,41 @@ from src.core.analyzer.analysis_result import AnalysisResult
 from src.core.analyzer.session_summary import _session_summary_path, _write_session_summary, _load_previous_summary
 
 
+_LAP_TIME_ALIGNMENT_TOLERANCE_MS = 2.0
+
+
+def _nearest_lap_marker_by_time(markers: List, timing_lap_time: Any):
+    """Return the nearest unused log marker within rounding tolerance."""
+    if (
+        not isinstance(timing_lap_time, (int, float))
+        or isinstance(timing_lap_time, bool)
+    ):
+        return None
+
+    candidates = []
+    for order, marker in enumerate(markers):
+        marker_lap_time = marker[1]
+        if (
+            not isinstance(marker_lap_time, (int, float))
+            or isinstance(marker_lap_time, bool)
+        ):
+            continue
+        delta_ms = abs(float(marker_lap_time) - float(timing_lap_time))
+        if delta_ms <= _LAP_TIME_ALIGNMENT_TOLERANCE_MS:
+            candidates.append((delta_ms, order, marker))
+
+    if not candidates:
+        return None
+    return min(candidates, key=lambda candidate: (candidate[0], candidate[1]))[2]
+
+
 class TelemetryAnalyzer:
     """Analyzes telemetry data and generates reports."""
 
     def __init__(
         self,
         output_dir: str,
-        track_catalog: dict = None,
+        track_catalog: Optional[dict] = None,
         session_manager: Optional[SharedSessionManager] = None,
     ):
         self._output_dir = output_dir
@@ -167,7 +195,8 @@ class TelemetryAnalyzer:
         lap_bounds = None
         lap_times_ms = None
         lap_numbers = None
-        prefer_game_lap_times = False
+        lap_types = None
+        timing_bounds = _detect_laps_by_timing_state(track, hz=hz) or []
 
         # 1st priority: Game log boundaries (most definitive)
         if game_lap_boundaries and len(game_lap_boundaries) >= 1:
@@ -185,29 +214,78 @@ class TelemetryAnalyzer:
                             int(b[0]),
                             b[1] if len(b) > 1 else None,
                             int(b[2]) if len(b) > 2 and b[2] is not None else None,
+                            str(b[3]) if len(b) > 3 and b[3] is not None else "VALID",
                         )
                         for b in game_lap_boundaries
                     ),
                     key=lambda item: item[0],
                 )
                 start_frame = track[0]["frame"] if track else 0
-                lap_bounds = [start_frame] + [marker[0] for marker in sorted_markers]
-                lap_times_ms = [marker[1] for marker in sorted_markers]
-                lap_numbers = [
-                    marker[2] if marker[2] is not None else initial_completed_laps + idx + 1
-                    for idx, marker in enumerate(sorted_markers)
-                ]
-                prefer_game_lap_times = True
+                if timing_bounds:
+                    # Callback frame indices can be late when ACE buffers its
+                    # file log or the UI event loop stalls. SHM timer changes
+                    # preserve the physical order and exact frame boundary;
+                    # enrich those boundaries with matching log metadata by
+                    # lap time instead of trusting callback arrival order.
+                    track_by_frame = {point["frame"]: point for point in track}
+                    unused_markers = list(sorted_markers)
+                    reconciled_markers = []
+                    callback_frame_deltas = []
+                    for idx, frame in enumerate(timing_bounds):
+                        point = track_by_frame.get(frame, {})
+                        timing_lap_time = point.get("last_lap_time_ms")
+                        match = _nearest_lap_marker_by_time(
+                            unused_markers,
+                            timing_lap_time,
+                        )
+                        if match is not None:
+                            unused_markers.remove(match)
+                            callback_frame_deltas.append(abs(match[0] - frame))
+                        reconciled_markers.append(
+                            (
+                                frame,
+                                timing_lap_time if timing_lap_time is not None else (match[1] if match else None),
+                                initial_completed_laps + idx + 1,
+                                match[3] if match else "VALID",
+                            )
+                        )
+
+                    lap_bounds = [start_frame] + [marker[0] for marker in reconciled_markers]
+                    lap_times_ms = [marker[1] for marker in reconciled_markers]
+                    lap_numbers = [marker[2] for marker in reconciled_markers]
+                    lap_types = [marker[3] for marker in reconciled_markers]
+                    materially_delayed = any(
+                        delta > max(2, int(round(hz * 2.0)))
+                        for delta in callback_frame_deltas
+                    )
+                    if len(sorted_markers) != len(timing_bounds) or materially_delayed:
+                        analysis_notes.append(
+                            "Delayed or incomplete log callbacks were realigned to shared-memory timing boundaries."
+                        )
+                    log_info(
+                        Component.ANALYZER,
+                        "Lap detection successful",
+                        method="shared-memory timing boundaries enriched by game logs",
+                        laps=len(timing_bounds),
+                    )
+                else:
+                    lap_bounds = [start_frame] + [marker[0] for marker in sorted_markers]
+                    lap_times_ms = [marker[1] for marker in sorted_markers]
+                    lap_numbers = [
+                        marker[2] if marker[2] is not None else initial_completed_laps + idx + 1
+                        for idx, marker in enumerate(sorted_markers)
+                    ]
+                    lap_types = [marker[3] for marker in sorted_markers]
+                    log_info(Component.ANALYZER, "Lap detection successful", method="authoritative game log boundaries", laps=len(lap_bounds) - 1)
                 if initial_completed_laps > 0 and (not lap_numbers or lap_numbers[0] > 1):
                     analysis_notes.append(
                         f"Capture started after {initial_completed_laps} completed game lap(s); earlier laps are omitted from telemetry."
                     )
             else:
                 lap_bounds = game_lap_boundaries
-            log_info(Component.ANALYZER, "Lap detection successful", method="authoritative game log boundaries", laps=len(lap_bounds) - 1)
+                log_info(Component.ANALYZER, "Lap detection successful", method="authoritative game log boundaries", laps=len(lap_bounds) - 1)
         # 2nd priority: Shared memory timing state (last_laptime_ms updates)
         else:
-            timing_bounds = _detect_laps_by_timing_state(track, hz=hz)
             if timing_bounds and len(timing_bounds) >= 1:
                 start_frame = track[0]["frame"] if track else 0
                 lap_bounds = [start_frame] + timing_bounds
@@ -225,6 +303,9 @@ class TelemetryAnalyzer:
         for i in range(len(lap_bounds) - 1):
             s, e = lap_bounds[i], lap_bounds[i + 1]
             game_lap_num = lap_numbers[i] if lap_numbers and i < len(lap_numbers) else i + 1
+            lap_type = lap_types[i] if lap_types and i < len(lap_types) else "VALID"
+            if lap_type in {"OUTLAP", "INLAP", "ABORTED"}:
+                continue
             lap_track = [pt for pt in track if s <= pt["frame"] < e]
             if len(lap_track) < 20:
                 continue
@@ -241,7 +322,11 @@ class TelemetryAnalyzer:
             canonical_lap = _build_canonical_lap(lap_track, lap_start_frame=s, hz=hz, bins=200)
             uses_canonical_progress = canonical_lap is not None
 
-            if track_profile and track_profile.get("corners") and uses_canonical_progress:
+            if (
+                track_profile
+                and track_profile.get("corners")
+                and canonical_lap is not None
+            ):
                 corners = _detect_profiled_corners_canonical(
                     canonical_lap["samples"],
                     track_profile,
@@ -255,8 +340,13 @@ class TelemetryAnalyzer:
                 corners = detect_corners(track, s, e, hz=hz)
 
             # Use game-reported lap times when available.
-            if lap_times_ms and i < len(lap_times_ms) and lap_times_ms[i] is not None:
-                lap_time = lap_times_ms[i] / 1000.0  # Convert ms to seconds
+            game_lap_time_ms = (
+                lap_times_ms[i]
+                if lap_times_ms and i < len(lap_times_ms)
+                else None
+            )
+            if game_lap_time_ms is not None:
+                lap_time = game_lap_time_ms / 1000.0
             else:
                 # Fall back to telemetry-derived duration so laps without
                 # game-reported times (e.g. invalid/aborted laps) are still
@@ -287,6 +377,7 @@ class TelemetryAnalyzer:
                 "max_speed": max(pt["speed"] for pt in lap_track),
                 "avg_speed": sum(pt["speed"] for pt in lap_track) / len(lap_track),
                 "fuel_used": fuel_used,
+                "is_valid": lap_type == "VALID",
                 "track": lap_track,
                 "canonical_track": canonical_lap["samples"] if canonical_lap else None,
                 "corners": corners,
@@ -335,34 +426,53 @@ class TelemetryAnalyzer:
             if isinstance(shared_validity, bool):
                 lap["is_valid"] = shared_validity
 
+        valid_laps = [lap for lap in laps if lap.get("is_valid", True)]
         profile_sanity_notes = _profile_corner_sanity_notes(
-            laps,
+            valid_laps or laps,
             profile_corners=track_profile.get("corners", []) if track_profile else None,
         )
         if profile_sanity_notes:
             analysis_mode = "diagnostic"
             analysis_notes.extend(profile_sanity_notes)
 
-        best_lap = min(laps, key=lambda lap: lap["lap_time_s"])
-        laps_with_corners = [lap for lap in laps if lap.get("corners")]
-        ref_lap = min(laps_with_corners, key=lambda lap: lap["lap_time_s"]) if laps_with_corners else best_lap
-        coachable_laps = [lap for lap in laps_with_corners if lap.get("confidence_label") != "low"]
-        comparison_pool = coachable_laps or laps_with_corners or [best_lap]
+        best_lap = min(valid_laps, key=lambda lap: lap["lap_time_s"]) if valid_laps else None
+        laps_with_corners = [lap for lap in valid_laps if lap.get("corners")]
+        ref_lap = (
+            min(laps_with_corners, key=lambda lap: lap["lap_time_s"])
+            if laps_with_corners
+            else best_lap
+        )
+        coachable_laps = [
+            lap
+            for lap in laps_with_corners
+            if lap.get("confidence_label") != "low"
+        ]
+        comparison_pool = coachable_laps or laps_with_corners or ([best_lap] if best_lap else [])
         comparison_pool = sorted(comparison_pool, key=lambda lap: lap["lap_time_s"])
-        comparison_lap = comparison_pool[len(comparison_pool) // 2]
-        ref_corners = ref_lap.get("corners", [])
+        comparison_lap = (
+            comparison_pool[len(comparison_pool) // 2]
+            if comparison_pool
+            else None
+        )
+        ref_corners = ref_lap.get("corners", []) if ref_lap else []
+
+        if best_lap is None:
+            analysis_mode = "diagnostic"
+            analysis_notes.append(
+                "No valid completed laps were available; invalid laps are shown for diagnostics only."
+            )
 
         log_info(Component.ANALYZER, "Analysis complete", 
                 laps=len(laps), 
-                best_lap_time=f"{best_lap['lap_time_s']:.1f}s", 
+                best_lap_time=(f"{best_lap['lap_time_s']:.1f}s" if best_lap else "none"),
                 coachable_laps=len(coachable_laps))
 
         if not ref_corners:
             analysis_mode = "diagnostic"
             analysis_notes.append("No trustworthy canonical corners were available for comparison.")
 
-        corner_data = defaultdict(dict)
-        corner_speeds = defaultdict(dict)
+        corner_data: Dict[Any, Dict[Any, Dict[str, Any]]] = defaultdict(dict)
+        corner_speeds: Dict[Any, Dict[Any, float]] = defaultdict(dict)
         for lap in laps:
             if track_profile and track_profile.get("corners"):
                 matched = match_profiled_corners(ref_corners, lap["corners"])
@@ -391,9 +501,9 @@ class TelemetryAnalyzer:
             "track_label": track_profile["display_name"] if track_profile else track_name,
             "car": self._session_manager.get_car(),
             "laps": laps,
-            "best_lap_num": best_lap["lap_num"],
-            "reference_lap_num": ref_lap["lap_num"],
-            "comparison_lap_num": comparison_lap["lap_num"],
+            "best_lap_num": best_lap["lap_num"] if best_lap else None,
+            "reference_lap_num": ref_lap["lap_num"] if ref_lap else None,
+            "comparison_lap_num": comparison_lap["lap_num"] if comparison_lap else None,
             "ref_corners": ref_corners,
             "profile_corners": track_profile.get("corners", []) if track_profile else [],
             "corner_data": corner_data,
@@ -417,22 +527,27 @@ class TelemetryAnalyzer:
             sum(lap["fuel_used"] for lap in _laps_with_fuel) / len(_laps_with_fuel)
             if _laps_with_fuel else None
         )
-        _write_session_summary(
-            self._output_dir,
-            _track_label,
-            _car,
-            best_lap["lap_time_s"],
-            max((lap.get("max_speed") or 0.0) for lap in laps),
-            len(laps),
-            _avg_fuel,
+        _prev = (
+            _load_previous_summary(self._output_dir, _track_label, _car)
+            if best_lap
+            else None
         )
-        _prev = _load_previous_summary(self._output_dir, _track_label, _car)
-        if _prev:
+        if _prev and best_lap:
             _delta = best_lap["lap_time_s"] - _prev["best_lap_time_s"]
             _delta_str = f"+{_delta:.2f}s" if _delta > 0 else f"{_delta:.2f}s"
             analysis_notes.append(
                 f"Last session best: {_prev['best_lap_time_str']} "
                 f"(today {best_lap['lap_time_str']}, {_delta_str})."
+            )
+        if best_lap:
+            _write_session_summary(
+                self._output_dir,
+                _track_label,
+                _car,
+                best_lap["lap_time_s"],
+                max((lap.get("max_speed") or 0.0) for lap in laps),
+                len(laps),
+                _avg_fuel,
             )
 
         telemetry_summary = {
@@ -450,7 +565,7 @@ class TelemetryAnalyzer:
             html_path=html_path,
             ai_prompt_path=ai_prompt_path,
             laps_detected=len(laps),
-            best_lap_time=best_lap["lap_time_s"],
+            best_lap_time=best_lap["lap_time_s"] if best_lap else 0.0,
             track_name=data.get("track_label") or data.get("track_name"),
         )
 

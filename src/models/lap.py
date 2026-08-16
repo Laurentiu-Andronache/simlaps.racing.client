@@ -117,7 +117,7 @@ class LapData:
     lap_state: LapState = field(default_factory=lambda: LapState.VALID)
     lap_type: str = "VALID"              # String alias of lap_state.value (compat)
     is_valid: bool = True
-    validity_source: str = "heuristic"   # "heuristic" (default) or "authoritative" (Relevant onSplit)
+    validity_source: str = "heuristic"   # heuristic, shm_graphics, or authoritative (Relevant onSplit)
 
     fuel_used: Optional[float] = None
     fuel_reliable: bool = True

@@ -20,6 +20,7 @@ from .context import LogContext
 from .shared_session import (
     LapValidityData,
     LapTimingData,
+    LapCompletionData,
     FuelData,
     PlayerIdentificationData,
     SectorSplitData,
@@ -48,6 +49,7 @@ __all__ = [
     "LogContext",
     "LapValidityData",
     "LapTimingData",
+    "LapCompletionData",
     "FuelData",
     "PlayerIdentificationData",
     "SectorSplitData",

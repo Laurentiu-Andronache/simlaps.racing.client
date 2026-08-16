@@ -6,6 +6,7 @@ Displays telemetry capture status on the home page.
 
 import flet as ft
 from enum import Enum
+from typing import Optional
 
 
 class TelemetryStatus(Enum):
@@ -53,7 +54,7 @@ class TelemetryStatusIndicator(ft.Container):
         self,
         status: TelemetryStatus,
         frame_count: int = 0,
-        result_path: str = None,
+        result_path: Optional[str] = None,
     ):
         """Update the telemetry status."""
         self._status = status
@@ -68,7 +69,10 @@ class TelemetryStatusIndicator(ft.Container):
         elif status == TelemetryStatus.CAPTURING:
             self._status_icon = ft.Icons.FIBER_MANUAL_RECORD
             self._status_color = "#ef4444"
-            self._status_text = f"Recording Telemetry ({frame_count} frames)"
+            # The capture loop does not push live progress updates to Flet.
+            # Showing the initial count here leaves a permanent, misleading
+            # "0 frames" label even while frames are retained in memory.
+            self._status_text = "Recording Telemetry"
             self.bgcolor = "#2d1f1f"
         elif status == TelemetryStatus.ANALYZING:
             self._status_icon = ft.Icons.AUTO_GRAPH
@@ -86,7 +90,7 @@ class TelemetryStatusIndicator(ft.Container):
             self._status_text = "Telemetry error"
             self.bgcolor = "#2d1f1f"
 
-        self._icon.name = self._status_icon
+        self._icon.icon = self._status_icon
         self._icon.color = self._status_color
         self._text.value = self._status_text
         self._text.color = self._status_color
@@ -108,12 +112,12 @@ class TelemetryStatusIndicator(ft.Container):
 class TelemetryButton(ft.Container):
     """Button to open telemetry output location."""
 
-    def __init__(self, on_click=None, output_path: str = None):
+    def __init__(self, on_click=None, output_path: Optional[str] = None):
         # Use _on_click_callback to avoid collision with parent Container.on_click
         self._on_click_callback = on_click
         self.output_path = output_path
 
-        self._button = ft.ElevatedButton(
+        self._button = ft.Button(
             content=ft.Row(
                 controls=[
                     ft.Icon(ft.Icons.FOLDER_OPEN, size=16),

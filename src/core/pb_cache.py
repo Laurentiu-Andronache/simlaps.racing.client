@@ -7,7 +7,7 @@ Preloads from API and provides fast PB detection for new laps.
 
 import httpx
 from dataclasses import dataclass
-from typing import Dict, Tuple, Optional
+from typing import Any, Dict, Tuple, Optional
 from datetime import datetime
 
 from src.utils.structured_logger import (
@@ -181,7 +181,7 @@ class PBCache:
         key = self._normalize_key(track_id, car_id)
         return self._cache.get(key)
     
-    def get_cache_stats(self) -> Dict[str, any]:
+    def get_cache_stats(self) -> Dict[str, Any]:
         """
         Get cache statistics.
         
@@ -216,7 +216,7 @@ class PBCache:
         """Get the Steam ID associated with this cache."""
         return self._steam_id
     
-    def get_all_pbs(self) -> Dict[str, PersonalBest]:
+    def get_all_pbs(self) -> Dict[Tuple[str, str], PersonalBest]:
         """
         Get all personal bests from cache.
         

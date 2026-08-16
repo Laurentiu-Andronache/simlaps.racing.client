@@ -13,6 +13,7 @@ from collections import deque
 from ..components.lap_card import LapCard, LapCardData, LapCardStatus
 from ..components.status_bar import StatusBar, ConnectionStatus
 from ..components.telemetry_status import TelemetryStatusIndicator, TelemetryStatus
+from ..components.feedback import show_snackbar
 from ...models import SessionData, LapData
 from ...core.api_client import SubmissionStatus
 from ...utils.config import AppConfig
@@ -430,11 +431,10 @@ class HomePage(ft.Column):
             log_debug(Component.HOME, "No callback registered for PB Cache")
             # Show a message to user if no callback is set
             if self.page:
-                self.page.show_snack_bar(
-                    ft.SnackBar(
-                        content=ft.Text("PB Cache view is not configured yet"),
-                        action="OK"
-                    )
+                show_snackbar(
+                    self.page,
+                    "PB Cache view is not configured yet",
+                    "#7c3aed",
                 )
     
     def _handle_logs_click(self, e):
@@ -514,6 +514,13 @@ class HomePage(ft.Column):
             self._laps_column.update()
         
         return card
+
+    def refresh_lap(self, lap: LapData) -> None:
+        """Rebuild a card whose shared LapData gained delayed log fields."""
+        for card in self._lap_cards:
+            if card.data is not None and card.data.lap is lap:
+                card.update_status(card.data.status, card.data.error_message)
+                return
     
     def update_lap_status(self, card: LapCard, status: LapCardStatus, error_message: Optional[str] = None):
         """Update a lap card's status."""
@@ -543,7 +550,7 @@ class HomePage(ft.Column):
         self,
         status: TelemetryStatus,
         frame_count: int = 0,
-        result_path: str = None,
+        result_path: Optional[str] = None,
     ):
         """Update the telemetry status indicator."""
         self._telemetry_status.set_status(status, frame_count, result_path)
@@ -556,7 +563,7 @@ class HomePage(ft.Column):
         if button is None:
             self._telemetry_button_container.content = None
         else:
-            self._telemetry_button.update_path(output_path)
+            button.update_path(output_path)
             self._telemetry_button_container.content = ft.Container(
                 content=button,
                 padding=ft.Padding.only(left=20, right=20, bottom=8),

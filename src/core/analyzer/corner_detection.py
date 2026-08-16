@@ -218,7 +218,12 @@ def detect_profiled_corners(
 
     result = []
     for spec in profile.get("corners", []):
-        window = [pt for pt in seg if spec["start"] <= pt["lap_pos"] < spec["end"]]
+        window = [
+            pt
+            for pt in seg
+            if pt["lap_pos"] is not None
+            and spec["start"] <= pt["lap_pos"] < spec["end"]
+        ]
         if not window:
             continue
 
@@ -236,7 +241,12 @@ def detect_profiled_corners(
         # is evaluated on the identical track section.
         m_start, m_end = _corner_measurement_window(spec)
         if has_norm_pos:
-            measurement = [pt for pt in seg if m_start <= pt["lap_pos"] < m_end]
+            measurement = [
+                pt
+                for pt in seg
+                if pt["lap_pos"] is not None
+                and m_start <= pt["lap_pos"] < m_end
+            ]
             if len(measurement) >= 2:
                 segment_time_s = (measurement[-1]["frame"] - measurement[0]["frame"]) / hz
                 confidence = 0.5
