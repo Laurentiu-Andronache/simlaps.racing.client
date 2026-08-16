@@ -61,6 +61,34 @@ from src.core.analyzer.analysis_result import AnalysisResult
 from src.core.analyzer.session_summary import _session_summary_path, _write_session_summary, _load_previous_summary
 
 
+_LAP_TIME_ALIGNMENT_TOLERANCE_MS = 2.0
+
+
+def _nearest_lap_marker_by_time(markers: List, timing_lap_time: Any):
+    """Return the nearest unused log marker within rounding tolerance."""
+    if (
+        not isinstance(timing_lap_time, (int, float))
+        or isinstance(timing_lap_time, bool)
+    ):
+        return None
+
+    candidates = []
+    for order, marker in enumerate(markers):
+        marker_lap_time = marker[1]
+        if (
+            not isinstance(marker_lap_time, (int, float))
+            or isinstance(marker_lap_time, bool)
+        ):
+            continue
+        delta_ms = abs(float(marker_lap_time) - float(timing_lap_time))
+        if delta_ms <= _LAP_TIME_ALIGNMENT_TOLERANCE_MS:
+            candidates.append((delta_ms, order, marker))
+
+    if not candidates:
+        return None
+    return min(candidates, key=lambda candidate: (candidate[0], candidate[1]))[2]
+
+
 class TelemetryAnalyzer:
     """Analyzes telemetry data and generates reports."""
 
@@ -168,6 +196,7 @@ class TelemetryAnalyzer:
         lap_times_ms = None
         lap_numbers = None
         lap_types = None
+        timing_bounds = _detect_laps_by_timing_state(track, hz=hz) or []
 
         # 1st priority: Game log boundaries (most definitive)
         if game_lap_boundaries and len(game_lap_boundaries) >= 1:
@@ -192,23 +221,71 @@ class TelemetryAnalyzer:
                     key=lambda item: item[0],
                 )
                 start_frame = track[0]["frame"] if track else 0
-                lap_bounds = [start_frame] + [marker[0] for marker in sorted_markers]
-                lap_times_ms = [marker[1] for marker in sorted_markers]
-                lap_numbers = [
-                    marker[2] if marker[2] is not None else initial_completed_laps + idx + 1
-                    for idx, marker in enumerate(sorted_markers)
-                ]
-                lap_types = [marker[3] for marker in sorted_markers]
+                if timing_bounds:
+                    # Callback frame indices can be late when ACE buffers its
+                    # file log or the UI event loop stalls. SHM timer changes
+                    # preserve the physical order and exact frame boundary;
+                    # enrich those boundaries with matching log metadata by
+                    # lap time instead of trusting callback arrival order.
+                    track_by_frame = {point["frame"]: point for point in track}
+                    unused_markers = list(sorted_markers)
+                    reconciled_markers = []
+                    callback_frame_deltas = []
+                    for idx, frame in enumerate(timing_bounds):
+                        point = track_by_frame.get(frame, {})
+                        timing_lap_time = point.get("last_lap_time_ms")
+                        match = _nearest_lap_marker_by_time(
+                            unused_markers,
+                            timing_lap_time,
+                        )
+                        if match is not None:
+                            unused_markers.remove(match)
+                            callback_frame_deltas.append(abs(match[0] - frame))
+                        reconciled_markers.append(
+                            (
+                                frame,
+                                timing_lap_time if timing_lap_time is not None else (match[1] if match else None),
+                                initial_completed_laps + idx + 1,
+                                match[3] if match else "VALID",
+                            )
+                        )
+
+                    lap_bounds = [start_frame] + [marker[0] for marker in reconciled_markers]
+                    lap_times_ms = [marker[1] for marker in reconciled_markers]
+                    lap_numbers = [marker[2] for marker in reconciled_markers]
+                    lap_types = [marker[3] for marker in reconciled_markers]
+                    materially_delayed = any(
+                        delta > max(2, int(round(hz * 2.0)))
+                        for delta in callback_frame_deltas
+                    )
+                    if len(sorted_markers) != len(timing_bounds) or materially_delayed:
+                        analysis_notes.append(
+                            "Delayed or incomplete log callbacks were realigned to shared-memory timing boundaries."
+                        )
+                    log_info(
+                        Component.ANALYZER,
+                        "Lap detection successful",
+                        method="shared-memory timing boundaries enriched by game logs",
+                        laps=len(timing_bounds),
+                    )
+                else:
+                    lap_bounds = [start_frame] + [marker[0] for marker in sorted_markers]
+                    lap_times_ms = [marker[1] for marker in sorted_markers]
+                    lap_numbers = [
+                        marker[2] if marker[2] is not None else initial_completed_laps + idx + 1
+                        for idx, marker in enumerate(sorted_markers)
+                    ]
+                    lap_types = [marker[3] for marker in sorted_markers]
+                    log_info(Component.ANALYZER, "Lap detection successful", method="authoritative game log boundaries", laps=len(lap_bounds) - 1)
                 if initial_completed_laps > 0 and (not lap_numbers or lap_numbers[0] > 1):
                     analysis_notes.append(
                         f"Capture started after {initial_completed_laps} completed game lap(s); earlier laps are omitted from telemetry."
                     )
             else:
                 lap_bounds = game_lap_boundaries
-            log_info(Component.ANALYZER, "Lap detection successful", method="authoritative game log boundaries", laps=len(lap_bounds) - 1)
+                log_info(Component.ANALYZER, "Lap detection successful", method="authoritative game log boundaries", laps=len(lap_bounds) - 1)
         # 2nd priority: Shared memory timing state (last_laptime_ms updates)
         else:
-            timing_bounds = _detect_laps_by_timing_state(track, hz=hz)
             if timing_bounds and len(timing_bounds) >= 1:
                 start_frame = track[0]["frame"] if track else 0
                 lap_bounds = [start_frame] + timing_bounds
@@ -300,6 +377,7 @@ class TelemetryAnalyzer:
                 "max_speed": max(pt["speed"] for pt in lap_track),
                 "avg_speed": sum(pt["speed"] for pt in lap_track) / len(lap_track),
                 "fuel_used": fuel_used,
+                "is_valid": lap_type == "VALID",
                 "track": lap_track,
                 "canonical_track": canonical_lap["samples"] if canonical_lap else None,
                 "corners": corners,

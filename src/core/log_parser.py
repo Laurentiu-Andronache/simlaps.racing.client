@@ -38,6 +38,7 @@ from ..utils.structured_logger import log_debug, Component
 # ─── Callback type aliases ────────────────────────────────────────────────────
 
 LapCallback          = Callable[[SessionData, LapData], Awaitable[None]]
+LapUpdateCallback    = Callable[[SessionData, LapData], Awaitable[None]]
 StatusCallback       = Callable[[str], Awaitable[None]]
 GameStatusCallback   = Callable[[bool], Awaitable[None]]
 UserDetectedCallback = Callable[[str, Optional[str]], Awaitable[None]]
@@ -56,6 +57,7 @@ class LogParser:
 
     DEFAULT_LOG_DIR = Path.home() / "Saved Games" / "ACE" / "Logs"
     DEFAULT_LOG_PATH = DEFAULT_LOG_DIR
+    PENDING_VALIDITY_GRACE_SECONDS = 0.5
 
     @staticmethod
     def _find_latest_log(log_dir: Path) -> Optional[Path]:
@@ -72,6 +74,7 @@ class LogParser:
         self,
         log_path: Optional[str] = None,
         on_lap_complete: Optional[LapCallback] = None,
+        on_lap_update: Optional[LapUpdateCallback] = None,
         on_status_change: Optional[StatusCallback] = None,
         on_game_status_change: Optional[GameStatusCallback] = None,
         on_user_detected: Optional[UserDetectedCallback] = None,
@@ -89,6 +92,7 @@ class LogParser:
             self._log_dir = None
             self.log_path = _path
         self.on_lap_complete = on_lap_complete
+        self.on_lap_update = on_lap_update
         self.on_status_change = on_status_change
         self.on_game_status_change = on_game_status_change
         self.on_user_detected = on_user_detected
@@ -111,12 +115,22 @@ class LogParser:
         # Most recently completed lap, buffered until either:
         #   a) the game's authoritative `Relevant onSplit ... valid` line
         #      arrives (typically ~ms later) and we apply it, or
-        #   b) the next lap completes / the session ends, in which case the
-        #      heuristic state stands.
-        # Buffering by exactly one lap lets the authoritative game flag
-        # override our local sector-sum / split heuristics before the lap is
-        # emitted to listeners.
+        #   b) a short live grace period expires, in which case shared-memory
+        #      validity is used when available, or
+        #   c) a session boundary forces an immediate flush.
+        # This lets older builds provide their authoritative game flag without
+        # making ACE 0.8.1 laps wait for the next lap or session exit.
         self._pending_lap: Optional[LapData] = None
+        # Monotonic timestamp is set only for laps completed during live tail.
+        # Historical laps stay buffered until an explicit session boundary so
+        # starting the client never re-emits an old lap after the grace period.
+        self._pending_lap_since: Optional[float] = None
+        latest_completion = self._session_manager.get_latest_lap_completion()
+        self._last_shm_completion_observed_at = (
+            latest_completion.observed_at if latest_completion else 0.0
+        )
+        self._shm_emitted_laps: list[LapData] = []
+        self._reconciled_lap: Optional[LapData] = None
         # Fallback penalty hint for the currently in-progress lap. Used only
         # when no authoritative validity line is seen for that lap.
         self._pending_penalty_warning: bool = False
@@ -436,6 +450,15 @@ class LogParser:
                 await self.on_lap_complete(session, lap)
             except (RuntimeError, asyncio.CancelledError) as exc:
                 log_debug(Component.LOG_PARSER, f"[ERROR] on_lap_complete: {exc}")
+
+    async def _emit_lap_update(self, session: SessionData, lap: LapData) -> None:
+        """Publish richer log fields for a lap already emitted from SHM."""
+        self._session_manager.update_lap_from_logs(lap, session_data=session)
+        if self.on_lap_update:
+            try:
+                await self.on_lap_update(session, lap)
+            except (RuntimeError, asyncio.CancelledError) as exc:
+                log_debug(Component.LOG_PARSER, f"[ERROR] on_lap_update: {exc}")
 
     def _sync_shared_session(self, session: Optional[SessionData]) -> None:
         if session is None:
@@ -1119,10 +1142,10 @@ class LogParser:
     ) -> LapState:
         """Classify the lap structurally: OUTLAP or VALID.
 
-        Validity is determined exclusively by the game's authoritative
-        ``Relevant onSplit`` flag (handled in ``_handle_lap_validity``).
         This method only decides whether the lap is an outlap (pits / warm-up)
-        or a valid lap eligible for timing.
+        or provisionally valid. Final validity prefers the game's
+        ``Relevant onSplit`` log flag and falls back to live graphics SHM when
+        that broadcast is absent.
 
         Outlap detection is log-only (no SHM dependency):
 
@@ -1166,6 +1189,14 @@ class LogParser:
             return None
 
         lap_time_ms = self._parse_lap_time_ms(time_str)
+        shm_existing = next(
+            (
+                lap
+                for lap in self._shm_emitted_laps
+                if lap.lap_time_ms == lap_time_ms
+            ),
+            None,
+        )
         ip = self._ip
         split_keys: list[int] = sorted(ip.splits.keys())
         split_times: list[int] = [ip.splits[key] for key in split_keys]
@@ -1228,7 +1259,7 @@ class LogParser:
         # ── Fuel ──────────────────────────────────────────────────────────────
         fuel_used = ip.fuel_used
         fuel_reliable = ip.fuel_reliable and self.current_session.fuel_reliable
-        if fuel_used and fuel_used > 0:
+        if shm_existing is None and fuel_used and fuel_used > 0:
             self.current_session.fuel_used_session += fuel_used
 
         # ── Compound & stint ──────────────────────────────────────────────────
@@ -1244,10 +1275,16 @@ class LogParser:
         prior_lap_numbers = [lap.lap_number for lap in self.current_session.laps]
         if self._pending_lap is not None:
             prior_lap_numbers.append(self._pending_lap.lap_number)
-        lap_number = max(prior_lap_numbers, default=0) + 1
+        lap_number = (
+            shm_existing.lap_number
+            if shm_existing is not None
+            else max(prior_lap_numbers, default=0) + 1
+        )
 
         # Update stint (only for laps that actually ran, including invalid valid)
-        if lap_state != LapState.OUTLAP:
+        if shm_existing is not None:
+            stint_number = shm_existing.stint_number
+        elif lap_state != LapState.OUTLAP:
             stint = self._ensure_stint(compound)
             stint.add_lap(lap_number, fuel_used if fuel_reliable else None)
             stint_number = stint.stint_number
@@ -1284,12 +1321,45 @@ class LogParser:
 
         self._reset_in_progress()
 
+        if shm_existing is not None:
+            # ACE flushed the richer log record after the SHM completion was
+            # already shown. Mutate the shared model in place so UI/history
+            # references keep their identity, and suppress a duplicate lap.
+            for field_name in (
+                "physics_lap_number",
+                "sector1_ms",
+                "sector2_ms",
+                "sector3_ms",
+                "sectors_consistent",
+                "fuel_used",
+                "fuel_reliable",
+                "tyre_compound",
+                "timestamp",
+                "distance_hundredm",
+            ):
+                setattr(shm_existing, field_name, getattr(completed_lap, field_name))
+            if completed_lap.lap_state != LapState.VALID:
+                shm_existing.lap_state = completed_lap.lap_state
+                shm_existing.lap_type = completed_lap.lap_type
+                shm_existing.is_valid = completed_lap.is_valid
+                shm_existing.validity_source = "logs"
+            self._shm_emitted_laps.remove(shm_existing)
+            self._reconciled_lap = shm_existing
+            log_debug(
+                Component.LOG_PARSER,
+                f"[LAP] reconciled delayed log for SHM-emitted lap "
+                f"#{shm_existing.lap_number} {shm_existing.lap_time_str}",
+            )
+            return None
+
         # Buffer this lap until the game's authoritative validity arrives.
         # If a previous lap is still pending, that means its validity line
         # never showed up — flush it now with its heuristic state.
         prior_pending = self._pending_lap
         self._pending_lap = completed_lap
+        self._pending_lap_since = time.monotonic() if self._emit_callbacks else None
         if prior_pending is not None:
+            self._apply_shm_fallback_validity(prior_pending)
             self.current_session.laps.append(prior_pending)
             log_debug(Component.LOG_PARSER,
                 f"[LAP] ⚠️ FLUSHING PRIOR PENDING LAP: "
@@ -1320,8 +1390,8 @@ class LogParser:
         * OUTLAP is retained — it is a structural classification (the lap
           leaving the pits), not a validity verdict.
 
-        If no authoritative line arrives (EOF / session end), the lap retains
-        its default VALID / valid state.
+        If no authoritative line arrives, finalisation consults the live
+        graphics SHM validity and otherwise retains the heuristic state.
 
         Returns the now-finalised lap so the caller can emit it; otherwise
         returns None.
@@ -1331,11 +1401,23 @@ class LogParser:
             return None
         if not self.current_session:
             return None
-        pending = self._pending_lap
-        if pending is None:
-            return None
-
         laptime_ms, valid_text, validity_flags, game_lap_number = parsed
+        pending = self._pending_lap
+        already_emitted = False
+        if pending is None:
+            pending = next(
+                (
+                    lap
+                    for lap in reversed(self.current_session.laps[-2:])
+                    if lap.lap_time_ms == laptime_ms
+                    and lap.validity_source == "shm_graphics"
+                ),
+                None,
+            )
+            if pending is None:
+                return None
+            already_emitted = True
+
         if laptime_ms != pending.lap_time_ms:
             # Mismatch — likely a stale broadcast for a different car.
             return None
@@ -1379,16 +1461,59 @@ class LogParser:
         # authoritative-valid results from being overridden by SHM.
         pending.validity_source = "authoritative"
 
-        self.current_session.laps.append(pending)
-        self._pending_lap = None
+        if already_emitted:
+            self._reconciled_lap = pending
+        else:
+            self.current_session.laps.append(pending)
+            self._pending_lap = None
+            self._pending_lap_since = None
         log_debug(Component.LOG_PARSER, 
             f"[LAP] flushed pending #{pending.lap_number} via authoritative "
             f"flag (game_valid={game_valid})"
         )
-        return pending
+        return None if already_emitted else pending
+
+    def _apply_shm_fallback_validity(self, pending: LapData) -> None:
+        """Use live graphics validity when ACE omits its log verdict.
+
+        ``Relevant onSplit`` remains authoritative whenever it arrives.  This
+        fallback is only consulted while finalising a still-pending lap, and
+        OUTLAP remains a stronger structural classification from the logs.
+        """
+        if pending.lap_state == LapState.OUTLAP:
+            return
+
+        completion = self._session_manager.get_lap_completion_by_time(
+            pending.lap_time_ms
+        )
+        completion_matches = (
+            completion is not None
+            and completion.lap_time_ms == pending.lap_time_ms
+            and completion.is_valid is not None
+        )
+        if completion_matches:
+            is_valid = bool(completion.is_valid)
+        else:
+            lap_number = pending.physics_lap_number or pending.lap_number
+            validity = self._session_manager.get_lap_validity_data(lap_number)
+            if validity is None or validity.source != "shm_graphics":
+                return
+            is_valid = validity.is_valid
+
+        pending.is_valid = is_valid
+        pending.lap_state = (
+            LapState.VALID if is_valid else LapState.INVALID_GAME
+        )
+        pending.lap_type = pending.lap_state.value
+        pending.validity_source = "shm_graphics"
+        log_debug(
+            Component.LOG_PARSER,
+            f"[VALIDITY] Applied SHM fallback to pending lap "
+            f"#{pending.lap_number}: {pending.lap_state.value}",
+        )
 
     def _flush_pending_lap(self) -> Optional[LapData]:
-        """Append any buffered lap to the session with its heuristic state.
+        """Append any buffered lap using the best remaining validity source.
 
         Used at session end / file EOF where no further authoritative
         validity line will arrive. Returns the flushed lap so callers can
@@ -1398,12 +1523,86 @@ class LogParser:
         if pending is None or not self.current_session:
             return None
         self._pending_lap = None
+        self._pending_lap_since = None
+        self._apply_shm_fallback_validity(pending)
         self.current_session.laps.append(pending)
         log_debug(Component.LOG_PARSER, 
             f"[LAP] flushed pending #{pending.lap_number} on session/EOF "
-            f"(heuristic state)"
+            f"(validity source={pending.validity_source})"
         )
         return pending
+
+    def _flush_pending_lap_after_grace(self) -> Optional[LapData]:
+        """Finalise a live lap when ACE does not emit a validity log line."""
+        if self._pending_lap_since is None:
+            return None
+        if time.monotonic() - self._pending_lap_since < self.PENDING_VALIDITY_GRACE_SECONDS:
+            return None
+        return self._flush_pending_lap()
+
+    def _take_ready_shm_lap(self) -> Optional[LapData]:
+        """Build a live lap when ACE's file logger has not flushed yet."""
+        completions = self._session_manager.get_lap_completions_after(
+            self._last_shm_completion_observed_at
+        )
+        if not completions:
+            return None
+        # Consume oldest-first. ACE can delay file-log writes for more than a
+        # full lap; keeping only the newest SHM transition swaps or drops laps.
+        completion = completions[0]
+        if time.monotonic() - completion.observed_at < self.PENDING_VALIDITY_GRACE_SECONDS:
+            return None
+
+        if self._pending_lap and self._pending_lap.lap_time_ms == completion.lap_time_ms:
+            self._last_shm_completion_observed_at = completion.observed_at
+            return None
+        if self.current_session and any(
+            lap.lap_time_ms == completion.lap_time_ms
+            for lap in self.current_session.laps[-2:]
+        ):
+            self._last_shm_completion_observed_at = completion.observed_at
+            return None
+
+        self._last_shm_completion_observed_at = completion.observed_at
+        if self.current_session is None:
+            return None
+
+        prior_numbers = [lap.lap_number for lap in self.current_session.laps]
+        if self._pending_lap is not None:
+            prior_numbers.append(self._pending_lap.lap_number)
+        lap_number = max(prior_numbers, default=0) + 1
+        is_valid = completion.is_valid is not False
+        lap_state = LapState.VALID if is_valid else LapState.INVALID_GAME
+        minutes, remainder = divmod(completion.lap_time_ms, 60_000)
+        seconds, milliseconds = divmod(remainder, 1_000)
+        compound = self.context.tyre.compound_name
+        stint = self._ensure_stint(compound)
+        stint.add_lap(lap_number, None)
+        lap = LapData(
+            lap_number=lap_number,
+            physics_lap_number=completion.completed_laps,
+            lap_time_ms=completion.lap_time_ms,
+            lap_time_str=f"{minutes:02d}:{seconds:02d}.{milliseconds:03d}",
+            lap_state=lap_state,
+            lap_type=lap_state.value,
+            is_valid=is_valid,
+            validity_source="shm_graphics",
+            tyre_compound=compound,
+            stint_number=stint.stint_number,
+            timestamp=completion.timestamp,
+        )
+        self.current_session.laps.append(lap)
+        self._shm_emitted_laps.append(lap)
+        # Do not reset the log accumulator here. ACE may already have flushed
+        # early-sector lines while still buffering S3/New lap; those partial
+        # fields must survive until the delayed completion line reconciles
+        # this SHM-first lap.
+        log_debug(
+            Component.LOG_PARSER,
+            f"[LAP] emitted from live SHM before log flush: "
+            f"#{lap.lap_number} {lap.lap_time_str} state={lap.lap_state.value}",
+        )
+        return lap
 
     # ── Aborted lap emission ──────────────────────────────────────────────────
 
@@ -1802,6 +2001,11 @@ class LogParser:
                             log_debug(Component.LOG_PARSER, f"[ERROR] Live process_line: {exc}")
                             continue
 
+                        if self._reconciled_lap is not None and self.current_session is not None:
+                            reconciled = self._reconciled_lap
+                            self._reconciled_lap = None
+                            await self._emit_lap_update(self.current_session, reconciled)
+
                         if completed:
                             session = self.current_session or SessionData(
                                 track="Unknown", car="Unknown"
@@ -1818,9 +2022,27 @@ class LogParser:
                                 await self._emit_lap(session, completed)
                             except (RuntimeError, asyncio.CancelledError) as exc:
                                 log_debug(Component.LOG_PARSER, f"[ERROR] emit_lap: {exc}")
+
+                        # ACE 0.8.1 can omit the post-lap ``Relevant onSplit``
+                        # validity broadcast.  Give legacy builds a brief
+                        # chance to provide it, then publish from the best
+                        # remaining live source instead of delaying one lap.
+                        grace_completed = self._flush_pending_lap_after_grace()
+                        if grace_completed is not None and self.current_session is not None:
+                            await self._emit_lap(self.current_session, grace_completed)
+                        shm_completed = self._take_ready_shm_lap()
+                        if shm_completed is not None and self.current_session is not None:
+                            await self._emit_lap(self.current_session, shm_completed)
                         continue
 
                     # No new data — check for a newer log file (new game session)
+                    grace_completed = self._flush_pending_lap_after_grace()
+                    if grace_completed is not None and self.current_session is not None:
+                        await self._emit_lap(self.current_session, grace_completed)
+                    shm_completed = self._take_ready_shm_lap()
+                    if shm_completed is not None and self.current_session is not None:
+                        await self._emit_lap(self.current_session, shm_completed)
+
                     if self._log_dir is not None:
                         _latest = self._find_latest_log(self._log_dir)
                         if _latest is not None and _latest != self.log_path:

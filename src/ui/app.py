@@ -193,6 +193,7 @@ class SimLapsApp:
         return LogParser(
             log_path=log_path,
             on_lap_complete=self._on_lap_complete,
+            on_lap_update=self._on_lap_update,
             on_status_change=self._on_parser_status,
             on_game_status_change=self._on_game_status_change,
             on_user_detected=self._on_user_detected,
@@ -419,6 +420,16 @@ class SimLapsApp:
                 self._current_track_name = updated_track
         except Exception as e:
             log_exception(Component.APP, "_on_lap_complete failed", e)
+
+    async def _on_lap_update(self, session: SessionData, lap: LapData):
+        """Refresh a SHM-first lap after ACE eventually flushes its log data."""
+        if self._home_page:
+            self._home_page.refresh_lap(lap)
+        history_entry = self._get_history_entry_for_lap_number(lap.lap_number)
+        if history_entry is not None:
+            history_entry.lap_time_ms = lap.lap_time_ms
+            history_entry.timestamp = lap.timestamp
+            history_entry.was_valid = lap.is_valid
     
     async def _submit_lap(
         self,

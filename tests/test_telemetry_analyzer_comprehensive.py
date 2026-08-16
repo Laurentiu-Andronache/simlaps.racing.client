@@ -5,7 +5,7 @@ Tests lap detection, corner detection, and track building with various scenarios
 """
 
 import pytest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from src.core.telemetry_analyzer import (
     build_track,
     detect_laps,
@@ -159,6 +159,28 @@ class TestDetectLaps:
         
         # Should detect one boundary at the timing change
         assert len(lap_bounds) >= 1
+
+    def test_detect_laps_ignores_shutdown_last_time_reset(self):
+        """Cleared SHM mappings must not create a zero-second final lap."""
+        frames = []
+        for i in range(120):
+            if i < 50:
+                last_lap_time = 0
+            elif i < 100:
+                last_lap_time = 65000
+            else:
+                last_lap_time = 0
+            frames.append(
+                create_mock_frame(
+                    i,
+                    position=(i % 50) / 50,
+                    last_lap_time_ms=last_lap_time,
+                )
+            )
+
+        lap_bounds = detect_laps(build_track(frames, hz=10.0), hz=10.0)
+
+        assert lap_bounds == [50]
 
 
 class TestCornerDetection:
@@ -1077,6 +1099,63 @@ class TestTelemetryAnalyzer:
         assert result.laps_detected == 4
         # Best lap should come from game-provided times, not frame-distance math.
         assert abs(result.best_lap_time - 152.001) < 0.001
+
+    @pytest.mark.asyncio
+    async def test_analyze_realigns_delayed_callbacks_to_all_timing_boundaries(self, tmp_path):
+        """Buffered callbacks retain invalidity across a 1 ms source mismatch."""
+        from src.core.telemetry_analyzer import TelemetryAnalyzer
+
+        lap_times = [66393, 65559, 66174, 64428, 78888]
+        frames = []
+        last_lap_time = 0
+        for frame_num in range(360):
+            if frame_num in (60, 120, 180, 240, 300):
+                last_lap_time = lap_times[(frame_num // 60) - 1]
+            frames.append(
+                create_mock_frame(
+                    frame_num,
+                    speed=100.0,
+                    position=(frame_num % 60) / 60,
+                    last_lap_time_ms=last_lap_time,
+                )
+            )
+
+        manager = SharedSessionManager()
+        manager.update_lap_validity_from_graphics_shm(5, True)
+        analyzer = TelemetryAnalyzer(
+            output_dir=str(tmp_path),
+            session_manager=manager,
+        )
+        # Lap 3 arrived after lap 4 and differs from SHM by 1 ms. Its invalid
+        # type must follow the nearest lap time rather than callback order.
+        # The invalid fifth-lap callback is absent and comes from shared state.
+        delayed_markers = [
+            (60, 66393, 1, "VALID"),
+            (120, 65559, 2, "VALID"),
+            (270, 64428, 3, "VALID"),
+            (320, 66175, 4, "INVALID_GAME"),
+        ]
+
+        with (
+            patch.object(analyzer, "_generate_html", new=AsyncMock(return_value="report.html")) as html_spy,
+            patch.object(analyzer, "_generate_ai_prompt", new=AsyncMock(return_value="prompt.txt")),
+        ):
+            result = await analyzer.analyze(
+                frames,
+                hz=10.0,
+                game_lap_boundaries=delayed_markers,
+                output_prefix="delayed_callbacks",
+            )
+
+        assert result.laps_detected == 5
+        data = html_spy.await_args.args[0]
+        assert [lap["lap_num"] for lap in data["laps"]] == [1, 2, 3, 4, 5]
+        assert [lap["lap_time_s"] for lap in data["laps"]] == pytest.approx(
+            [66.393, 65.559, 66.174, 64.428, 78.888]
+        )
+        assert [lap["is_valid"] for lap in data["laps"]] == [True, True, False, True, False]
+        assert [lap["end_frame"] for lap in data["laps"]] == [60, 120, 180, 240, 300]
+        assert any("realigned" in note for note in data["analysis_notes"])
 
     @pytest.mark.asyncio
     async def test_analyze_uses_outlap_boundary_but_excludes_outlap(self):

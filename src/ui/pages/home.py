@@ -514,6 +514,13 @@ class HomePage(ft.Column):
             self._laps_column.update()
         
         return card
+
+    def refresh_lap(self, lap: LapData) -> None:
+        """Rebuild a card whose shared LapData gained delayed log fields."""
+        for card in self._lap_cards:
+            if card.data is not None and card.data.lap is lap:
+                card.update_status(card.data.status, card.data.error_message)
+                return
     
     def update_lap_status(self, card: LapCard, status: LapCardStatus, error_message: Optional[str] = None):
         """Update a lap card's status."""

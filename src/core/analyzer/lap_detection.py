@@ -9,13 +9,30 @@ def _detect_laps_by_timing_state(track: List[Dict], hz: float = 1.0) -> Optional
     min_lap_frames = max(10, int(round(1.0 * hz)))
     boundaries = []
     prev_last_laptime = None
+    saw_empty_last_laptime = False
 
     for pt in track:
         last_laptime = pt.get("last_lap_time_ms")
-        if last_laptime is None:
+        # Zero/None means there is no completed lap (session start, pit
+        # outlap, or mappings being cleared during shutdown). It is not a
+        # finish-line transition and must not create a zero-second lap.
+        if (
+            not isinstance(last_laptime, (int, float))
+            or isinstance(last_laptime, bool)
+            or last_laptime <= 0
+        ):
+            if prev_last_laptime is None:
+                saw_empty_last_laptime = True
             continue
         # Detect when last_laptime changes (lap completion event)
-        if prev_last_laptime is not None and last_laptime != prev_last_laptime:
+        completed_transition = (
+            (prev_last_laptime is None and saw_empty_last_laptime)
+            or (
+                prev_last_laptime is not None
+                and last_laptime != prev_last_laptime
+            )
+        )
+        if completed_transition:
             frame = pt["frame"]
             if not boundaries or (frame - boundaries[-1]) >= min_lap_frames:
                 boundaries.append(frame)
