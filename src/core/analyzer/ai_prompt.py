@@ -46,7 +46,24 @@ async def generate_ai_prompt(
         return ai_prompt_path
 
     hz = data.get("hz", 10.0)
-    best_lap = min(laps, key=lambda l: l["lap_time_s"])
+    valid_laps = [lap for lap in laps if lap.get("is_valid", True)]
+    requested_best_lap_num = data.get("best_lap_num")
+    best_lap = next(
+        (
+            lap
+            for lap in valid_laps
+            if lap.get("lap_num") == requested_best_lap_num
+        ),
+        None,
+    )
+    if best_lap is None and valid_laps:
+        best_lap = min(valid_laps, key=lambda lap: lap["lap_time_s"])
+    no_valid_laps = best_lap is None
+    if best_lap is None:
+        # The analyzer forces diagnostic mode when no valid lap exists. Keep
+        # a local fallback only so legacy/direct callers still get a useful
+        # diagnostic prompt without labelling the lap as a valid session best.
+        best_lap = min(laps, key=lambda lap: lap["lap_time_s"])
     worst_lap = max(laps, key=lambda l: l["lap_time_s"])
     time_diff = worst_lap["lap_time_s"] - best_lap["lap_time_s"]
     track_label = data.get("track_label") or data.get("track_name") or "Unknown Track"
@@ -54,13 +71,17 @@ async def generate_ai_prompt(
     corner_speeds = data.get("corner_speeds", {})
     analysis_mode = data.get("analysis_mode", "diagnostic")
     analysis_confidence = data.get("analysis_confidence", "low")
-    analysis_notes = data.get("analysis_notes", [])
+    analysis_notes = list(data.get("analysis_notes", []))
+    if no_valid_laps:
+        analysis_mode = "diagnostic"
+        ref_corners = []
+        note = "No valid completed laps were available; invalid laps are shown for diagnostics only."
+        if note not in analysis_notes:
+            analysis_notes.append(note)
     authoritative_progress_ratio = float(data.get("authoritative_progress_ratio", 0.0) or 0.0)
     plausible_frame_ratio = float(data.get("plausible_frame_ratio", 0.0) or 0.0)
     reference_lap_num = data.get("reference_lap_num", best_lap["lap_num"])
     comparison_lap_num = data.get("comparison_lap_num", best_lap["lap_num"])
-    reference_lap = next((lap for lap in laps if lap["lap_num"] == reference_lap_num), best_lap)
-    comparison_lap = next((lap for lap in laps if lap["lap_num"] == comparison_lap_num), best_lap)
 
     # ── Car name from shared session data
     car_model: str = data.get("car") or "Unknown Car"
@@ -135,7 +156,7 @@ async def generate_ai_prompt(
     if car_known:
         lines.append(f"- Car:            {car_model}")
     else:
-        lines.append(f"- Car:            Unknown (not captured from SHM)")
+        lines.append("- Car:            Unknown (not captured from SHM)")
     lines.append(f"- Analysis mode:  {analysis_mode}")
     lines.append(f"- Confidence:     {analysis_confidence}")
     lines.append(f"- Reference lap:  #{reference_lap_num}")
@@ -584,7 +605,7 @@ async def generate_ai_prompt(
             )
 
         # ── Steering smoothness per corner (1.4)
-        _steer_data: Dict[int, List[tuple]] = {}
+        _steer_data: Dict[int, List[Dict[str, Any]]] = {}
         for lap in laps:
             corner = lap_corner_map[lap["lap_num"]].get(cid)
             if corner:
@@ -604,7 +625,7 @@ async def generate_ai_prompt(
                     )
 
         # ── Throttle exit profile per corner (1.5)
-        _throttle_data: Dict[int, List[tuple]] = {}
+        _throttle_data: Dict[int, List[Dict[str, Any]]] = {}
         for lap in laps:
             corner = lap_corner_map[lap["lap_num"]].get(cid)
             if corner:

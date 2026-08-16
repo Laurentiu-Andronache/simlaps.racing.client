@@ -9,7 +9,7 @@ import os
 os.environ["APP_SECRET"] = "0000000000000000000000000000000000000000000000000000000000000000"
 
 from src.core.log_parser import LogParser
-from src.models import SessionData, LapState
+from src.models import LapData, SessionData, LapState
 
 
 class TestHandleLapCompleteBasic:
@@ -202,6 +202,7 @@ class TestHandleLapCompleteWithData:
         assert result.lap_state == LapState.VALID
         assert result.is_valid is True
         assert parser._pending_lap is None  # flushed
+        assert parser._pending_lap_since is None
 
     def test_handle_lap_validity_flags_one_invalidates_valid(self):
         """Test that the game's invalid flag demotes a heuristically-valid lap.
@@ -247,6 +248,83 @@ class TestHandleLapCompleteWithData:
         assert result.is_valid is False
         assert result.lap_type == "INVALID_GAME"
         assert parser._pending_lap is None  # flushed
+
+    def test_late_authoritative_validity_updates_shm_emitted_lap(self):
+        parser = LogParser()
+        parser.current_session = SessionData(track="spa", car="porsche")
+        lap = LapData(
+            lap_number=1,
+            physics_lap_number=1,
+            lap_time_ms=125000,
+            lap_time_str="02:05.000",
+            lap_state=LapState.INVALID_GAME,
+            lap_type="INVALID_GAME",
+            is_valid=False,
+            validity_source="shm_graphics",
+        )
+        parser.current_session.laps.append(lap)
+
+        result = parser._handle_lap_validity(
+            "[2026-08-16 12:00:00.000] [network] [info] "
+            "Relevant onSplit for Combo 6@2: laptime 125000, valid true, "
+            "flags 2, lap 1 (prev 0)"
+        )
+
+        assert result is None
+        assert lap.lap_state == LapState.VALID
+        assert lap.is_valid is True
+        assert lap.validity_source == "authoritative"
+        assert parser._reconciled_lap is lap
+        assert parser.current_session.laps == [lap]
+
+    def test_shm_completion_time_beats_reused_physical_lap_validity(self):
+        """Fallback validity follows the matching completion across pit stints."""
+        from src.models import SharedSessionManager
+
+        manager = SharedSessionManager()
+        manager.update_lap_from_logs(
+            LapData(
+                lap_number=2,
+                physics_lap_number=2,
+                lap_time_ms=70290,
+                lap_time_str="01:10.290",
+                is_valid=True,
+                lap_state=LapState.VALID,
+                lap_type="VALID",
+            )
+        )
+        manager.update_from_graphics_shm(
+            {
+                "total_lap_count": 1,
+                "current_lap_time_ms": 83000,
+                "last_laptime_ms": 0,
+                "is_valid_lap": False,
+            }
+        )
+        manager.update_from_graphics_shm(
+            {
+                "total_lap_count": 1,
+                "current_lap_time_ms": 80,
+                "last_laptime_ms": 84057,
+                "is_valid_lap": True,
+            }
+        )
+        parser = LogParser(session_manager=manager)
+        pending = LapData(
+            lap_number=3,
+            physics_lap_number=2,
+            lap_time_ms=84057,
+            lap_time_str="01:24.057",
+            is_valid=True,
+            lap_state=LapState.VALID,
+            lap_type="VALID",
+        )
+
+        parser._apply_shm_fallback_validity(pending)
+
+        assert pending.is_valid is False
+        assert pending.lap_state == LapState.INVALID_GAME
+        assert pending.validity_source == "shm_graphics"
 
     def test_handle_lap_validity_flags_two_valid_even_when_boolean_false(self):
         """AC Evo 0.7.0 can log valid false + flags 2 for a valid final lap."""

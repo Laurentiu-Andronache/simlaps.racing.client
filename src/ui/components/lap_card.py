@@ -55,6 +55,7 @@ class LapCard(ft.Container):
             bgcolor=self._get_bgcolor(),
             border=ft.Border.all(1, self._get_border_color()),
             animate=ft.Animation(200, ft.AnimationCurve.EASE_OUT),
+            data=data,
         )
     
     def _get_bgcolor(self) -> str:

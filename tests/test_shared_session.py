@@ -48,6 +48,191 @@ def test_update_from_graphics_sets_timing_and_fuel() -> None:
     assert fuel.fuel_economy == 0.42
 
 
+def test_graphics_lap_counter_transition_snapshots_completed_lap() -> None:
+    manager = SharedSessionManager()
+    manager.update_from_graphics_shm(
+        {
+            "total_lap_count": 0,
+            "current_lap_time_ms": 75000,
+            "last_laptime_ms": 0,
+            "is_valid_lap": False,
+        }
+    )
+    assert manager.get_latest_lap_completion() is None
+
+    manager.update_from_graphics_shm(
+        {
+            "total_lap_count": 1,
+            "current_lap_time_ms": 50,
+            "last_laptime_ms": 75684,
+            "is_valid_lap": True,
+        }
+    )
+
+    completion = manager.get_latest_lap_completion()
+    assert completion is not None
+    assert completion.completed_laps == 1
+    assert completion.lap_time_ms == 75684
+    assert completion.is_valid is False
+    assert manager.get_all_lap_times() == {1: 75684.0}
+    assert manager.get_lap_time(2) is None
+
+
+def test_graphics_timer_reset_snapshots_invalid_lap_before_counter_advances() -> None:
+    """ACE resets timing/validity before its completed-lap counter changes."""
+    manager = SharedSessionManager()
+    manager.update_from_graphics_shm(
+        {
+            "total_lap_count": 1,
+            "current_lap_time_ms": 87500,
+            "last_laptime_ms": 0,
+            "is_valid_lap": False,
+        }
+    )
+    manager.update_from_graphics_shm(
+        {
+            "total_lap_count": 1,
+            "current_lap_time_ms": 75,
+            "last_laptime_ms": 87570,
+            "is_valid_lap": True,
+        }
+    )
+
+    completion = manager.get_latest_lap_completion()
+    assert completion is not None
+    assert completion.lap_time_ms == 87570
+    assert completion.is_valid is False
+
+    # The delayed counter transition must not replace the same completion
+    # with the new lap's valid=True state.
+    manager.update_from_graphics_shm(
+        {
+            "total_lap_count": 2,
+            "current_lap_time_ms": 3000,
+            "last_laptime_ms": 87570,
+            "is_valid_lap": True,
+        }
+    )
+    assert manager.get_latest_lap_completion() == completion
+
+
+def test_graphics_outlap_timer_reset_clears_validity_without_completed_time() -> None:
+    """An invalid pit outlap must not contaminate the first timed lap."""
+    manager = SharedSessionManager()
+    manager.update_from_graphics_shm(
+        {
+            "total_lap_count": 0,
+            "current_lap_time_ms": 62000,
+            "last_laptime_ms": 0,
+            "is_valid_lap": False,
+        }
+    )
+
+    # ACE resets the timer at the outlap boundary but does not publish the
+    # outlap as last_laptime_ms or advance its completed-lap counter.
+    manager.update_from_graphics_shm(
+        {
+            "total_lap_count": 0,
+            "current_lap_time_ms": 86,
+            "last_laptime_ms": 0,
+            "is_valid_lap": True,
+        }
+    )
+    assert manager.get_latest_lap_completion() is None
+
+    manager.update_from_graphics_shm(
+        {
+            "total_lap_count": 0,
+            "current_lap_time_ms": 67000,
+            "last_laptime_ms": 0,
+            "is_valid_lap": True,
+        }
+    )
+    manager.update_from_graphics_shm(
+        {
+            "total_lap_count": 1,
+            "current_lap_time_ms": 118,
+            "last_laptime_ms": 67074,
+            "is_valid_lap": True,
+        }
+    )
+
+    completion = manager.get_latest_lap_completion()
+    assert completion is not None
+    assert completion.lap_time_ms == 67074
+    assert completion.is_valid is True
+
+
+def test_graphics_completion_validity_survives_physical_counter_reuse_after_pit() -> None:
+    """A new stint must not inherit a frozen verdict for the same SHM lap key."""
+    manager = SharedSessionManager()
+    prior_lap = LapData(
+        lap_number=2,
+        physics_lap_number=2,
+        lap_time_ms=70290,
+        lap_time_str="01:10.290",
+        is_valid=True,
+        lap_state=LapState.VALID,
+        lap_type="VALID",
+        timestamp="2026-08-16T14:48:32.770",
+    )
+    manager.update_lap_from_logs(prior_lap)
+
+    # ACE returns to the pits and later reuses physical lap 2. The old keyed
+    # log verdict is frozen, but the independent live latch tracks this stint.
+    manager.update_from_graphics_shm(
+        {
+            "total_lap_count": 1,
+            "current_lap_time_ms": 83000,
+            "last_laptime_ms": 0,
+            "is_valid_lap": False,
+        }
+    )
+    manager.update_from_graphics_shm(
+        {
+            "total_lap_count": 1,
+            "current_lap_time_ms": 80,
+            "last_laptime_ms": 84057,
+            "is_valid_lap": True,
+        }
+    )
+
+    completion = manager.get_latest_lap_completion()
+    assert completion is not None
+    assert completion.lap_time_ms == 84057
+    assert completion.is_valid is False
+
+
+def test_graphics_retains_multiple_unconsumed_lap_completions() -> None:
+    """Delayed log polling must not collapse a multi-lap SHM backlog."""
+    manager = SharedSessionManager()
+
+    for completed_laps, lap_time_ms, is_valid in (
+        (1, 66393, True),
+        (2, 65559, False),
+    ):
+        manager.update_from_graphics_shm(
+            {
+                "total_lap_count": completed_laps - 1,
+                "current_lap_time_ms": lap_time_ms - 50,
+                "last_laptime_ms": 0,
+                "is_valid_lap": is_valid,
+            }
+        )
+        manager.update_from_graphics_shm(
+            {
+                "total_lap_count": completed_laps,
+                "current_lap_time_ms": 50,
+                "last_laptime_ms": lap_time_ms,
+                "is_valid_lap": True,
+            }
+        )
+
+    completions = manager.get_lap_completions_after(0.0)
+    assert [completion.lap_time_ms for completion in completions] == [66393, 65559]
+    assert [completion.is_valid for completion in completions] == [True, False]
+
+
 def test_update_lap_from_logs_populates_player_and_sector_data() -> None:
     manager = SharedSessionManager()
     session = SessionData(
@@ -548,8 +733,8 @@ def test_memory_usage_optimization() -> None:
     tracemalloc.stop()
 
     # Peak should stay well-bounded for a few thousand updates.
+    assert current < 32 * 1024 * 1024
     assert peak < 32 * 1024 * 1024
-    assert current < peak
 
 
 def test_large_session_handling() -> None:

@@ -12,7 +12,7 @@ from ...utils.structured_logger import log_debug, Component
 
 def show_pb_cache_dialog(page: ft.Page, pb_cache: PBCache):
     """Show a dialog with personal best cache contents."""
-    log_debug(Component.UI, f"show_pb_cache_dialog called")
+    log_debug(Component.UI, "show_pb_cache_dialog called")
     
     def _format_time(time_ms: int) -> str:
         """Format time in minutes:seconds.milliseconds."""
@@ -71,7 +71,7 @@ def show_pb_cache_dialog(page: ft.Page, pb_cache: PBCache):
         )
     
     # Close button
-    close_button = ft.ElevatedButton(
+    close_button = ft.Button(
         "Close",
         on_click=_close_dialog,
         style=ft.ButtonStyle(bgcolor="#7c3aed"),

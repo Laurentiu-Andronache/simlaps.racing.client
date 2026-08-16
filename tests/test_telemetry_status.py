@@ -45,6 +45,8 @@ def test_set_status_capturing():
 
         assert indicator._status == TelemetryStatus.CAPTURING
         assert indicator._frame_count == 42
+        assert indicator._status_text == "Recording Telemetry"
+        assert "frames" not in indicator._text.value
         assert indicator.visible is True
 
 
@@ -91,6 +93,15 @@ def test_set_status_error():
         assert indicator.visible is True
 
 
+def test_real_flet_icon_changes_with_status():
+    indicator = TelemetryStatusIndicator()
+
+    with patch.object(indicator, "update"):
+        indicator.set_status(TelemetryStatus.ERROR)
+
+    assert indicator._icon.icon == indicator._status_icon
+
+
 def test_show_and_hide():
     with patch("src.ui.components.telemetry_status.ft") as mock_ft:
         mock_ft.Row.return_value = MagicMock()
@@ -110,7 +121,7 @@ def test_telemetry_button_handle_click():
         mock_ft.Row.return_value = MagicMock()
         mock_ft.Icon.return_value = MagicMock()
         mock_ft.Text.return_value = MagicMock()
-        mock_ft.ElevatedButton.return_value = MagicMock()
+        mock_ft.Button.return_value = MagicMock()
         callback = MagicMock()
         button = TelemetryButton(on_click=callback, output_path="/tmp/telemetry")
 
@@ -124,7 +135,7 @@ def test_telemetry_button_handle_click_no_callback():
         mock_ft.Row.return_value = MagicMock()
         mock_ft.Icon.return_value = MagicMock()
         mock_ft.Text.return_value = MagicMock()
-        mock_ft.ElevatedButton.return_value = MagicMock()
+        mock_ft.Button.return_value = MagicMock()
         button = TelemetryButton(on_click=None)
 
         event = MagicMock()
@@ -136,7 +147,7 @@ def test_telemetry_button_update_path():
         mock_ft.Row.return_value = MagicMock()
         mock_ft.Icon.return_value = MagicMock()
         mock_ft.Text.return_value = MagicMock()
-        mock_ft.ElevatedButton.return_value = MagicMock()
+        mock_ft.Button.return_value = MagicMock()
         button = TelemetryButton(output_path="/old")
 
         button.update_path("/new")

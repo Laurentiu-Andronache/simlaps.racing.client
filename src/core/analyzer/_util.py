@@ -522,9 +522,9 @@ def format_car_state(state: Optional[Dict]) -> str:
     drs_enabled = state.get("drs_enabled", False)
     drs_str = ""
     if drs_enabled or drs_state > 0.5:
-        drs_str = f" DRS:OPEN"
+        drs_str = " DRS:OPEN"
     elif state.get("drs_available", False):
-        drs_str = f" DRS:AVAIL"
+        drs_str = " DRS:AVAIL"
 
     return (
         f"ABS:{abs_active} TC:{tc_active} "

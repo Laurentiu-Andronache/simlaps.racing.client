@@ -4,8 +4,10 @@ Comprehensive tests for telemetry analyzer with mock data and edge cases.
 Tests lap detection, corner detection, and track building with various scenarios.
 """
 
+import json
+
 import pytest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from src.core.telemetry_analyzer import (
     build_track,
     detect_laps,
@@ -104,6 +106,32 @@ class TestDetectLaps:
         # Should detect 2 boundaries (last_lap_time changes at lap 1 and lap 2)
         assert len(lap_bounds) >= 1
 
+    def test_detect_laps_ignores_synthetic_shutdown_lap_time(self):
+        """An Ended-session timing update is not a finish-line crossing."""
+        frames = []
+        for i in range(30):
+            if i < 10:
+                last_lap_time_ms = 0
+                session_phase = "Session"
+            elif i < 20:
+                last_lap_time_ms = 70_975
+                session_phase = "Session"
+            else:
+                last_lap_time_ms = 241_661
+                session_phase = "Ended"
+            frame = create_mock_frame(
+                i,
+                speed=100.0,
+                position=0.5,
+                last_lap_time_ms=last_lap_time_ms,
+            )
+            frame.graphics["session_phase"] = session_phase
+            frames.append(frame)
+
+        track = build_track(frames, hz=10.0)
+
+        assert detect_laps(track, hz=10.0) == [10]
+
     def test_detect_laps_no_timing_changes(self):
         """Test lap detection when last_lap_time_ms never changes."""
         frames = [create_mock_frame(i, position=i * 0.01, last_lap_time_ms=0) for i in range(200)]
@@ -159,6 +187,28 @@ class TestDetectLaps:
         
         # Should detect one boundary at the timing change
         assert len(lap_bounds) >= 1
+
+    def test_detect_laps_ignores_shutdown_last_time_reset(self):
+        """Cleared SHM mappings must not create a zero-second final lap."""
+        frames = []
+        for i in range(120):
+            if i < 50:
+                last_lap_time = 0
+            elif i < 100:
+                last_lap_time = 65000
+            else:
+                last_lap_time = 0
+            frames.append(
+                create_mock_frame(
+                    i,
+                    position=(i % 50) / 50,
+                    last_lap_time_ms=last_lap_time,
+                )
+            )
+
+        lap_bounds = detect_laps(build_track(frames, hz=10.0), hz=10.0)
+
+        assert lap_bounds == [50]
 
 
 class TestCornerDetection:
@@ -1079,6 +1129,233 @@ class TestTelemetryAnalyzer:
         assert abs(result.best_lap_time - 152.001) < 0.001
 
     @pytest.mark.asyncio
+    async def test_analyze_realigns_delayed_callbacks_to_all_timing_boundaries(self, tmp_path):
+        """Buffered callbacks retain invalidity across a 1 ms source mismatch."""
+        from src.core.telemetry_analyzer import TelemetryAnalyzer
+
+        lap_times = [66393, 65559, 66174, 64428, 78888]
+        frames = []
+        last_lap_time = 0
+        for frame_num in range(360):
+            if frame_num in (60, 120, 180, 240, 300):
+                last_lap_time = lap_times[(frame_num // 60) - 1]
+            frames.append(
+                create_mock_frame(
+                    frame_num,
+                    speed=100.0,
+                    position=(frame_num % 60) / 60,
+                    last_lap_time_ms=last_lap_time,
+                )
+            )
+
+        manager = SharedSessionManager()
+        manager.update_lap_validity_from_graphics_shm(5, True)
+        analyzer = TelemetryAnalyzer(
+            output_dir=str(tmp_path),
+            session_manager=manager,
+        )
+        # Lap 3 arrived after lap 4 and differs from SHM by 1 ms. Its invalid
+        # type must follow the nearest lap time rather than callback order.
+        # The invalid fifth-lap callback is absent and comes from shared state.
+        delayed_markers = [
+            (60, 66393, 1, "VALID"),
+            (120, 65559, 2, "VALID"),
+            (270, 64428, 3, "VALID"),
+            (320, 66175, 4, "INVALID_GAME"),
+        ]
+
+        with (
+            patch.object(analyzer, "_generate_html", new=AsyncMock(return_value="report.html")) as html_spy,
+            patch.object(analyzer, "_generate_ai_prompt", new=AsyncMock(return_value="prompt.txt")),
+        ):
+            result = await analyzer.analyze(
+                frames,
+                hz=10.0,
+                game_lap_boundaries=delayed_markers,
+                output_prefix="delayed_callbacks",
+            )
+
+        assert result.laps_detected == 5
+        data = html_spy.await_args.args[0]
+        assert [lap["lap_num"] for lap in data["laps"]] == [1, 2, 3, 4, 5]
+        assert [lap["lap_time_s"] for lap in data["laps"]] == pytest.approx(
+            [66.393, 65.559, 66.174, 64.428, 78.888]
+        )
+        assert [lap["is_valid"] for lap in data["laps"]] == [True, True, False, True, False]
+        assert [lap["end_frame"] for lap in data["laps"]] == [60, 120, 180, 240, 300]
+        assert any("realigned" in note for note in data["analysis_notes"])
+
+    @pytest.mark.asyncio
+    async def test_analyze_excludes_invalid_laps_from_best_and_coaching_selection(self, tmp_path):
+        """A faster invalid lap must remain visible without becoming a PB or coach lap."""
+        from src.core.telemetry_analyzer import TelemetryAnalyzer
+
+        lap_times = [70000, 60000, 65000, 75000]
+        frames = []
+        last_lap_time = 0
+        for frame_num in range(300):
+            if frame_num in (60, 120, 180, 240):
+                last_lap_time = lap_times[(frame_num // 60) - 1]
+            frames.append(
+                create_mock_frame(
+                    frame_num,
+                    speed=100.0,
+                    position=(frame_num % 60) / 60,
+                    last_lap_time_ms=last_lap_time,
+                )
+            )
+
+        analyzer = TelemetryAnalyzer(output_dir=str(tmp_path))
+        markers = [
+            (60, 70000, 1, "VALID"),
+            (120, 60000, 2, "INVALID_GAME"),
+            (180, 65000, 3, "VALID"),
+            (240, 75000, 4, "INVALID_GAME"),
+        ]
+
+        with (
+            patch.object(analyzer, "_generate_html", new=AsyncMock(return_value="report.html")) as html_spy,
+            patch.object(analyzer, "_generate_ai_prompt", new=AsyncMock(return_value="prompt.txt")),
+        ):
+            result = await analyzer.analyze(
+                frames,
+                hz=10.0,
+                game_lap_boundaries=markers,
+                output_prefix="valid_coaching_pool",
+            )
+
+        data = html_spy.await_args.args[0]
+        valid_lap_numbers = {
+            lap["lap_num"] for lap in data["laps"] if lap["is_valid"]
+        }
+        assert [lap["lap_num"] for lap in data["laps"]] == [1, 2, 3, 4]
+        assert data["best_lap_num"] == 3
+        assert data["reference_lap_num"] in valid_lap_numbers
+        assert data["comparison_lap_num"] in valid_lap_numbers
+        assert result.best_lap_time == pytest.approx(65.0)
+
+        summary = json.loads((tmp_path / "session_history.jsonl").read_text().strip())
+        assert summary["best_lap_time_s"] == pytest.approx(65.0)
+
+    @pytest.mark.asyncio
+    async def test_analyze_all_invalid_session_has_no_best_or_persisted_pb(self, tmp_path):
+        """An all-invalid session remains diagnostic and must not create PB history."""
+        from src.core.telemetry_analyzer import TelemetryAnalyzer
+
+        frames = []
+        last_lap_time = 0
+        for frame_num in range(180):
+            if frame_num == 60:
+                last_lap_time = 60000
+            elif frame_num == 120:
+                last_lap_time = 59000
+            frames.append(
+                create_mock_frame(
+                    frame_num,
+                    speed=100.0,
+                    position=(frame_num % 60) / 60,
+                    last_lap_time_ms=last_lap_time,
+                )
+            )
+
+        analyzer = TelemetryAnalyzer(output_dir=str(tmp_path))
+        with (
+            patch.object(analyzer, "_generate_html", new=AsyncMock(return_value="report.html")) as html_spy,
+            patch.object(analyzer, "_generate_ai_prompt", new=AsyncMock(return_value="prompt.txt")),
+        ):
+            result = await analyzer.analyze(
+                frames,
+                hz=10.0,
+                game_lap_boundaries=[
+                    (60, 60000, 1, "INVALID_GAME"),
+                    (120, 59000, 2, "INVALID_GAME"),
+                ],
+                output_prefix="all_invalid",
+            )
+
+        data = html_spy.await_args.args[0]
+        assert data["best_lap_num"] is None
+        assert data["reference_lap_num"] is None
+        assert data["comparison_lap_num"] is None
+        assert data["analysis_mode"] == "diagnostic"
+        assert any("No valid completed laps" in note for note in data["analysis_notes"])
+        assert result.best_lap_time == 0.0
+        assert not (tmp_path / "session_history.jsonl").exists()
+
+    @pytest.mark.asyncio
+    async def test_analyze_compares_with_summary_before_persisting_current_session(self, tmp_path):
+        """Session notes must compare against the preceding run, not themselves."""
+        from src.core.analyzer.session_summary import _write_session_summary
+        from src.core.telemetry_analyzer import TelemetryAnalyzer
+        from src.models.lap import SessionData
+
+        manager = SharedSessionManager()
+        manager.update_from_logs(SessionData(car="Test Car", track="Test Track"))
+        _write_session_summary(
+            str(tmp_path),
+            "Test Track",
+            "Test Car",
+            best_lap_time_s=70.0,
+            top_speed=150.0,
+            lap_count=1,
+            avg_fuel_per_lap=None,
+        )
+        frames = [
+            create_mock_frame(i, speed=100.0, position=(i % 100) / 100)
+            for i in range(220)
+        ]
+        analyzer = TelemetryAnalyzer(output_dir=str(tmp_path), session_manager=manager)
+
+        with (
+            patch.object(analyzer, "_generate_html", new=AsyncMock(return_value="report.html")),
+            patch.object(
+                analyzer,
+                "_generate_ai_prompt",
+                new=AsyncMock(return_value="prompt.txt"),
+            ) as prompt_spy,
+        ):
+            result = await analyzer.analyze(
+                frames,
+                hz=10.0,
+                track_name="Test Track",
+                game_lap_boundaries=[
+                    (100, 70000, 1, "VALID"),
+                    (200, 65000, 2, "VALID"),
+                ],
+                output_prefix="session_comparison",
+            )
+
+        assert result.best_lap_time == pytest.approx(65.0)
+        analysis_data = prompt_spy.await_args.args[0]
+        assert "Last session best: 1:10.00 (today 1:05.00, -5.00s)." in analysis_data["analysis_notes"]
+
+    @pytest.mark.asyncio
+    async def test_analyze_uses_outlap_boundary_but_excludes_outlap(self):
+        """Structural boundaries delimit timed laps without becoming reports."""
+        from src.core.telemetry_analyzer import TelemetryAnalyzer
+
+        frames = [
+            create_mock_frame(i, speed=100.0, position=(i % 50) / 50)
+            for i in range(180)
+        ]
+        analyzer = TelemetryAnalyzer(output_dir="tests/output")
+        markers = [
+            (50, 120000, 0, "OUTLAP"),
+            (100, 150000, 1, "VALID"),
+            (150, 140000, 2, "VALID"),
+        ]
+
+        result = await analyzer.analyze(
+            frames,
+            hz=10.0,
+            game_lap_boundaries=markers,
+            output_prefix="test_structural_outlap",
+        )
+
+        assert result.laps_detected == 2
+        assert result.best_lap_time == pytest.approx(140.0)
+
+    @pytest.mark.asyncio
     async def test_analyze_prefers_shared_session_lap_data(self):
         """Analyzer should use shared-session lap timing/validity when available."""
         from src.core.telemetry_analyzer import TelemetryAnalyzer
@@ -1231,6 +1508,31 @@ class TestFixedMeasurementWindow:
         # Fixed window [0.235, 0.275) => frames 47-54 => ~0.7s at 10Hz
         assert c["segment_time_s"] == pytest.approx(0.7, abs=0.1)
         assert c["confidence_label"] == "medium"
+
+    def test_detect_profiled_corners_skips_missing_progress_samples(self):
+        """Shutdown frames may lose graphics progress inside a lap segment."""
+        from src.core.telemetry_analyzer import detect_profiled_corners
+
+        track = [
+            {
+                "frame": i,
+                "norm_pos": None if i >= 80 else i / 100.0,
+                "speed": 80.0 if 20 <= i < 30 else 100.0,
+                "x": float(i),
+                "z": 0.0,
+            }
+            for i in range(100)
+        ]
+        profile = {
+            "corners": [
+                {"id": 1, "start": 0.20, "end": 0.30, "name": "Corner 1"},
+            ]
+        }
+
+        corners = detect_profiled_corners(track, 0, 100, profile, hz=10.0)
+
+        assert len(corners) == 1
+        assert corners[0]["name"] == "Corner 1"
 
     def test_detect_profiled_corners_fallback_without_norm_pos(self):
         """Without norm_pos confidence is LOW and segment_time_s is None."""
@@ -1400,6 +1702,72 @@ class TestFixedMeasurementWindow:
         assert "TIME LOSS RANKING" in prompt
         # Delta is 6.0s with LOW confidence -> should be flagged suspect and capped at 3.0s
         assert "suspect" in prompt.lower() or "SUSPECT" in prompt
+
+    @pytest.mark.asyncio
+    async def test_ai_prompt_honors_valid_best_over_faster_invalid_lap(self, tmp_path):
+        """Prompt rendering must not recompute session best from invalid laps."""
+        from src.core.telemetry_analyzer import TelemetryAnalyzer
+
+        corner = {
+            "id": 1,
+            "name": "T1",
+            "apex_speed": 80.0,
+            "entry_speed": 100.0,
+            "exit_speed": 90.0,
+            "start_frame": 10,
+            "end_frame": 30,
+            "apex_frame": 20,
+            "segment_time_s": 2.0,
+            "confidence_label": "high",
+            "entry_state": None,
+            "apex_state": None,
+            "exit_state": None,
+        }
+        invalid_lap = {
+            "lap_num": 1,
+            "lap_time_s": 60.0,
+            "lap_time_str": "1:00.00",
+            "max_speed": 200.0,
+            "avg_speed": 150.0,
+            "is_valid": False,
+            "start_frame": 0,
+            "end_frame": 100,
+            "corners": [corner],
+            "track": [],
+        }
+        valid_lap = {
+            **invalid_lap,
+            "lap_num": 2,
+            "lap_time_s": 65.0,
+            "lap_time_str": "1:05.00",
+            "is_valid": True,
+        }
+        data = {
+            "hz": 10.0,
+            "laps": [invalid_lap, valid_lap],
+            "best_lap_num": 2,
+            "reference_lap_num": 2,
+            "comparison_lap_num": 2,
+            "ref_corners": [corner],
+            "corner_data": {},
+            "corner_speeds": {},
+            "analysis_mode": "full",
+            "analysis_confidence": "high",
+            "analysis_notes": [],
+            "authoritative_progress_ratio": 1.0,
+            "plausible_frame_ratio": 1.0,
+            "track_label": "Test Track",
+            "car": "Test Car",
+        }
+
+        analyzer = TelemetryAnalyzer(output_dir=str(tmp_path))
+        path = await analyzer._generate_ai_prompt(data, output_prefix="valid_best")
+        with open(path, encoding="utf-8") as fh:
+            prompt = fh.read()
+
+        assert "- Best lap:   #2  1:05.00" in prompt
+        assert "Lap 1: 1:00.00" in prompt
+        assert "Lap 1: 1:00.00  max 200.0 km/h  avg 150.0 km/h [INVALID] <- BEST" not in prompt
 
     @pytest.mark.asyncio
     async def test_ai_prompt_catalog_car_generates_proper_rules(self):

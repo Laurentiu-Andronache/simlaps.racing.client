@@ -10,7 +10,7 @@ import os
 os.environ["APP_SECRET"] = "0000000000000000000000000000000000000000000000000000000000000000"
 
 from src.core.log_parser import LogParser
-from src.models import SessionData
+from src.models import LapState, SessionData, SharedSessionManager
 
 
 class TestFollowCore:
@@ -712,18 +712,255 @@ class TestFollowExitFlushesPendingLap:
         assert parser.current_session is None  # finalised
 
 
-class TestFollowHistoricalPassPreservesPendingLap:
-    """Regression tests for historical pass not discarding buffered laps.
-
-    Bug: after the silent historical pass, self._pending_lap = None
-    cleared any buffered lap whose validity line hadn't arrived yet,
-    silently dropping it before the live-tail phase could flush it.
-    """
+class TestFollowMissingValidityBroadcast:
+    """ACE 0.8.1 may omit ``Relevant onSplit`` after a completed lap."""
 
     @pytest.mark.asyncio
-    async def test_historical_pass_preserves_pending_lap(self, tmp_path):
-        """A lap buffered during the historical pass (no validity line)
-        must survive into the live-tail so it can be flushed on exit."""
+    async def test_multiple_shm_completions_emit_in_observation_order(self, tmp_path):
+        """A delayed log tail must not drop or reorder completed laps."""
+        log_file = tmp_path / "test.log"
+        log_file.write_text("")
+        manager = SharedSessionManager()
+        emitted_laps = []
+        both_emitted = asyncio.Event()
+
+        async def on_lap(session, lap):
+            emitted_laps.append(lap)
+            if len(emitted_laps) == 2:
+                both_emitted.set()
+
+        parser = LogParser(
+            log_path=str(log_file),
+            on_lap_complete=on_lap,
+            session_manager=manager,
+        )
+        parser.PENDING_VALIDITY_GRACE_SECONDS = 0.02
+        parser.current_session = SessionData(
+            track="Red Bull Ring GP",
+            car="Mazda Mx5 Nd CUP",
+            player_id="76561197986609341",
+            session_type="PRACTICE",
+        )
+        parser.context.player_id = "76561197986609341"
+        parser.context.tyre.set_all("S")
+
+        follow_task = asyncio.create_task(parser.follow(poll_interval=0.005))
+        await asyncio.sleep(0.03)
+
+        # Publish two complete SHM transitions without yielding to the parser,
+        # reproducing ACE buffering its file log for longer than a full lap.
+        for completed_laps, lap_time_ms, is_valid in (
+            (1, 66393, True),
+            (2, 65559, False),
+        ):
+            manager.update_from_graphics_shm(
+                {
+                    "total_lap_count": completed_laps - 1,
+                    "current_lap_time_ms": lap_time_ms - 50,
+                    "last_laptime_ms": 0,
+                    "is_valid_lap": is_valid,
+                }
+            )
+            manager.update_from_graphics_shm(
+                {
+                    "total_lap_count": completed_laps,
+                    "current_lap_time_ms": 50,
+                    "last_laptime_ms": lap_time_ms,
+                    "is_valid_lap": True,
+                }
+            )
+
+        try:
+            await asyncio.wait_for(both_emitted.wait(), timeout=1.0)
+        finally:
+            parser.stop()
+            await asyncio.wait_for(follow_task, timeout=1.0)
+
+        assert [lap.lap_number for lap in emitted_laps] == [1, 2]
+        assert [lap.lap_time_ms for lap in emitted_laps] == [66393, 65559]
+        assert [lap.is_valid for lap in emitted_laps] == [True, False]
+
+    @pytest.mark.asyncio
+    async def test_live_lap_flushes_after_grace_with_shm_validity(self, tmp_path):
+        """A lap appears without waiting for another lap or session exit."""
+        log_file = tmp_path / "test.log"
+        log_file.write_text("")
+        car_id = "4d27cc23-ee6c-e0de-9c38-10448288bcbb"
+        emitted_laps = []
+        lap_emitted = asyncio.Event()
+        manager = SharedSessionManager()
+
+        async def on_lap(session, lap):
+            emitted_laps.append(lap)
+            lap_emitted.set()
+
+        parser = LogParser(
+            log_path=str(log_file),
+            on_lap_complete=on_lap,
+            session_manager=manager,
+        )
+        parser.PENDING_VALIDITY_GRACE_SECONDS = 0.02
+        parser.current_session = SessionData(
+            track="Red Bull Ring GP",
+            car="Mazda Mx5 Nd CUP",
+            player_id="76561197986609341",
+            session_type="PRACTICE",
+            car_uuid=car_id,
+        )
+        parser.context.player_id = "76561197986609341"
+        parser.context.car_uuid = car_id
+        parser.context.tyre.set_all("S")
+
+        follow_task = asyncio.create_task(parser.follow(poll_interval=0.005))
+        await asyncio.sleep(0.03)
+        # ACE can reset the timer and validity while total_lap_count still
+        # describes the old lap. The callback must receive the latched invalid
+        # verdict rather than the new lap's valid=True flag.
+        manager.update_from_graphics_shm(
+            {
+                "total_lap_count": 0,
+                "current_lap_time_ms": 127900,
+                "last_laptime_ms": 0,
+                "is_valid_lap": False,
+            }
+        )
+        manager.update_from_graphics_shm(
+            {
+                "total_lap_count": 0,
+                "current_lap_time_ms": 50,
+                "last_laptime_ms": 128028,
+                "is_valid_lap": True,
+            }
+        )
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(
+                "[2026-08-16 12:06:00.000] [gameplay] [info] "
+                "On Split start false end false id 0 splittime 35232\n"
+                "[2026-08-16 12:06:53.868] [gameplay] [info] "
+                "On Split start false end false id 1 splittime 53868\n"
+                "[2026-08-16 12:07:32.796] [gameplay] [info] "
+                "On Split start false end true id 2 splittime 38928\n"
+                "[2026-08-16 12:07:32.797] [physics] [info] "
+                "Lap test evOnLapCompleted 1 completed\n"
+                f"[2026-08-16 12:07:32.800] [gameplay] [info] "
+                f"New lap carId {car_id}: 02:08.028\n"
+            )
+
+        try:
+            await asyncio.wait_for(lap_emitted.wait(), timeout=1.0)
+        finally:
+            parser.stop()
+            await asyncio.wait_for(follow_task, timeout=1.0)
+
+        assert len(emitted_laps) == 1
+        lap = emitted_laps[0]
+        assert lap.lap_time_ms == 128028
+        assert lap.lap_state == LapState.INVALID_GAME
+        assert lap.is_valid is False
+        assert lap.validity_source == "shm_graphics"
+        assert parser._pending_lap is None
+        assert parser.current_session is not None
+
+    @pytest.mark.asyncio
+    async def test_shm_completion_precedes_buffered_log_and_reconciles(self, tmp_path):
+        """A lap is shown from SHM, then enriched without duplication."""
+        log_file = tmp_path / "test.log"
+        log_file.write_text("")
+        car_id = "4b6b0885fe9c2dd3-832175ac60984c9b"
+        manager = SharedSessionManager()
+        emitted = []
+        updated = []
+        lap_emitted = asyncio.Event()
+        lap_updated = asyncio.Event()
+
+        async def on_lap(session, lap):
+            emitted.append(lap)
+            lap_emitted.set()
+
+        async def on_update(session, lap):
+            updated.append(lap)
+            lap_updated.set()
+
+        parser = LogParser(
+            log_path=str(log_file),
+            on_lap_complete=on_lap,
+            on_lap_update=on_update,
+            session_manager=manager,
+        )
+        parser.PENDING_VALIDITY_GRACE_SECONDS = 0.02
+        parser.current_session = SessionData(
+            track="red_bull_ring national",
+            car="mazda_mx5_nd_cup",
+            player_id="76561197986609341",
+            session_type="PRACTICE",
+            car_uuid=car_id,
+        )
+        parser.context.player_id = "76561197986609341"
+        parser.context.car_uuid = car_id
+        parser.context.tyre.set_all("S")
+
+        follow_task = asyncio.create_task(parser.follow(poll_interval=0.005))
+        await asyncio.sleep(0.03)
+        # ACE may flush early sectors while retaining S3/New lap. These must
+        # survive the SHM-first completion emission.
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(
+                "[2026-08-16 12:25:38.767] [gameplay] [info] "
+                "On Split start false end false id 0 splittime 30813\n"
+                "[2026-08-16 12:25:59.217] [gameplay] [info] "
+                "On Split start false end false id 1 splittime 20454\n"
+            )
+        await asyncio.sleep(0.03)
+        manager.update_from_graphics_shm(
+            {
+                "total_lap_count": 0,
+                "current_lap_time_ms": 75000,
+                "last_laptime_ms": 0,
+                "is_valid_lap": False,
+            }
+        )
+        manager.update_from_graphics_shm(
+            {
+                "total_lap_count": 1,
+                "current_lap_time_ms": 50,
+                "last_laptime_ms": 75684,
+                "is_valid_lap": True,
+            }
+        )
+
+        await asyncio.wait_for(lap_emitted.wait(), timeout=1.0)
+        assert len(emitted) == 1
+        assert emitted[0].lap_state == LapState.INVALID_GAME
+        assert emitted[0].sector1_ms is None
+
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(
+                "[2026-08-16 12:26:23.634] [gameplay] [info] "
+                "On Split start true end true id 2 splittime 24417\n"
+                f"[2026-08-16 12:26:23.634] [gameplay] [info] "
+                f"New lap carId {car_id}: 01:15.684\n"
+            )
+
+        try:
+            await asyncio.wait_for(lap_updated.wait(), timeout=1.0)
+        finally:
+            parser.stop()
+            await asyncio.wait_for(follow_task, timeout=1.0)
+
+        assert updated == emitted
+        assert len(parser.current_session.laps) == 1
+        assert emitted[0].sector1_ms == 30813
+        assert emitted[0].sector2_ms == 20454
+        assert emitted[0].sector3_ms == 24417
+        assert emitted[0].lap_state == LapState.INVALID_GAME
+
+
+class TestFollowHistoricalPassDoesNotEmitPendingLap:
+    """Historical context must never become a live lap callback."""
+
+    @pytest.mark.asyncio
+    async def test_historical_pending_lap_is_not_flushed_on_later_exit(self, tmp_path):
+        """A missing historical validity line must not replay the lap on exit."""
         log_file = tmp_path / "test.log"
         # Historical content: session start + lap completion, no validity
         log_file.write_text(
@@ -763,8 +1000,5 @@ class TestFollowHistoricalPassPreservesPendingLap:
             parser.stop()
             await appender
 
-        assert laps, (
-            "Lap buffered during historical pass was discarded before "
-            "live-tail could flush it on exit"
-        )
-        assert laps[0].lap_time_ms == 516642
+        assert laps == []
+        assert parser._pending_lap is None

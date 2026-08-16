@@ -1422,11 +1422,9 @@ def decode_static_fallback(data: bytes) -> Dict[str, Any]:
 
 
 # ── Lightweight SHM peek for live lap validation ──────────────────────────
-# Reads just 2 fields (5 bytes total) from the raw 4096-byte graphics
-# buffer.  Lap times, splits, and per-lap validity verdicts all come from
-# the log parser — SHM is only consulted for the real-time "is the current
-# lap being timed?" flag (is_valid_lap) plus total_lap_count for lap-number
-# context.
+# Reads the live counter, last/current lap times, and validity flag from the
+# raw 4096-byte graphics buffer. Logs remain the richer source for sectors and
+# lifecycle context, but ACE can buffer them long after the finish line.
 #
 # This is ~800× cheaper than the full decoder and runs on every capture
 # frame regardless of whether telemetry recording is enabled.
@@ -1437,6 +1435,7 @@ def decode_static_fallback(data: bytes) -> Dict[str, Any]:
 
 _PEEK_CURRENT_LAP_TIME = 188
 _PEEK_TOTAL_LAP_COUNT = 2384
+_PEEK_LAST_LAPTIME = 2396
 _PEEK_IS_VALID_LAP    = 3121
 
 # Minimum buffer size needed for the peek.
@@ -1446,14 +1445,10 @@ _PEEK_MIN_SIZE = _PEEK_IS_VALID_LAP + 1  # 3122
 def peek_graphics_validity(data: bytes) -> Optional[Dict[str, Any]]:
     """Extract the real-time lap validity flag from raw graphics SHM bytes.
 
-    Reads only ``is_valid_lap`` (bool at offset 3121) and ``total_lap_count``
-    (int32 at offset 2384) via ``struct.unpack_from``.  Returns ``None`` if
-    the buffer is too small.  The returned dict is shaped for direct
-    consumption by ``SharedSessionManager.update_from_graphics_shm``.
-
-    Lap times and per-lap validity verdicts are authoritative from logs;
-    this peek exists solely to answer "is the current lap being timed right
-    now?" without the overhead of a full 4096-byte decode.
+    Returns ``None`` if the buffer is too small. The returned dict is shaped
+    for direct consumption by ``SharedSessionManager.update_from_graphics_shm``
+    and supports immediate completion detection while richer log fields are
+    still buffered by ACE.
     """
     if len(data) < _PEEK_MIN_SIZE:
         return None
@@ -1461,6 +1456,7 @@ def peek_graphics_validity(data: bytes) -> Optional[Dict[str, Any]]:
     try:
         current_lap_time_ms = struct.unpack_from("<i", data, _PEEK_CURRENT_LAP_TIME)[0]
         total_lap_count = struct.unpack_from("<i", data, _PEEK_TOTAL_LAP_COUNT)[0]
+        last_laptime_ms = struct.unpack_from("<i", data, _PEEK_LAST_LAPTIME)[0]
         is_valid_lap = bool(data[_PEEK_IS_VALID_LAP])
     except (struct.error, IndexError):
         return None
@@ -1473,6 +1469,7 @@ def peek_graphics_validity(data: bytes) -> Optional[Dict[str, Any]]:
         "completed_laps": total_lap_count,
         "is_valid_lap": is_valid_lap,
         "current_lap_time_ms": current_lap_time_ms,
+        "last_laptime_ms": last_laptime_ms,
     }
 
 

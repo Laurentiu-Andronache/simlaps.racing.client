@@ -91,9 +91,6 @@ class APIClient:
             server_url: Base URL of the SimLaps server
         """
         self.server_url = server_url.rstrip("/")
-        # Reset client
-        if self._client:
-            self._client = None
 
     async def submit_lap(
         self,
@@ -186,12 +183,19 @@ class APIClient:
         # Shared SHM last_lap_time_ms is session-global: in the lap-N entry it
         # holds lap N-1's time while lap N is in progress, so it must only be
         # a fallback when the lap's own time is missing.
-        final_time_candidate = lap.lap_time_ms
+        final_time_candidate: Any = lap.lap_time_ms
         if (
             (not isinstance(final_time_candidate, (int, float)) or int(final_time_candidate) <= 0)
             and shared_lap_timing is not None
         ):
             final_time_candidate = shared_lap_timing.last_lap_time_ms
+
+        if not isinstance(final_time_candidate, (int, float)):
+            log_debug(Component.API, "Rejected: Lap time unavailable")
+            return SubmissionResult(
+                status=SubmissionStatus.INVALID_LAP,
+                message="Invalid lap time (missing or non-numeric)",
+            )
 
         final_time = int(final_time_candidate)
         if final_time <= 0:

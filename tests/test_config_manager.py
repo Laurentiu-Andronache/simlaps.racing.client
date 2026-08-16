@@ -209,3 +209,24 @@ def test_from_dict_does_not_mutate_caller_dict() -> None:
     AppConfig.from_dict(copy_for_call)
     # Caller's dict should be unmodified
     assert copy_for_call == original
+
+
+def test_set_replaces_and_persists_config(tmp_path) -> None:
+    manager = ConfigManager(config_path=tmp_path / "config.json")
+    manager.load()
+    replacement = AppConfig(telemetry_enabled=True)
+
+    assert manager.set(replacement) is True
+    assert manager.get() is replacement
+    assert ConfigManager(config_path=manager.config_path).load().telemetry_enabled is True
+
+
+def test_set_rolls_back_in_memory_config_when_save_fails(tmp_path) -> None:
+    manager = ConfigManager(config_path=tmp_path / "config.json")
+    original = manager.load()
+    replacement = AppConfig(telemetry_enabled=True)
+
+    with patch.object(manager, "save", return_value=False):
+        assert manager.set(replacement) is False
+
+    assert manager.get() is original

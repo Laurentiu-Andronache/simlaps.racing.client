@@ -98,9 +98,9 @@ def build_track_profile(track_key: str, config_key: str) -> dict:
 
 
 def select_track_profile(
-    path: str = None,
-    track_name: str = None,
-    config_name: str = None
+    path: Optional[str] = None,
+    track_name: Optional[str] = None,
+    config_name: Optional[str] = None,
 ) -> tuple:
     """Select a track profile based on path, track name, or config name.
 

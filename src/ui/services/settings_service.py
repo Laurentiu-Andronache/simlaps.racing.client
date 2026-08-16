@@ -6,8 +6,11 @@ and parser restart behavior.
 
 from typing import Callable, TYPE_CHECKING
 
+from src.core.analyzer import TelemetryAnalyzer
+from src.core.track_catalog import TRACK_CATALOG
 from src.utils.structured_logger import Component, log_info
 from src.utils.config import AppConfig
+from ..components.telemetry_status import TelemetryButton
 
 if TYPE_CHECKING:
     from ..app import SimLapsApp
@@ -31,27 +34,83 @@ class SettingsService:
         create_log_parser: "Callable[[str], LogParser]",
     ) -> None:
         """Apply new config and reconcile dependent runtime services."""
-        app._config = config
-        app._config_manager.save()
-
-        # Update Discord notifier
-        if config.discord_webhook_url and config.discord_enabled:
-            app._discord_notifier = create_discord_notifier(config.discord_webhook_url)
-        else:
-            app._discord_notifier = None
-
-        # Update PB cache if server URL changed
-        if app._pb_cache.server_url != config.server_url:
-            app._pb_cache = get_pb_cache_for_server(config.server_url)
-
-        # Update API client
-        app._api_client = create_api_client(
-            server_url=config.server_url,
-            session_manager=app._session_manager,
+        previous = app._config
+        server_changed = previous.server_url != config.server_url
+        log_path_changed = previous.log_path != config.log_path
+        telemetry_output_changed = (
+            previous.telemetry_output_path != config.telemetry_output_path
+        )
+        telemetry_debug_changed = (
+            previous.telemetry_debug_logs != config.telemetry_debug_logs
         )
 
-        # Update services with new settings
-        app._api_client.set_server_url(config.server_url)
+        # Construct every replacement before mutating live application state.
+        # This prevents a bad import or constructor from leaving Settings half
+        # applied and persisted, which was the cause of the telemetry checkbox
+        # crash reported by users.
+        current_discord = getattr(app, "_discord_notifier", None)
+        discord_changed = (
+            previous.discord_enabled != config.discord_enabled
+            or previous.discord_webhook_url != config.discord_webhook_url
+        )
+        if config.discord_webhook_url and config.discord_enabled:
+            staged_discord = (
+                create_discord_notifier(config.discord_webhook_url)
+                if discord_changed or current_discord is None
+                else current_discord
+            )
+        else:
+            staged_discord = None
+
+        staged_pb_cache = app._pb_cache
+        if server_changed:
+            staged_pb_cache = get_pb_cache_for_server(config.server_url)
+
+        current_api_client = getattr(app, "_api_client", None)
+        staged_api_client = current_api_client
+        if current_api_client is None or server_changed:
+            staged_api_client = create_api_client(
+                server_url=config.server_url,
+                session_manager=app._session_manager,
+            )
+
+        current_parser = getattr(app, "_log_parser", None)
+        staged_parser = current_parser
+        if current_parser is None or log_path_changed:
+            staged_parser = create_log_parser(config.log_path)
+
+        staged_analyzer = getattr(app, "_telemetry_analyzer", None)
+        staged_button = getattr(app, "_telemetry_button", None)
+        if config.telemetry_enabled:
+            if staged_analyzer is None or telemetry_output_changed:
+                staged_analyzer = TelemetryAnalyzer(
+                    output_dir=config.telemetry_output_path,
+                    track_catalog=TRACK_CATALOG,
+                    session_manager=app._session_manager,
+                )
+            if staged_button is None:
+                staged_button = TelemetryButton(
+                    on_click=getattr(app, "_open_telemetry_location", None),
+                    output_path=config.telemetry_output_path,
+                )
+
+        # Persist only after all required imports and constructors succeeded.
+        app._config = config
+        if app._config_manager.set(config) is False:
+            app._config = previous
+            raise OSError("Could not save application settings")
+
+        was_running = bool(current_parser and current_parser.is_running)
+        if log_path_changed and was_running:
+            app.stop_monitoring()
+
+        app._discord_notifier = staged_discord
+        app._pb_cache = staged_pb_cache
+        app._api_client = staged_api_client
+        app._log_parser = staged_parser
+
+        if current_api_client is not None and current_api_client is not staged_api_client:
+            app.page.run_task(current_api_client.close)
 
         # Reconcile telemetry capture mode with the new setting.
         # The capture loop always runs (needed for SHM lap validity), but
@@ -71,21 +130,16 @@ class SettingsService:
             if not app._telemetry_capture.record_frames:
                 app._telemetry_capture.set_record_frames(True)
                 log_info(Component.APP, "Telemetry recording enabled")
-            if not app._telemetry_analyzer:
-                from src.core.analyzer import TelemetryAnalyzer
-                from src.core.track_catalog import TRACK_CATALOG
-                app._telemetry_analyzer = TelemetryAnalyzer(
+            if telemetry_output_changed or telemetry_debug_changed:
+                app._telemetry_capture.configure(
                     output_dir=config.telemetry_output_path,
-                    track_catalog=TRACK_CATALOG,
-                    session_manager=app._session_manager,
+                    debug_logs=config.telemetry_debug_logs,
                 )
-            if not app._telemetry_button:
-                from .components.telemetry_status import TelemetryButton
-                app._telemetry_button = TelemetryButton(
-                    on_click=app._open_telemetry_location,
-                    output_path=config.telemetry_output_path,
-                )
-                app._attach_telemetry_ui()
+            app._telemetry_analyzer = staged_analyzer
+            app._telemetry_button = staged_button
+            assert app._telemetry_button is not None
+            app._telemetry_button.update_path(config.telemetry_output_path)
+            app._attach_telemetry_ui()
         elif not config.telemetry_enabled and app._telemetry_capture:
             # User disabled telemetry recording — switch to validity-only
             # mode.  The capture loop stays alive so SHM validity data
@@ -93,22 +147,25 @@ class SettingsService:
             if app._telemetry_capture.record_frames:
                 app._telemetry_capture.set_record_frames(False)
                 log_info(Component.APP, "Telemetry recording disabled — validity-only mode active")
+            if telemetry_output_changed or telemetry_debug_changed:
+                app._telemetry_capture.configure(
+                    output_dir=config.telemetry_output_path,
+                    debug_logs=config.telemetry_debug_logs,
+                )
             # Drop analyzer and UI button (no frames to analyze).
             app._telemetry_analyzer = None
             if app._home_page:
                 app._home_page.set_telemetry_button(None, "")
             app._telemetry_button = None
-
-        # Restart parser if log path changed
-        was_running = app._log_parser.is_running if app._log_parser else False
-
-        if was_running:
-            app.stop_monitoring()
-
-        app._log_parser = create_log_parser(config.log_path)
-
-        if was_running:
+        # Restart the parser only when its input path actually changed.
+        if log_path_changed and was_running:
             app.page.run_task(app.start_monitoring)
 
         # Update home page
-        app._home_page.update_config(app._config)
+        if app._home_page:
+            app._home_page.update_config(app._config)
+
+        if previous.window_width != config.window_width:
+            app.page.width = config.window_width
+        if previous.window_height != config.window_height:
+            app.page.height = config.window_height

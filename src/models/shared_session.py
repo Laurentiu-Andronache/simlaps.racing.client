@@ -8,8 +8,10 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Set
 import threading
+import time
 import uuid
 
 from .lap import LapData, SessionData
@@ -43,6 +45,18 @@ class LapTimingData:
     lap_completion_timestamp: Optional[str] = None
     completed_lap_time: Optional[float] = None
     completed_lap_time_source: Optional[str] = None  # "logs", "shm_graphics", "calculated"
+
+
+@dataclass(frozen=True)
+class LapCompletionData:
+    """A live SHM lap-counter transition observed before logs may flush."""
+
+    completed_laps: int
+    lap_time_ms: int
+    is_valid: Optional[bool]
+    timestamp: str
+    observed_at: float
+    source: str = "shm_graphics"
 
 
 @dataclass
@@ -103,6 +117,8 @@ class SharedSessionData:
     # Shared objects
     lap_validity: Dict[int, LapValidityData] = field(default_factory=dict)
     lap_timing: Dict[int, LapTimingData] = field(default_factory=dict)
+    latest_lap_completion: Optional[LapCompletionData] = None
+    lap_completions: list[LapCompletionData] = field(default_factory=list)
     fuel_data: FuelData = field(default_factory=FuelData)
     player_identification: PlayerIdentificationData = field(
         default_factory=PlayerIdentificationData
@@ -111,6 +127,10 @@ class SharedSessionData:
     session_metadata: SessionMetadataData = field(default_factory=SessionMetadataData)
 
     current_lap_time_ms: Optional[int] = None
+    # Live graphics validity is latched independently of the physical lap
+    # number. ACE can reuse its completed-lap counter after returning to the
+    # pits, while completed log records remain keyed by absolute session lap.
+    active_lap_is_valid: Optional[bool] = None
     last_lap_time_ms: Optional[int] = None
     best_lap_time_ms: Optional[int] = None
     ideal_lap_time_ms: Optional[int] = None
@@ -170,6 +190,31 @@ class SharedSessionManager:
     def get_lap_timing_data(self, lap_num: int) -> Optional[LapTimingData]:
         with self._lock:
             return self._session_data.lap_timing.get(lap_num)
+
+    def get_latest_lap_completion(self) -> Optional[LapCompletionData]:
+        with self._lock:
+            return self._session_data.latest_lap_completion
+
+    def get_lap_completions_after(self, observed_at: float) -> list[LapCompletionData]:
+        """Return unconsumed SHM completions in observation order."""
+        with self._lock:
+            return [
+                completion
+                for completion in self._session_data.lap_completions
+                if completion.observed_at > observed_at
+            ]
+
+    def get_lap_completion_by_time(self, lap_time_ms: int) -> Optional[LapCompletionData]:
+        """Return the newest retained completion matching an exact lap time."""
+        with self._lock:
+            return next(
+                (
+                    completion
+                    for completion in reversed(self._session_data.lap_completions)
+                    if completion.lap_time_ms == lap_time_ms
+                ),
+                None,
+            )
 
     def get_fuel_data(self) -> FuelData:
         with self._lock:
@@ -310,7 +355,13 @@ class SharedSessionManager:
 
             self._mark_source("lap_validity", "shm_graphics")
 
-    def update_lap_timing_from_graphics_shm(self, lap_num: int, timing_data: Dict[str, Any]) -> None:
+    def update_lap_timing_from_graphics_shm(
+        self,
+        lap_num: int,
+        timing_data: Dict[str, Any],
+        *,
+        completed_lap_num: Optional[int] = None,
+    ) -> None:
         with self._lock:
             current = self._session_data.lap_timing.get(lap_num)
             if current is None:
@@ -334,11 +385,20 @@ class SharedSessionManager:
             self._session_data.delta_time_ms = current.delta_time_ms
 
             if current.last_lap_time_ms and current.last_lap_time_ms > 0:
+                # Graphics exposes the previous lap's completed time alongside
+                # the new current lap. Callers that know the completed-lap
+                # counter must map that value back to the previous lap rather
+                # than creating a duplicate completed time on the current lap.
+                completed_num = completed_lap_num or lap_num
+                completed = self._session_data.lap_timing.get(completed_num)
+                if completed is None:
+                    completed = LapTimingData(lap_number=completed_num)
+                    self._session_data.lap_timing[completed_num] = completed
                 # Only store graphics-sourced completed time if logs haven't
                 # already set one (logs are authoritative).
-                if current.completed_lap_time_source != "logs":
-                    current.completed_lap_time = float(current.last_lap_time_ms)
-                    current.completed_lap_time_source = "shm_graphics"
+                if completed.completed_lap_time_source != "logs":
+                    completed.completed_lap_time = float(current.last_lap_time_ms)
+                    completed.completed_lap_time_source = "shm_graphics"
                 self._mark_source("lap_times", "shm_graphics")
 
             for field_name in (
@@ -559,6 +619,78 @@ class SharedSessionManager:
         # sets session_current_lap=0, so the fallback is the normal path.
         shm_current_lap = int(graphics_data.get("session_current_lap") or 0)
         completed_laps = int(graphics_data.get("total_lap_count") or 0)
+        current_lap_time_ms = int(graphics_data.get("current_lap_time_ms") or 0)
+        last_laptime_ms = int(graphics_data.get("last_laptime_ms") or 0)
+        is_valid_lap = graphics_data.get("is_valid_lap")
+
+        # Capture the boundary before current-lap validity is updated. ACE can
+        # reset the live timer and validity several seconds before advancing
+        # total_lap_count, so the timer reset is the primary boundary signal.
+        # The counter transition remains a fallback for builds without a
+        # usable timer. ``active_lap_is_valid`` is deliberately not keyed by
+        # the physical lap counter because that counter can be reused after a
+        # pit stop.
+        with self._lock:
+            previous_completed = self._session_data.total_laps
+            previous_lap_time_ms = int(self._session_data.current_lap_time_ms or 0)
+            lap_timer_reset = (
+                previous_lap_time_ms >= 5_000
+                and 0 <= current_lap_time_ms <= 1_000
+            )
+            completed_timer_reset = (
+                lap_timer_reset
+                and last_laptime_ms > 0
+                and abs(previous_lap_time_ms - last_laptime_ms) <= 2_000
+            )
+            counter_advanced = (
+                previous_completed is not None
+                and completed_laps > int(previous_completed)
+            )
+            if (completed_timer_reset or counter_advanced) and last_laptime_ms > 0:
+                now_mono = time.monotonic()
+                latest = self._session_data.latest_lap_completion
+                duplicate_transition = (
+                    latest is not None
+                    and latest.lap_time_ms == last_laptime_ms
+                    and now_mono - latest.observed_at < 10.0
+                )
+                if not duplicate_transition:
+                    completion = LapCompletionData(
+                        completed_laps=max(
+                            completed_laps,
+                            int(previous_completed or 0),
+                            1,
+                        ),
+                        lap_time_ms=last_laptime_ms,
+                        is_valid=self._session_data.active_lap_is_valid,
+                        timestamp=datetime.now(timezone.utc).isoformat(),
+                        observed_at=now_mono,
+                    )
+                    self._session_data.latest_lap_completion = completion
+                    self._session_data.lap_completions.append(completion)
+                    # A session cannot realistically need hundreds of
+                    # outstanding callbacks. Bound retained history while
+                    # preserving enough delayed-log context for long races.
+                    if len(self._session_data.lap_completions) > 512:
+                        del self._session_data.lap_completions[:-512]
+            # Every timer reset starts a new physical lap, including the pit
+            # outlap boundary where ACE deliberately leaves last_laptime_ms at
+            # zero.  Do not let an invalid outlap latch contaminate the first
+            # timed lap merely because there is no completion to publish.
+            if lap_timer_reset or counter_advanced:
+                self._session_data.active_lap_is_valid = None
+
+            if current_lap_time_ms <= 0:
+                self._session_data.active_lap_is_valid = None
+            elif is_valid_lap is not None:
+                sampled_validity = bool(is_valid_lap)
+                if self._session_data.active_lap_is_valid is None:
+                    self._session_data.active_lap_is_valid = sampled_validity
+                elif not sampled_validity:
+                    # Once ACE invalidates an active lap, keep that verdict
+                    # until its timer resets. The finish-line frame may
+                    # already carry the next lap's valid=True value.
+                    self._session_data.active_lap_is_valid = False
         if shm_current_lap > 0:
             current_lap = shm_current_lap
         else:
@@ -598,7 +730,11 @@ class SharedSessionManager:
                 # Scrub the stale value before it reaches the timing update
                 graphics_data = dict(graphics_data)
                 graphics_data["last_laptime_ms"] = 0
-            self.update_lap_timing_from_graphics_shm(current_lap, graphics_data)
+            self.update_lap_timing_from_graphics_shm(
+                current_lap,
+                graphics_data,
+                completed_lap_num=completed_laps if completed_laps > 0 else None,
+            )
 
             # ── Wire SHM validity flags into shared session ──────────────
             # Priority 1: is_valid_lap (SPageFileGraphicEvo at offset 3121)
@@ -612,8 +748,7 @@ class SharedSessionManager:
             # Priority 2: is_invalid / timing_is_invalid (SMEvoTimingState)
             # is NOT populated by AC Evo 0.8.0.1 — always False, which is
             # why it must NOT be checked first (False ≠ None).
-            is_valid_lap = graphics_data.get("is_valid_lap")
-            lap_time_ms = int(graphics_data.get("current_lap_time_ms") or 0)
+            lap_time_ms = current_lap_time_ms
 
             if is_valid_lap is not None:
                 # is_valid_lap is the authoritative flag on AC Evo 0.8.0.1.
