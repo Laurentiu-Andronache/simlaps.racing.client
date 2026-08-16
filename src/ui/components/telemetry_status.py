@@ -69,7 +69,10 @@ class TelemetryStatusIndicator(ft.Container):
         elif status == TelemetryStatus.CAPTURING:
             self._status_icon = ft.Icons.FIBER_MANUAL_RECORD
             self._status_color = "#ef4444"
-            self._status_text = f"Recording Telemetry ({frame_count} frames)"
+            # The capture loop does not push live progress updates to Flet.
+            # Showing the initial count here leaves a permanent, misleading
+            # "0 frames" label even while frames are retained in memory.
+            self._status_text = "Recording Telemetry"
             self.bgcolor = "#2d1f1f"
         elif status == TelemetryStatus.ANALYZING:
             self._status_icon = ft.Icons.AUTO_GRAPH

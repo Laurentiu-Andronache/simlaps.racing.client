@@ -45,6 +45,8 @@ def test_set_status_capturing():
 
         assert indicator._status == TelemetryStatus.CAPTURING
         assert indicator._frame_count == 42
+        assert indicator._status_text == "Recording Telemetry"
+        assert "frames" not in indicator._text.value
         assert indicator.visible is True
 
 
