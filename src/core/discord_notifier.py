@@ -24,7 +24,7 @@ class DiscordLapPayload:
     steam_id: str
     steam_name: Optional[str] = None
     is_personal_best: bool = False
-    created_at: Optional[datetime] = None
+    created_at: Optional[datetime | str] = None
     sector_times_ms: Optional[list[int]] = None  # [sector1, sector2, sector3] in ms
     fuel_used_liters: Optional[float] = None
     tire_compound: Optional[str] = None  # SC, SS, etc.

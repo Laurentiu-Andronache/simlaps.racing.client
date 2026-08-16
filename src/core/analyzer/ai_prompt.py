@@ -59,8 +59,6 @@ async def generate_ai_prompt(
     plausible_frame_ratio = float(data.get("plausible_frame_ratio", 0.0) or 0.0)
     reference_lap_num = data.get("reference_lap_num", best_lap["lap_num"])
     comparison_lap_num = data.get("comparison_lap_num", best_lap["lap_num"])
-    reference_lap = next((lap for lap in laps if lap["lap_num"] == reference_lap_num), best_lap)
-    comparison_lap = next((lap for lap in laps if lap["lap_num"] == comparison_lap_num), best_lap)
 
     # ── Car name from shared session data
     car_model: str = data.get("car") or "Unknown Car"
@@ -135,7 +133,7 @@ async def generate_ai_prompt(
     if car_known:
         lines.append(f"- Car:            {car_model}")
     else:
-        lines.append(f"- Car:            Unknown (not captured from SHM)")
+        lines.append("- Car:            Unknown (not captured from SHM)")
     lines.append(f"- Analysis mode:  {analysis_mode}")
     lines.append(f"- Confidence:     {analysis_confidence}")
     lines.append(f"- Reference lap:  #{reference_lap_num}")
@@ -584,7 +582,7 @@ async def generate_ai_prompt(
             )
 
         # ── Steering smoothness per corner (1.4)
-        _steer_data: Dict[int, List[tuple]] = {}
+        _steer_data: Dict[int, List[Dict[str, Any]]] = {}
         for lap in laps:
             corner = lap_corner_map[lap["lap_num"]].get(cid)
             if corner:
@@ -604,7 +602,7 @@ async def generate_ai_prompt(
                     )
 
         # ── Throttle exit profile per corner (1.5)
-        _throttle_data: Dict[int, List[tuple]] = {}
+        _throttle_data: Dict[int, List[Dict[str, Any]]] = {}
         for lap in laps:
             corner = lap_corner_map[lap["lap_num"]].get(cid)
             if corner:

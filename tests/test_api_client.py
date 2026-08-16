@@ -674,6 +674,25 @@ class TestSubmitLapErrorResponses:
     @pytest.mark.asyncio
     @patch('src.core.api_client.is_game_running')
     @patch('httpx.AsyncClient.post')
+    async def test_submit_lap_missing_time_returns_invalid_without_http(
+        self,
+        mock_post,
+        mock_game_running,
+        sample_session,
+        sample_lap,
+    ):
+        mock_game_running.return_value = GameProcessStatus.RUNNING
+        sample_lap.lap_time_ms = None
+
+        result = await APIClient().submit_lap(sample_session, sample_lap)
+
+        assert result.status == SubmissionStatus.INVALID_LAP
+        assert "missing" in result.message
+        mock_post.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch('src.core.api_client.is_game_running')
+    @patch('httpx.AsyncClient.post')
     async def test_submit_lap_with_fuel(self, mock_post, mock_game_running, sample_session, sample_lap):
         """Test lap submission with fuel data."""
         mock_game_running.return_value = GameProcessStatus.RUNNING

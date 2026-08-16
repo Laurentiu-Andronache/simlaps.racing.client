@@ -114,8 +114,6 @@ def build_track(frames: List[FrameData], hz: float = 1.0, start_idx: int = 0) ->
             "acc_g_y": acc_g_y,
             "acc_g_z": acc_g_z,
             "yaw_rate": yaw_rate,
-            "air_temp": _optional_float(ph.get("air_temp")) or 0.0,
-            "road_temp": _optional_float(ph.get("road_temp")) or 0.0,
             "completed_laps": gr.get("completed_laps"),
             "current_sector_index": gr.get("current_sector_index"),
             "is_valid_lap": gr.get("is_valid_lap"),

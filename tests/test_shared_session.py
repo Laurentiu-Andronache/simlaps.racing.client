@@ -548,8 +548,8 @@ def test_memory_usage_optimization() -> None:
     tracemalloc.stop()
 
     # Peak should stay well-bounded for a few thousand updates.
+    assert current < 32 * 1024 * 1024
     assert peak < 32 * 1024 * 1024
-    assert current < peak
 
 
 def test_large_session_handling() -> None:

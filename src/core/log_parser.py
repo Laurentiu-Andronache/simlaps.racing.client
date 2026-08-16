@@ -1351,7 +1351,6 @@ class LogParser:
         # Correct any physics-derived lap_number (which can be off-by-one) here.
         pending.lap_number = game_lap_number
         prev_state = pending.lap_state
-        prev_valid = pending.is_valid
 
         if prev_state == LapState.OUTLAP:
             # OUTLAP is a structural classification, not a validity verdict.
