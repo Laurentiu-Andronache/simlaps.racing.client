@@ -62,6 +62,7 @@ from src.core.analyzer.session_summary import _session_summary_path, _write_sess
 
 
 _LAP_TIME_ALIGNMENT_TOLERANCE_MS = 2.0
+_LAP_SEGMENT_MIN_TRIM_MS = 2_000.0
 
 
 def _nearest_lap_marker_by_time(markers: List, timing_lap_time: Any):
@@ -87,6 +88,93 @@ def _nearest_lap_marker_by_time(markers: List, timing_lap_time: Any):
     if not candidates:
         return None
     return min(candidates, key=lambda candidate: (candidate[0], candidate[1]))[2]
+
+
+def _clean_completed_lap_track(
+    lap_track: List[Dict[str, Any]],
+    completed_lap_time_ms: Any,
+    *,
+    hz: float,
+) -> tuple[List[Dict[str, Any]], int, int]:
+    """Remove non-driving samples and a stale prefix from a completed lap.
+
+    ACE's live current-lap timer can continue through ``BackToPit`` and a
+    subsequent pit exit even though the next reported completed-lap time only
+    covers the final on-track portion.  The finish-line boundary is still
+    authoritative; when the monotonic timer span is materially longer than
+    that completed time, retain the matching suffix.  Ordinary rounding and
+    normal pit-lane starts remain below the deliberately generous tolerance.
+    """
+    if not lap_track:
+        return [], 0, 0
+
+    active_track = [
+        point for point in lap_track if point.get("status_name") != "AC_PAUSE"
+    ]
+    paused_removed = len(lap_track) - len(active_track)
+
+    def finalize(points: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if not paused_removed or not points:
+            return points
+        first_frame = points[0]["frame"]
+        compressed = []
+        for offset, point in enumerate(points):
+            sample = dict(point)
+            sample["source_frame"] = point["frame"]
+            sample["frame"] = first_frame + offset
+            compressed.append(sample)
+        return compressed
+
+    if len(active_track) < 20:
+        return finalize(active_track), 0, paused_removed
+
+    completed_time = _optional_float(completed_lap_time_ms)
+    if completed_time is None or completed_time <= 0:
+        return finalize(active_track), 0, paused_removed
+
+    timed_points: List[tuple[int, float]] = []
+    for index, point in enumerate(active_track):
+        timer = _optional_float(point.get("lap_time_ms"))
+        if timer is not None and timer >= 0:
+            timed_points.append((index, timer))
+    if len(timed_points) < 2:
+        return finalize(active_track), 0, paused_removed
+
+    sampling_tolerance_ms = max(1.0, 2_000.0 / max(hz, 1.0))
+    if any(
+        current_timer + sampling_tolerance_ms < previous_timer
+        for (_, previous_timer), (_, current_timer) in zip(
+            timed_points,
+            timed_points[1:],
+        )
+    ):
+        return finalize(active_track), 0, paused_removed
+
+    timer_start = timed_points[0][1]
+    timer_end = timed_points[-1][1]
+    timer_span = timer_end - timer_start
+    trim_tolerance_ms = max(
+        _LAP_SEGMENT_MIN_TRIM_MS,
+        completed_time * 0.05,
+        sampling_tolerance_ms * 2.0,
+    )
+    if timer_span <= completed_time + trim_tolerance_ms:
+        return finalize(active_track), 0, paused_removed
+
+    target_timer = timer_end - completed_time
+    trim_index = next(
+        (
+            index
+            for index, timer in timed_points
+            if timer >= target_timer
+        ),
+        0,
+    )
+    candidate = active_track[trim_index:]
+    if trim_index <= 0 or len(candidate) < 20:
+        return finalize(active_track), 0, paused_removed
+
+    return finalize(candidate), trim_index, paused_removed
 
 
 class TelemetryAnalyzer:
@@ -300,15 +388,35 @@ class TelemetryAnalyzer:
             lap_bounds = []
 
         laps = []
+        trimmed_lap_segments = 0
+        trimmed_prefix_frames = 0
+        paused_frames_removed = 0
         for i in range(len(lap_bounds) - 1):
             s, e = lap_bounds[i], lap_bounds[i + 1]
             game_lap_num = lap_numbers[i] if lap_numbers and i < len(lap_numbers) else i + 1
             lap_type = lap_types[i] if lap_types and i < len(lap_types) else "VALID"
             if lap_type in {"OUTLAP", "INLAP", "ABORTED"}:
                 continue
-            lap_track = [pt for pt in track if s <= pt["frame"] < e]
+
+            game_lap_time_ms = (
+                lap_times_ms[i]
+                if lap_times_ms and i < len(lap_times_ms)
+                else None
+            )
+            boundary_track = [pt for pt in track if s <= pt["frame"] < e]
+            lap_track, prefix_removed, pause_removed = _clean_completed_lap_track(
+                boundary_track,
+                game_lap_time_ms,
+                hz=hz,
+            )
+            if prefix_removed:
+                trimmed_lap_segments += 1
+                trimmed_prefix_frames += prefix_removed
+            paused_frames_removed += pause_removed
             if len(lap_track) < 20:
                 continue
+
+            effective_start_frame = lap_track[0]["frame"]
 
             lap_progress_ratio = _fraction(
                 lap_track,
@@ -319,7 +427,12 @@ class TelemetryAnalyzer:
                 lambda pt: (pt.get("frame_quality") or 0.0) >= _PLAUSIBLE_FRAME_THRESHOLD,
             )
             lap_quality_score = round(lap_progress_ratio * 0.7 + lap_plausible_ratio * 0.3, 3)
-            canonical_lap = _build_canonical_lap(lap_track, lap_start_frame=s, hz=hz, bins=200)
+            canonical_lap = _build_canonical_lap(
+                lap_track,
+                lap_start_frame=effective_start_frame,
+                hz=hz,
+                bins=200,
+            )
             uses_canonical_progress = canonical_lap is not None
 
             if (
@@ -335,16 +448,22 @@ class TelemetryAnalyzer:
                 )
             elif track_profile and track_profile.get("corners"):
                 # Use profile-based corner detection even without canonical progress
-                corners = detect_profiled_corners(track, s, e, track_profile, hz=hz)
+                corners = detect_profiled_corners(
+                    lap_track,
+                    effective_start_frame,
+                    e,
+                    track_profile,
+                    hz=hz,
+                )
             else:
-                corners = detect_corners(track, s, e, hz=hz)
+                corners = detect_corners(
+                    lap_track,
+                    effective_start_frame,
+                    e,
+                    hz=hz,
+                )
 
             # Use game-reported lap times when available.
-            game_lap_time_ms = (
-                lap_times_ms[i]
-                if lap_times_ms and i < len(lap_times_ms)
-                else None
-            )
             if game_lap_time_ms is not None:
                 lap_time = game_lap_time_ms / 1000.0
             else:
@@ -353,24 +472,23 @@ class TelemetryAnalyzer:
                 # included in the analysis rather than silently dropped.
                 lap_time = (e - s) / hz
             
-            # Calculate fuel consumption from telemetry (start fuel - end fuel)
+            # Calculate fuel consumption from samples that belong to this lap.
+            # Do not use the first point of the next lap or mapping-teardown
+            # zeroes as the end sample.
             fuel_used = None
-            if lap_track:
-                # Get fuel level at lap start and end
-                start_pt = next((pt for pt in track if pt["frame"] == s), None)
-                end_pt = next((pt for pt in track if pt["frame"] == e), None)
-                
-                if start_pt and end_pt:
-                    fuel_start = start_pt.get("fuel")
-                    fuel_end = end_pt.get("fuel")
-                    
-                    if fuel_start is not None and fuel_end is not None and fuel_start > fuel_end:
-                        fuel_used = round(fuel_start - fuel_end, 3)
+            fuel_samples = [
+                float(point["fuel"])
+                for point in lap_track
+                if isinstance(point.get("fuel"), (int, float))
+                and point["fuel"] > 0
+            ]
+            if len(fuel_samples) >= 2 and fuel_samples[0] > fuel_samples[-1]:
+                fuel_used = round(fuel_samples[0] - fuel_samples[-1], 3)
             
             laps.append({
                 "lap_num": game_lap_num,
                 "capture_lap_index": i + 1,
-                "start_frame": s,
+                "start_frame": effective_start_frame,
                 "end_frame": e,
                 "lap_time_s": lap_time,
                 "lap_time_str": f"{int(lap_time // 60)}:{lap_time % 60:05.2f}",
@@ -388,7 +506,27 @@ class TelemetryAnalyzer:
                 "uses_canonical_progress": uses_canonical_progress,
             })
             fuel_str = f"  fuel {fuel_used:.3f}L" if fuel_used is not None else ""
-            log_debug(Component.ANALYZER, "Lap summary", lap_num=game_lap_num, lap_time=f"{lap_time:.0f}s", max_speed=f"{max(pt['speed'] for pt in lap_track):.0f} km/h", corners=len(corners), fuel=fuel_str)
+            log_debug(
+                Component.ANALYZER,
+                "Lap summary",
+                lap_num=game_lap_num,
+                lap_time=f"{lap_time:.0f}s",
+                max_speed=f"{max(pt['speed'] for pt in lap_track):.0f} km/h",
+                corners=len(corners),
+                fuel=fuel_str,
+                prefix_frames_removed=prefix_removed,
+                paused_frames_removed=pause_removed,
+            )
+
+        if trimmed_lap_segments:
+            analysis_notes.append(
+                f"Trimmed {trimmed_prefix_frames} stale prefix frame(s) from "
+                f"{trimmed_lap_segments} lap segment(s) using the authoritative lap duration."
+            )
+        if paused_frames_removed:
+            analysis_notes.append(
+                f"Excluded {paused_frames_removed} paused telemetry samples from completed laps."
+            )
 
         if not laps:
             log_warning(Component.ANALYZER, "Analysis complete: no valid laps found")
@@ -447,10 +585,17 @@ class TelemetryAnalyzer:
             for lap in laps_with_corners
             if lap.get("confidence_label") != "low"
         ]
-        comparison_pool = coachable_laps or laps_with_corners or ([best_lap] if best_lap else [])
-        comparison_pool = sorted(comparison_pool, key=lambda lap: lap["lap_time_s"])
+        comparison_pool = coachable_laps or laps_with_corners or valid_laps
+        comparison_pool = sorted(
+            (
+                lap
+                for lap in comparison_pool
+                if ref_lap is None or lap["lap_num"] != ref_lap["lap_num"]
+            ),
+            key=lambda lap: lap["lap_time_s"],
+        )
         comparison_lap = (
-            comparison_pool[len(comparison_pool) // 2]
+            comparison_pool[(len(comparison_pool) - 1) // 2]
             if comparison_pool
             else None
         )
@@ -460,6 +605,10 @@ class TelemetryAnalyzer:
             analysis_mode = "diagnostic"
             analysis_notes.append(
                 "No valid completed laps were available; invalid laps are shown for diagnostics only."
+            )
+        elif comparison_lap is None:
+            analysis_notes.append(
+                "Only one coachable valid lap was available; comparative coaching is unavailable."
             )
 
         log_info(Component.ANALYZER, "Analysis complete", 
@@ -473,7 +622,7 @@ class TelemetryAnalyzer:
 
         corner_data: Dict[Any, Dict[Any, Dict[str, Any]]] = defaultdict(dict)
         corner_speeds: Dict[Any, Dict[Any, float]] = defaultdict(dict)
-        for lap in laps:
+        for lap in laps_with_corners:
             if track_profile and track_profile.get("corners"):
                 matched = match_profiled_corners(ref_corners, lap["corners"])
             else:
@@ -504,6 +653,9 @@ class TelemetryAnalyzer:
             "best_lap_num": best_lap["lap_num"] if best_lap else None,
             "reference_lap_num": ref_lap["lap_num"] if ref_lap else None,
             "comparison_lap_num": comparison_lap["lap_num"] if comparison_lap else None,
+            "comparison_available": comparison_lap is not None,
+            "valid_lap_nums": [lap["lap_num"] for lap in valid_laps],
+            "coaching_lap_nums": [lap["lap_num"] for lap in coachable_laps],
             "ref_corners": ref_corners,
             "profile_corners": track_profile.get("corners", []) if track_profile else [],
             "corner_data": corner_data,
@@ -522,7 +674,9 @@ class TelemetryAnalyzer:
         # ── Session-over-session comparison
         _track_label = data.get("track_label") or data.get("track_name") or ""
         _car = data.get("car") or ""
-        _laps_with_fuel = [lap for lap in laps if lap.get("fuel_used") is not None]
+        _laps_with_fuel = [
+            lap for lap in valid_laps if lap.get("fuel_used") is not None
+        ]
         _avg_fuel = (
             sum(lap["fuel_used"] for lap in _laps_with_fuel) / len(_laps_with_fuel)
             if _laps_with_fuel else None
@@ -545,16 +699,19 @@ class TelemetryAnalyzer:
                 _track_label,
                 _car,
                 best_lap["lap_time_s"],
-                max((lap.get("max_speed") or 0.0) for lap in laps),
-                len(laps),
+                max((lap.get("max_speed") or 0.0) for lap in valid_laps),
+                len(valid_laps),
                 _avg_fuel,
             )
 
-        telemetry_summary = {
-            "max_speed": max((lap.get("max_speed") or 0.0) for lap in laps),
-            "stint_number": 1,
-        }
-        self._session_manager.update_from_telemetry(telemetry_summary)
+        if valid_laps:
+            telemetry_summary = {
+                "max_speed": max(
+                    (lap.get("max_speed") or 0.0) for lap in valid_laps
+                ),
+                "stint_number": 1,
+            }
+            self._session_manager.update_from_telemetry(telemetry_summary)
 
         log_info(Component.ANALYZER, "Generating outputs", prefix=output_prefix)
         html_path = await self._generate_html(data, output_prefix)
@@ -565,7 +722,7 @@ class TelemetryAnalyzer:
             html_path=html_path,
             ai_prompt_path=ai_prompt_path,
             laps_detected=len(laps),
-            best_lap_time=best_lap["lap_time_s"] if best_lap else 0.0,
+            best_lap_time=best_lap["lap_time_s"] if best_lap else None,
             track_name=data.get("track_label") or data.get("track_name"),
         )
 
@@ -576,7 +733,7 @@ class TelemetryAnalyzer:
             html_path=None,
             ai_prompt_path=None,
             laps_detected=0,
-            best_lap_time=0.0,
+            best_lap_time=None,
             track_name=None,
         )
 

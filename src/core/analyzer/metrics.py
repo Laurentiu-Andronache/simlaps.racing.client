@@ -659,43 +659,60 @@ def analyze_suspension(
     for spec in ref_corners:
         cid = spec["id"]
         name = spec.get("name") or f"Corner {cid}"
+        max_magnitude_delta = 0.0
         for lap in laps:
             ln = lap["lap_num"]
+            sample = None
             if lap_corner_map:
-                _dc = lap_corner_map.get(ln, {}).get(cid)
-                if not _dc:
+                detected_corner = lap_corner_map.get(ln, {}).get(cid)
+                if not detected_corner:
                     continue
-                _sf = _dc.get("start_frame")
-                _ef = _dc.get("end_frame")
-                if _sf is None or _ef is None:
+                start_frame = detected_corner.get("start_frame")
+                end_frame = detected_corner.get("end_frame")
+                if start_frame is None or end_frame is None:
                     continue
-                for pt in lap.get("track", []):
-                    if _sf <= pt["frame"] <= _ef:
-                        cfl = pt.get("camber_fl", 0)
-                        cfr = pt.get("camber_fr", 0)
-                        if isinstance(cfl, (int, float)) and isinstance(cfr, (int, float)):
-                            if abs(cfl - cfr) > 0.0087:
-                                deg = abs(cfl - cfr) * (180 / 3.14159)
-                                notes["camber_notes"].append(
-                                    f"{name}: front camber mismatch {deg:.1f}deg at apex - "
-                                    "excessive body roll for camber setting"
-                                )
-                        break
+                sample = next(
+                    (
+                        point
+                        for point in lap.get("track", [])
+                        if start_frame <= point["frame"] <= end_frame
+                    ),
+                    None,
+                )
             else:
-                for pt in lap.get("track", []):
-                    progress = pt.get("lap_progress")
-                    if progress is None:
-                        progress = -1
-                    if spec["start"] <= progress < spec["end"]:
-                        cfl = pt.get("camber_fl", 0)
-                        cfr = pt.get("camber_fr", 0)
-                        if isinstance(cfl, (int, float)) and isinstance(cfr, (int, float)):
-                            if abs(cfl - cfr) > 0.0087:
-                                deg = abs(cfl - cfr) * (180 / 3.14159)
-                                notes["camber_notes"].append(
-                                    f"{name}: front camber mismatch {deg:.1f}deg at apex - "
-                                    "excessive body roll for camber setting"
-                                )
-                        break
+                sample = next(
+                    (
+                        point
+                        for point in lap.get("track", [])
+                        if spec["start"]
+                        <= (
+                            point.get("lap_progress")
+                            if point.get("lap_progress") is not None
+                            else -1
+                        )
+                        < spec["end"]
+                    ),
+                    None,
+                )
+
+            if sample is None:
+                continue
+            camber_left = sample.get("camber_fl", 0)
+            camber_right = sample.get("camber_fr", 0)
+            if isinstance(camber_left, (int, float)) and isinstance(
+                camber_right, (int, float)
+            ):
+                max_magnitude_delta = max(
+                    max_magnitude_delta,
+                    abs(abs(camber_left) - abs(camber_right)),
+                )
+
+        if max_magnitude_delta > 0.0087:
+            mismatch_degrees = max_magnitude_delta * (180 / 3.14159)
+            notes["camber_notes"].append(
+                f"{name}: front camber magnitude mismatch "
+                f"{mismatch_degrees:.1f}deg at apex - "
+                "excessive body roll for camber setting"
+            )
 
     return notes

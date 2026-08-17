@@ -1,0 +1,165 @@
+"""Regression coverage for practice pit-exit/outlap coordination."""
+
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+import pytest
+
+from src.core.log_parser import LogParser
+from src.models import LapCompletionData, LapState, SessionData, SharedSessionManager
+from src.ui.services.lap_processing_service import LapProcessingService
+from src.utils.config import AppConfig
+
+
+@pytest.mark.asyncio
+async def test_laguna_live_log_flow_records_outlap_boundary_without_card(tmp_path):
+    """Replay the signal order observed in the 2026-08-18 live session.
+
+    ACE crosses the timing line while the car is still in pit lane, rejects
+    that short prefix, and then reports the following full circuit as a normal
+    ``New lap``. It is nevertheless the structural outlap: telemetry needs its
+    end boundary, while the UI/history/submission paths must not treat it as a
+    result.
+    """
+    car_id = "45dee0b268b7dc7c-9bb207d2d0ce68ad"
+    log_file = tmp_path / "laguna-outlap.log"
+    log_file.write_text(
+        "\n".join(
+            (
+                "[2026-08-18 11:31:25.052] [gameplay] [info] Outplap split",
+                "[2026-08-18 11:31:41.838] [gameplay] [error] "
+                "Couldn't create lap from opensplits (carId player): Splitcollection 1/3",
+                "[2026-08-18 11:32:26.244] [gameplay] [info] "
+                "On Split start false end false id 0 splittime 44403",
+                "[2026-08-18 11:32:53.895] [gameplay] [info] "
+                "On Split start false end false id 1 splittime 27651",
+                "[2026-08-18 11:33:36.971] [physics] [info] "
+                "Lap test evOnLapCompleted 2 completed",
+                "[2026-08-18 11:33:37.333] [gameplay] [info] "
+                "On Split start true end true id 2 splittime 43440",
+                f"[2026-08-18 11:33:37.333] [gameplay] [info] "
+                f"New lap carId {car_id}: 01:55.494",
+                "[2026-08-18 11:33:37.420] [network] [info] "
+                "Relevant onSplit for Combo 6@2: laptime 115494, valid false, "
+                "flags 1, lap 1 (prev 0)",
+                "[2026-08-18 11:34:54.441] [gameplay] [info] "
+                "On Split start false end false id 0 splittime 77109",
+                "[2026-08-18 11:35:20.690] [gameplay] [info] "
+                "On Split start false end false id 1 splittime 26247",
+                "[2026-08-18 11:36:10.472] [physics] [info] "
+                "Lap test evOnLapCompleted 3 completed",
+                "[2026-08-18 11:36:10.840] [gameplay] [info] "
+                "On Split start true end true id 2 splittime 50151",
+                f"[2026-08-18 11:36:10.840] [gameplay] [info] "
+                f"New lap carId {car_id}: 02:33.507",
+                "[2026-08-18 11:36:10.865] [network] [info] "
+                "Relevant onSplit for Combo 6@2: laptime 153507, valid false, "
+                "flags 1, lap 2 (prev 1)",
+                "[2026-08-18 11:36:52.962] [gameplay] [info] "
+                "On Split start false end false id 0 splittime 42120",
+                "[2026-08-18 11:37:19.918] [gameplay] [info] "
+                "On Split start false end false id 1 splittime 26958",
+                "[2026-08-18 11:38:07.538] [physics] [info] "
+                "Lap test evOnLapCompleted 4 completed",
+                "[2026-08-18 11:38:07.901] [gameplay] [info] "
+                "On Split start true end true id 2 splittime 47982",
+                f"[2026-08-18 11:38:07.901] [gameplay] [info] "
+                f"New lap carId {car_id}: 01:57.060",
+                "[2026-08-18 11:38:07.927] [network] [info] "
+                "Relevant onSplit for Combo 6@2: laptime 117060, valid true, "
+                "flags 2, lap 3 (prev 2)",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    manager = SharedSessionManager()
+    telemetry = MagicMock()
+    telemetry.is_capturing.return_value = True
+    home = MagicMock()
+    home._lap_count = 0
+    history = []
+    submissions = MagicMock()
+    service = LapProcessingService()
+
+    def add_lap(*_args):
+        home._lap_count += 1
+        return MagicMock()
+
+    home.add_lap.side_effect = add_lap
+
+    async def on_lap(session, lap):
+        await service.handle_lap_complete(
+            session=session,
+            lap=lap,
+            home_page=home,
+            telemetry_capture=telemetry,
+            config=AppConfig(auto_submit=True, telemetry_enabled=True),
+            session_manager=manager,
+            pb_cache=MagicMock(),
+            history_entries=history,
+            schedule_submission=submissions,
+            create_history_entry=lambda **values: SimpleNamespace(**values),
+        )
+
+    parser = LogParser(
+        log_path=str(log_file),
+        on_lap_complete=on_lap,
+        session_manager=manager,
+    )
+    parser.current_session = SessionData(
+        track="laguna_seca gp",
+        car="ks_mazda_mx5_nd_cup",
+        player_id="76561197986609341",
+        session_type="PRACTICE",
+        car_uuid=car_id,
+    )
+    parser.context.player_id = "76561197986609341"
+    parser.context.car_uuid = car_id
+    parser.context.tyre.set_all("S")
+
+    sessions = await parser.parse_file()
+
+    assert len(sessions) == 1
+    assert [lap.lap_state for lap in sessions[0].laps] == [
+        LapState.OUTLAP,
+        LapState.INVALID_GAME,
+        LapState.VALID,
+    ]
+    assert [call.args[1].lap_time_ms for call in home.add_lap.call_args_list] == [
+        153507,
+        117060,
+    ]
+    assert len(history) == 2
+    submissions.assert_called_once()
+    assert [call.args for call in telemetry.record_lap_boundary.call_args_list] == [
+        (115494, 1, "OUTLAP"),
+        (153507, 2, "INVALID_GAME"),
+        (117060, 3, "VALID"),
+    ]
+
+
+def test_shm_completion_waits_for_armed_outlap_log_classification():
+    """A delayed log must not allow SHM to publish the outlap as invalid."""
+    completion = LapCompletionData(
+        completed_laps=2,
+        lap_time_ms=115494,
+        is_valid=False,
+        timestamp="2026-08-18T11:33:37+00:00",
+        observed_at=1.0,
+    )
+    manager = MagicMock()
+    manager.get_latest_lap_completion.return_value = None
+    manager.get_lap_completions_after.return_value = [completion]
+    parser = LogParser(session_manager=manager)
+    parser.current_session = SessionData(
+        track="laguna_seca gp",
+        car="ks_mazda_mx5_nd_cup",
+        session_type="PRACTICE",
+    )
+    parser._ip.is_outlap = True
+
+    assert parser._take_ready_shm_lap() is None
+    assert parser.current_session.laps == []
+    assert parser._last_shm_completion_observed_at == completion.observed_at

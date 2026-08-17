@@ -1077,13 +1077,16 @@ class LogParser:
         
         split_idx, split_ms = int(m.group(1)), int(m.group(2))
         
-        # Clear outlap flag when first split of new lap is detected.
-        # AC Evo doesn't log outlap completions, so the outlap flag would
-        # persist indefinitely without this. When we see S1 of a new lap
-        # after an outlap, that means the outlap ended and a timed lap began.
-        if self._ip.is_outlap and split_idx == 0:
-            log_debug(Component.LOG_PARSER, 
-                "[OUTLAP] Clearing outlap flag — S1 of new flying lap detected")
+        # Tourist-style layouts can publish a zero-time start marker instead
+        # of a ``New lap`` line when the outlap ends. That marker starts the
+        # first timed lap. A normal non-zero S1 does not: on tracks whose pit
+        # exit lies beyond the timing line (Laguna Seca, for example), it is
+        # still S1 of the outlap and clearing here would expose the outlap as
+        # an ordinary invalid lap.
+        if self._ip.is_outlap and split_idx == 0 and split_ms == 0:
+            log_debug(Component.LOG_PARSER,
+                "[OUTLAP] Clearing outlap flag — zero-time start marker "
+                "for new flying lap detected")
             self._ip.is_outlap = False
         
         # Skip recording splits during outlap (but flag was already cleared above if needed)
@@ -1107,8 +1110,10 @@ class LogParser:
         race/qualifying session is always a real timed lap, so we only honor
         this signal in PRACTICE_LIKE sessions.
 
-        'Couldn't create lap from opensplits' means the game also rejected the
-        lap; we reset in-progress state so stale flags don't infect the next lap.
+        'Couldn't create lap from opensplits' means the game rejected the
+        partial pit-exit segment at the timing line. In a practice-like
+        session the following full circuit is still the outlap, so reset its
+        accumulated fields while carrying the structural marker forward.
         """
         if "Outplap split" in line:
             if (
@@ -1124,7 +1129,13 @@ class LogParser:
                 )
         elif "Couldn't create lap from opensplits" in line:
             log_debug(Component.LOG_PARSER, "[OUTLAP] Couldn't create lap — resetting in-progress")
+            preserve_outlap = (
+                self._ip.is_outlap
+                and self.current_session is not None
+                and self.current_session.session_type in PRACTICE_LIKE
+            )
             self._reset_in_progress()
+            self._ip.is_outlap = preserve_outlap
 
     def _handle_physics_lap(self, line: str) -> None:
         if "Lap test evOnLapCompleted" not in line:
@@ -1565,6 +1576,19 @@ class LogParser:
 
         self._last_shm_completion_observed_at = completion.observed_at
         if self.current_session is None:
+            return None
+
+        # SHM can report the finish before ACE flushes the corresponding log
+        # lines. It has validity but no structural outlap classification. If
+        # the log has already armed an outlap, consume this completion and wait
+        # for ``New lap`` to supply the boundary without publishing a false
+        # INVALID_GAME card first.
+        if self._ip.is_outlap:
+            log_debug(
+                Component.LOG_PARSER,
+                f"[OUTLAP] Deferred SHM completion {completion.lap_time_ms} ms "
+                "until structural log reconciliation",
+            )
             return None
 
         prior_numbers = [lap.lap_number for lap in self.current_session.laps]
