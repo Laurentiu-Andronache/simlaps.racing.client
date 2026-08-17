@@ -1,6 +1,6 @@
 """Regression tests for HomePage UI interactions."""
 
-from unittest.mock import MagicMock, PropertyMock, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import flet as ft
 
@@ -16,23 +16,28 @@ def _get_update_download_button(home_page: HomePage) -> ft.TextButton:
     raise AssertionError("Download button not found on update banner")
 
 
-def test_update_banner_download_button_wired_to_open_update_url() -> None:
-    with patch.object(HomePage, "_open_update_url") as open_update_url_mock:
+async def test_update_banner_download_button_awaits_open_update_url() -> None:
+    with patch.object(
+        HomePage,
+        "_open_update_url",
+        new_callable=AsyncMock,
+    ) as open_update_url_mock:
         home_page = HomePage(AppConfig())
         download_button = _get_update_download_button(home_page)
 
         assert download_button.on_click is not None
-        download_button.on_click(MagicMock())
+        await download_button.on_click(MagicMock())
 
-    open_update_url_mock.assert_called_once()
+    open_update_url_mock.assert_awaited_once()
 
 
-def test_open_update_url_launches_expected_download_url() -> None:
+async def test_open_update_url_awaits_expected_download_url() -> None:
     with patch.object(HomePage, "page", new_callable=PropertyMock) as page_prop:
         page_mock = MagicMock()
+        page_mock.launch_url = AsyncMock()
         page_prop.return_value = page_mock
 
         home_page = HomePage(AppConfig())
-        home_page._open_update_url()
+        await home_page._open_update_url()
 
-    page_mock.launch_url.assert_called_once_with(UPDATE_DOWNLOAD_URL)
+    page_mock.launch_url.assert_awaited_once_with(UPDATE_DOWNLOAD_URL)

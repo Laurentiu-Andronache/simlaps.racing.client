@@ -27,7 +27,7 @@ from ...utils.structured_logger import (
 from ...version import GAME_DISPLAY_NAME
 
 
-UPDATE_DOWNLOAD_URL = "https://simlaps.racing/download"
+UPDATE_DOWNLOAD_URL = "https://www.simlaps.racing"
 
 
 def get_icon_path() -> Optional[str]:
@@ -400,10 +400,10 @@ class HomePage(ft.Column):
         if self.page:
             self.page.run_task(check)
 
-    def _open_update_url(self, _=None):
+    async def _open_update_url(self, _=None):
         """Open browser to download update."""
         if self.page:
-            self.page.launch_url(UPDATE_DOWNLOAD_URL)
+            await self.page.launch_url(UPDATE_DOWNLOAD_URL)
     
     def _handle_settings_click(self, e):
         """Handle Settings button click."""
