@@ -6,6 +6,7 @@ import flet as ft
 from typing import Optional
 from enum import Enum
 from ...version import get_version, GAME_NAME
+from ...core.security import is_secret_configured
 
 
 class ConnectionStatus(Enum):
@@ -59,6 +60,39 @@ class StatusBar(ft.Container):
                 bgcolor=self._get_status_color(),
             )
     
+    def _build_right_controls(self) -> list:
+        """Build right-side controls: offline badge (if applicable) + version."""
+        controls = []
+        if not is_secret_configured():
+            controls.append(
+                ft.Container(
+                    content=ft.Row(
+                        controls=[
+                            ft.Icon(ft.Icons.CLOUD_OFF, color="#ffd43b", size=14),
+                            ft.Text(
+                                "Offline Mode",
+                                size=10,
+                                color="#ffd43b",
+                                weight=ft.FontWeight.W_600,
+                            ),
+                        ],
+                        spacing=4,
+                    ),
+                    padding=ft.Padding.symmetric(horizontal=8, vertical=2),
+                    bgcolor="#3d3d1f",
+                    border_radius=4,
+                )
+            )
+        controls.append(
+            ft.Text(
+                f"{GAME_NAME} v{get_version()}",
+                size=10,
+                color="#666666",
+                style=ft.TextStyle(italic=True),
+            )
+        )
+        return controls
+
     def _build_content(self) -> ft.Control:
         """Build the status bar content."""
         return ft.Row(
@@ -81,17 +115,10 @@ class StatusBar(ft.Container):
                     ],
                     spacing=16,
                 ),
-                # Right side: Version info
+                # Right side: Offline indicator + Version info
                 ft.Row(
-                    controls=[
-                        ft.Text(
-                            f"{GAME_NAME} v{get_version()}",
-                            size=10,
-                            color="#666666",
-                            style=ft.TextStyle(italic=True),
-                        ),
-                    ],
-                    spacing=4,
+                    controls=self._build_right_controls(),
+                    spacing=8,
                 ),
             ],
             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
