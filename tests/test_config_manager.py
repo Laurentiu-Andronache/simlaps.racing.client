@@ -144,8 +144,17 @@ def test_app_config_to_dict_roundtrip() -> None:
     assert d["server_url"] == "http://test"
 
 
-def test_config_path_returns_path() -> None:
-    path = get_config_path()
+def test_config_path_returns_debug_path_when_no_secret() -> None:
+    """In debug mode (no APP_SECRET), config path should be config-debug.json."""
+    with patch("src.utils.config.is_secret_configured", return_value=False):
+        path = get_config_path()
+    assert path.name == "config-debug.json"
+
+
+def test_config_path_returns_production_path_when_secret_configured() -> None:
+    """When APP_SECRET is set, config path should be config.json."""
+    with patch("src.utils.config.is_secret_configured", return_value=True):
+        path = get_config_path()
     assert path.name == "config.json"
 
 
