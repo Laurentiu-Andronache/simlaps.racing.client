@@ -1541,25 +1541,70 @@ class LogParser:
         ``Relevant onSplit`` remains authoritative whenever it arrives. This
         fallback is only consulted while finalising a still-pending lap.
 
-        OUTLAP normally remains a stronger structural classification. The
-        sole exception is an exact SHM completion with ``is_valid is True``:
-        that proves ACE accepted the full timed circuit following a rejected
-        pit prefix. An invalid or missing completion remains OUTLAP so
-        Laguna-style structural outlaps stay suppressed.
+        OUTLAP normally remains a stronger structural classification. An
+        unambiguous exact SHM completion proves that ACE timed the full
+        circuit following a rejected pit prefix. Valid completions retain the
+        existing recovery behaviour. Invalid completions are recovered only
+        when the SHM, parser, and physics lap counters all agree; otherwise
+        the structural OUTLAP is retained.
         """
-        completion = self._session_manager.get_lap_completion_by_time(
-            pending.lap_time_ms
-        )
+        was_outlap = pending.lap_state == LapState.OUTLAP
+        completion = None
+
+        if was_outlap:
+            exact_completions = [
+                candidate
+                for candidate in self._session_manager.get_lap_completions_after(
+                    float("-inf")
+                )
+                if candidate.lap_time_ms == pending.lap_time_ms
+            ]
+            shm_counters = [
+                candidate.completed_laps for candidate in exact_completions
+            ]
+            resolution = "retained_missing_completion"
+
+            if len(exact_completions) == 1:
+                candidate = exact_completions[0]
+                counters_aligned = (
+                    candidate.completed_laps
+                    == pending.lap_number
+                    == pending.physics_lap_number
+                )
+                if candidate.is_valid is True:
+                    completion = candidate
+                    resolution = "promoted_valid_completion"
+                elif candidate.is_valid is False and counters_aligned:
+                    completion = candidate
+                    resolution = "promoted_invalid_aligned_completion"
+                elif candidate.is_valid is False:
+                    resolution = "retained_invalid_counter_mismatch"
+                else:
+                    resolution = "retained_completion_without_validity"
+            elif len(exact_completions) > 1:
+                resolution = "retained_ambiguous_completion"
+
+            log_debug(
+                Component.LOG_PARSER,
+                "[OUTLAP] Provisional resolution "
+                f"time_ms={pending.lap_time_ms} "
+                f"parser={pending.lap_number} "
+                f"physics={pending.physics_lap_number} "
+                f"shm={shm_counters or None} "
+                f"result={resolution}",
+            )
+            if completion is None:
+                return
+
+        if completion is None:
+            completion = self._session_manager.get_lap_completion_by_time(
+                pending.lap_time_ms
+            )
         completion_matches = (
             completion is not None
             and completion.lap_time_ms == pending.lap_time_ms
             and completion.is_valid is not None
         )
-        was_outlap = pending.lap_state == LapState.OUTLAP
-        if was_outlap and not (
-            completion_matches and completion.is_valid is True
-        ):
-            return
 
         if completion_matches:
             is_valid = bool(completion.is_valid)
@@ -1583,9 +1628,10 @@ class LogParser:
         pending.lap_type = pending.lap_state.value
         pending.validity_source = "shm_graphics"
 
-        if was_outlap and is_valid and self.current_session is not None:
+        if was_outlap and self.current_session is not None:
             # The provisional OUTLAP did not enter a stint at construction
-            # time. Enrol it now that the completion has been proven valid.
+            # time. Enrol it now that an exact completion has been proven to
+            # represent a timed lap (valid or counter-aligned invalid).
             stint = self._ensure_stint(pending.tyre_compound)
             if pending.lap_number not in stint.lap_numbers:
                 stint.add_lap(

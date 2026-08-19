@@ -1,11 +1,14 @@
 """Regression coverage for practice pit-exit/outlap coordination."""
 
+from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from src.core.log_parser import LogParser
+from src.core.telemetry_analyzer import TelemetryAnalyzer
+from src.core.telemetry_capture import FrameData
 from src.models import LapCompletionData, LapState, SessionData, SharedSessionManager
 from src.ui.services.lap_processing_service import LapProcessingService
 from src.utils.config import AppConfig
@@ -41,6 +44,33 @@ def _format_lap_time(lap_time_ms: int) -> str:
     minutes, remainder = divmod(lap_time_ms, 60_000)
     seconds, milliseconds = divmod(remainder, 1_000)
     return f"{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
+
+
+def _analysis_frame(
+    frame_number: int,
+    *,
+    lap_start_frame: int,
+    lap_length_frames: int,
+    status_name: str = "AC_LIVE",
+) -> FrameData:
+    """Build one analyzer-quality frame without touching saved telemetry."""
+    lap_frame = frame_number - lap_start_frame
+    return FrameData(
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        frame_number=frame_number,
+        physics={"speed_kmh": 100.0, "gear": 3, "fuel": 5.0},
+        graphics={
+            "normalized_car_position": lap_frame / lap_length_frames,
+            "has_authoritative_progress": True,
+            "current_time_ms": frame_number * 100,
+            "last_time_ms": 0,
+            "completed_laps": 0,
+            "is_valid_lap": False,
+            "status_name": status_name,
+            "session_phase": "Session",
+            "is_in_pit_lane": False,
+        },
+    )
 
 
 @pytest.mark.asyncio
@@ -186,6 +216,179 @@ async def test_valid_timed_lap_after_rejected_pit_prefix_is_not_suppressed(tmp_p
         )
     ]
     submissions.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_invalid_timed_lap_after_rejected_pit_prefix_reaches_diagnostics(
+    tmp_path,
+):
+    """Replay the Red Bull Ring invalid-lap sequence through public flows."""
+    car_id = "45dee0b268b7dc7c-9bb207d2d0ce68ad"
+    lap_times = [61_854, 62_400]
+    sectors = [(25_000, 18_000, 18_854), (25_200, 18_100, 19_100)]
+    manager = SharedSessionManager()
+    for lap_number, lap_time_ms in enumerate(lap_times, start=1):
+        _publish_shm_completion(
+            manager,
+            completed_laps=lap_number,
+            lap_time_ms=lap_time_ms,
+            is_valid=False,
+        )
+
+    lines = [
+        "[2026-08-19 23:25:55.000] [gameplay] [info] Outplap split",
+        "[2026-08-19 23:25:56.000] [gameplay] [error] "
+        "Couldn't create lap from opensplits (carId player): Splitcollection 1/3",
+    ]
+    for lap_number, (lap_time_ms, lap_sectors) in enumerate(
+        zip(lap_times, sectors),
+        start=1,
+    ):
+        lines.extend(
+            [
+                f"[2026-08-19 23:{25 + lap_number:02d}:00.000] [physics] [info] "
+                f"Lap test evOnLapCompleted {lap_number} completed",
+                f"[2026-08-19 23:{25 + lap_number:02d}:00.010] [gameplay] [info] "
+                f"On Split start false end false id 0 splittime {lap_sectors[0]}",
+                f"[2026-08-19 23:{25 + lap_number:02d}:00.020] [gameplay] [info] "
+                f"On Split start false end false id 1 splittime {lap_sectors[1]}",
+                f"[2026-08-19 23:{25 + lap_number:02d}:00.030] [gameplay] [info] "
+                f"On Split start true end true id 2 splittime {lap_sectors[2]}",
+                f"[2026-08-19 23:{25 + lap_number:02d}:00.040] [gameplay] [info] "
+                f"New lap carId {car_id}: {_format_lap_time(lap_time_ms)}",
+            ]
+        )
+
+    log_file = tmp_path / "red-bull-ring-invalid-rejected-prefix.log"
+    log_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    telemetry = MagicMock()
+    telemetry.is_capturing.return_value = True
+    home = MagicMock()
+    home._lap_count = 0
+    history = []
+    submissions = MagicMock()
+    service = LapProcessingService()
+
+    def add_lap(*_args):
+        home._lap_count += 1
+        return MagicMock()
+
+    home.add_lap.side_effect = add_lap
+
+    async def present_lap(session, lap):
+        await service.handle_lap_complete(
+            session=session,
+            lap=lap,
+            home_page=home,
+            telemetry_capture=telemetry,
+            config=AppConfig(auto_submit=True, telemetry_enabled=True),
+            session_manager=manager,
+            pb_cache=MagicMock(),
+            history_entries=history,
+            schedule_submission=submissions,
+            create_history_entry=lambda **values: SimpleNamespace(**values),
+        )
+
+    parser = LogParser(
+        log_path=str(log_file),
+        session_manager=manager,
+    )
+    parser.current_session = SessionData(
+        track="Red Bull Ring GP",
+        car="ks_mazda_mx5_nd_cup",
+        player_id="76561197986609341",
+        session_type="PRACTICE",
+        car_uuid=car_id,
+    )
+    parser.context.player_id = "76561197986609341"
+    parser.context.car_uuid = car_id
+    parser.context.tyre.set_all("S")
+
+    sessions = await parser.parse_file()
+
+    assert len(sessions) == 1
+    session = sessions[0]
+    assert [lap.lap_number for lap in session.laps] == [1, 2]
+    assert [lap.lap_time_ms for lap in session.laps] == lap_times
+    assert [lap.lap_state for lap in session.laps] == [
+        LapState.INVALID_GAME,
+        LapState.INVALID_GAME,
+    ]
+    recovered = session.laps[0]
+    assert recovered.lap_time_str == "01:01.854"
+    assert recovered.validity_source == "shm_graphics"
+    assert recovered.stint_number == 1
+    assert session.stints[0].lap_numbers == [1, 2]
+
+    for lap in session.laps:
+        await present_lap(session, lap)
+
+    assert len(history) == 2
+    assert history[0].lap_time_ms == 61_854
+    assert history[0].was_valid is False
+    assert [call.args for call in telemetry.record_lap_boundary.call_args_list] == [
+        (61_854, 1, "INVALID_GAME"),
+        (62_400, 2, "INVALID_GAME"),
+    ]
+    submissions.assert_not_called()
+
+    frames = []
+    for frame_number in range(180):
+        second_lap = frame_number >= 80
+        paused = 120 <= frame_number < 140
+        frames.append(
+            _analysis_frame(
+                frame_number,
+                lap_start_frame=80 if second_lap else 0,
+                lap_length_frames=100 if second_lap else 80,
+                status_name="AC_PAUSE" if paused else "AC_LIVE",
+            )
+        )
+    boundary_frames = [80, 180]
+    analyzer_boundaries = [
+        (frame, *call.args)
+        for frame, call in zip(
+            boundary_frames,
+            telemetry.record_lap_boundary.call_args_list,
+        )
+    ]
+    analyzer = TelemetryAnalyzer(str(tmp_path))
+    with (
+        patch.object(
+            analyzer,
+            "_generate_html",
+            new=AsyncMock(return_value="report.html"),
+        ) as html_spy,
+        patch.object(
+            analyzer,
+            "_generate_ai_prompt",
+            new=AsyncMock(return_value="prompt.txt"),
+        ),
+    ):
+        await analyzer.analyze(
+            frames,
+            hz=10.0,
+            game_lap_boundaries=analyzer_boundaries,
+            output_prefix="red_bull_invalid",
+        )
+
+    analysis = html_spy.await_args.args[0]
+    assert analysis["analysis_mode"] == "diagnostic"
+    assert [lap["lap_num"] for lap in analysis["laps"]] == [1, 2]
+    assert [lap["is_valid"] for lap in analysis["laps"]] == [False, False]
+    second_lap = analysis["laps"][1]
+    assert len(second_lap["track"]) == 80
+    assert all(
+        point["status_name"] != "AC_PAUSE" for point in second_lap["track"]
+    )
+    assert any(
+        "invalid laps are shown for diagnostics only" in note
+        for note in analysis["analysis_notes"]
+    )
+    assert any(
+        "paused telemetry samples" in note for note in analysis["analysis_notes"]
+    )
 
 
 @pytest.mark.asyncio
@@ -342,22 +545,45 @@ def test_shm_completion_waits_for_armed_outlap_log_classification():
     assert parser._last_shm_completion_observed_at == completion.observed_at
 
 
-@pytest.mark.parametrize("completion_validity", [False, None])
-def test_outlap_needs_explicit_valid_completion_to_be_promoted(
+@pytest.mark.parametrize(
+    (
+        "completion_validity",
+        "completion_counters",
+        "physics_lap_number",
+        "expected_state",
+    ),
+    [
+        (True, [1], 1, LapState.VALID),
+        (False, [1], 1, LapState.INVALID_GAME),
+        (False, [2], 2, LapState.OUTLAP),
+        (None, [], 1, LapState.OUTLAP),
+        (False, [1, 1], 1, LapState.OUTLAP),
+    ],
+    ids=(
+        "valid-exact",
+        "invalid-counters-aligned",
+        "invalid-parser-counter-mismatch",
+        "missing-completion",
+        "ambiguous-completion",
+    ),
+)
+def test_provisional_outlap_reconciliation_requires_unambiguous_completion(
     completion_validity,
+    completion_counters,
+    physics_lap_number,
+    expected_state,
 ):
     manager = MagicMock()
-    manager.get_lap_completion_by_time.return_value = (
+    manager.get_lap_completions_after.return_value = [
         LapCompletionData(
-            completed_laps=1,
+            completed_laps=completed_laps,
             lap_time_ms=115494,
             is_valid=completion_validity,
             timestamp="2026-08-18T11:33:37+00:00",
-            observed_at=1.0,
+            observed_at=float(index),
         )
-        if completion_validity is not None
-        else None
-    )
+        for index, completed_laps in enumerate(completion_counters, start=1)
+    ]
     manager.get_lap_validity_data.return_value = SimpleNamespace(
         is_valid=True,
         source="shm_graphics",
@@ -370,7 +596,7 @@ def test_outlap_needs_explicit_valid_completion_to_be_promoted(
     )
     pending = SimpleNamespace(
         lap_number=1,
-        physics_lap_number=2,
+        physics_lap_number=physics_lap_number,
         lap_time_ms=115494,
         lap_state=LapState.OUTLAP,
         lap_type=LapState.OUTLAP.value,
@@ -384,6 +610,16 @@ def test_outlap_needs_explicit_valid_completion_to_be_promoted(
 
     parser._apply_shm_fallback_validity(pending)
 
-    assert pending.lap_state == LapState.OUTLAP
-    assert pending.is_valid is False
-    assert pending.validity_source == "heuristic"
+    assert pending.lap_state == expected_state
+    if expected_state == LapState.VALID:
+        assert pending.is_valid is True
+        assert pending.validity_source == "shm_graphics"
+        assert parser.current_session.stints[0].lap_numbers == [1]
+    elif expected_state == LapState.INVALID_GAME:
+        assert pending.is_valid is False
+        assert pending.validity_source == "shm_graphics"
+        assert parser.current_session.stints[0].lap_numbers == [1]
+    else:
+        assert pending.is_valid is False
+        assert pending.validity_source == "heuristic"
+        assert parser.current_session.stints == []
