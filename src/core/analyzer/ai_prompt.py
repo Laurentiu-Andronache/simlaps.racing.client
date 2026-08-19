@@ -46,23 +46,17 @@ async def generate_ai_prompt(
         return ai_prompt_path
 
     hz = data.get("hz", 10.0)
-    valid_laps = [lap for lap in laps if lap.get("is_valid", True)]
+    # Coaching ignores lap validity: invalid laps are still analysed.
     requested_best_lap_num = data.get("best_lap_num")
     best_lap = next(
         (
             lap
-            for lap in valid_laps
+            for lap in laps
             if lap.get("lap_num") == requested_best_lap_num
         ),
         None,
     )
-    if best_lap is None and valid_laps:
-        best_lap = min(valid_laps, key=lambda lap: lap["lap_time_s"])
-    no_valid_laps = best_lap is None
     if best_lap is None:
-        # The analyzer forces diagnostic mode when no valid lap exists. Keep
-        # a local fallback only so legacy/direct callers still get a useful
-        # diagnostic prompt without labelling the lap as a valid session best.
         best_lap = min(laps, key=lambda lap: lap["lap_time_s"])
     worst_lap = max(laps, key=lambda l: l["lap_time_s"])
     time_diff = worst_lap["lap_time_s"] - best_lap["lap_time_s"]
@@ -72,12 +66,6 @@ async def generate_ai_prompt(
     analysis_mode = data.get("analysis_mode", "diagnostic")
     analysis_confidence = data.get("analysis_confidence", "low")
     analysis_notes = list(data.get("analysis_notes", []))
-    if no_valid_laps:
-        analysis_mode = "diagnostic"
-        ref_corners = []
-        note = "No valid completed laps were available; invalid laps are shown for diagnostics only."
-        if note not in analysis_notes:
-            analysis_notes.append(note)
     authoritative_progress_ratio = float(data.get("authoritative_progress_ratio", 0.0) or 0.0)
     plausible_frame_ratio = float(data.get("plausible_frame_ratio", 0.0) or 0.0)
     reference_lap_num = data.get("reference_lap_num", best_lap["lap_num"])

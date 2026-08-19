@@ -426,17 +426,20 @@ class TelemetryAnalyzer:
             if isinstance(shared_validity, bool):
                 lap["is_valid"] = shared_validity
 
-        valid_laps = [lap for lap in laps if lap.get("is_valid", True)]
+        # Lap validity is advisory for coaching: invalid laps still reveal
+        # what the car and driver are doing, so every completed lap feeds
+        # the analysis. is_valid stays on each lap for display only.
+        coached_laps = list(laps)
         profile_sanity_notes = _profile_corner_sanity_notes(
-            valid_laps or laps,
+            coached_laps,
             profile_corners=track_profile.get("corners", []) if track_profile else None,
         )
         if profile_sanity_notes:
             analysis_mode = "diagnostic"
             analysis_notes.extend(profile_sanity_notes)
 
-        best_lap = min(valid_laps, key=lambda lap: lap["lap_time_s"]) if valid_laps else None
-        laps_with_corners = [lap for lap in valid_laps if lap.get("corners")]
+        best_lap = min(coached_laps, key=lambda lap: lap["lap_time_s"]) if coached_laps else None
+        laps_with_corners = [lap for lap in coached_laps if lap.get("corners")]
         ref_lap = (
             min(laps_with_corners, key=lambda lap: lap["lap_time_s"])
             if laps_with_corners
@@ -455,12 +458,6 @@ class TelemetryAnalyzer:
             else None
         )
         ref_corners = ref_lap.get("corners", []) if ref_lap else []
-
-        if best_lap is None:
-            analysis_mode = "diagnostic"
-            analysis_notes.append(
-                "No valid completed laps were available; invalid laps are shown for diagnostics only."
-            )
 
         log_info(Component.ANALYZER, "Analysis complete", 
                 laps=len(laps), 

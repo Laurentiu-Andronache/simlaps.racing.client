@@ -472,6 +472,48 @@ class TestHandleLapCompleteWithData:
         assert parser._pending_lap.lap_state == LapState.INVALID_PENALTY
         assert parser._pending_lap.is_valid is False
 
+    def test_penalty_added_deadline_duplicate_does_not_bleed_onto_next_lap(self):
+        """ACE fires PENALTY_ADDED twice per cut: at detection and again when
+        the recovery deadline expires (~3-11s later). The expiry copy lands
+        after the next lap started and must not invalidate it."""
+        parser = LogParser()
+        parser.current_session = SessionData(
+            track="circuit_de_spa_francorchamps",
+            car="ks_honda_nsx_r",
+            player_id="76561198321627695",
+            session_type="RACE",
+        )
+        parser.context.player_id = "76561198321627695"
+        parser.context.car_uuid = "abc123-def456"
+        parser.context.tyre.set_all("S")
+
+        # Cut detected 0.1s before lap 1 completes -> lap 1 invalid.
+        parser._ip.physics_lap_num = 1
+        parser._ip.splits = {0: 55000, 1: 79000, 2: 47000}
+        parser._process_line(
+            "[2026-08-18 23:13:02.935] [gameface] [warning] true {PENALTY_ADDED_KEY} #0 "
+        )
+        parser._handle_lap_complete(
+            "[2026-08-18 23:13:03.050] [gameplay] [info] "
+            "New lap carId abc123-def456: 03:01.000"
+        )
+        assert parser._pending_lap is not None
+        assert parser._pending_lap.lap_state == LapState.INVALID_PENALTY
+
+        # Deadline-expiry duplicate ~11s into lap 2 -> must be ignored.
+        parser._ip.physics_lap_num = 2
+        parser._ip.splits = {0: 48000}
+        parser._process_line(
+            "[2026-08-18 23:13:13.856] [gameface] [warning] true {PENALTY_ADDED_KEY} #0 "
+        )
+        assert parser._pending_penalty_warning is False
+
+        # A genuinely new penalty >15s later still applies.
+        parser._process_line(
+            "[2026-08-18 23:13:30.000] [gameface] [warning] true {PENALTY_ADDED_KEY} #0 "
+        )
+        assert parser._pending_penalty_warning is True
+
     def test_handle_lap_validity_upgrades_stale_penalty(self):
         """Game's valid flag must override a stale heuristic penalty.
 
