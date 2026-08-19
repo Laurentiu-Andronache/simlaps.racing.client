@@ -1532,6 +1532,12 @@ class LogParser:
             lap_number = pending.physics_lap_number or pending.lap_number
             validity = self._session_manager.get_lap_validity_data(lap_number)
             if validity is None or validity.source != "shm_graphics":
+                log_debug(
+                    Component.LOG_PARSER,
+                    "[VALIDITY] SHM fallback skipped — no shm_graphics validity "
+                    f"for #{pending.lap_number} (phys={pending.physics_lap_number}, "
+                    f"time_ms={pending.lap_time_ms}, validity={validity})",
+                )
                 return
             is_valid = validity.is_valid
 
@@ -1543,8 +1549,11 @@ class LogParser:
         pending.validity_source = "shm_graphics"
         log_debug(
             Component.LOG_PARSER,
-            f"[VALIDITY] Applied SHM fallback to pending lap "
-            f"#{pending.lap_number}: {pending.lap_state.value}",
+            "[VALIDITY] SHM fallback verdict "
+            f"#{pending.lap_number} phys={pending.physics_lap_number} "
+            f"time_ms={pending.lap_time_ms} "
+            f"source={'completion' if completion_matches else 'validity_map'} "
+            f"is_valid={is_valid} -> {pending.lap_state.value}",
         )
 
     def _flush_pending_lap(self) -> Optional[LapData]:
