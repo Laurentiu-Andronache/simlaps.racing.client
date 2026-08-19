@@ -1225,10 +1225,10 @@ class TestTelemetryAnalyzer:
             )
 
         data = html_spy.await_args.args[0]
+        assert [lap["lap_num"] for lap in data["laps"]] == [1, 2, 3, 4]
         valid_lap_numbers = {
             lap["lap_num"] for lap in data["laps"] if lap["is_valid"]
         }
-        assert [lap["lap_num"] for lap in data["laps"]] == [1, 2, 3, 4]
         assert data["best_lap_num"] == 3
         assert data["reference_lap_num"] in valid_lap_numbers
         assert data["comparison_lap_num"] in valid_lap_numbers

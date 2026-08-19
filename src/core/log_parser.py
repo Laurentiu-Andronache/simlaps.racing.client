@@ -58,6 +58,10 @@ class LogParser:
     DEFAULT_LOG_DIR = Path.home() / "Saved Games" / "ACE" / "Logs"
     DEFAULT_LOG_PATH = DEFAULT_LOG_DIR
     PENDING_VALIDITY_GRACE_SECONDS = 0.5
+    # ACE emits PENALTY_ADDED twice for a single cut: at detection (track
+    # cut widget shown) and again when the recovery deadline expires
+    # (~3-11s later). Events within this window are treated as duplicates.
+    PENALTY_ADDED_DEDUP_SECONDS = 15.0
 
     @staticmethod
     def _find_latest_log(log_dir: Path) -> Optional[Path]:
@@ -134,6 +138,9 @@ class LogParser:
         # Fallback penalty hint for the currently in-progress lap. Used only
         # when no authoritative validity line is seen for that lap.
         self._pending_penalty_warning: bool = False
+        # Log-line epoch seconds of the last PENALTY_ADDED event, used to
+        # dedup ACE's double-fired penalty notifications.
+        self._last_penalty_added_ts: Optional[float] = None
 
         # Stint tracking
         self._current_stint: Optional[StintData] = None
@@ -304,6 +311,15 @@ class LogParser:
         if end <= 1:
             return None
         return line[1:end]
+
+    def _line_ts_epoch_seconds(self, line: str) -> Optional[float]:
+        ts = self._extract_line_timestamp(line)
+        if not ts:
+            return None
+        try:
+            return datetime.strptime(ts, "%Y-%m-%d %H:%M:%S.%f").timestamp()
+        except ValueError:
+            return None
 
     @staticmethod
     def _normalize_car_uuid(car_uuid: Optional[str]) -> str:
@@ -1012,6 +1028,25 @@ class LogParser:
             return
 
         trigger = "PenaltyType_Warning" if saw_penalty_warning else "PENALTY_ADDED_KEY"
+        if saw_penalty_added:
+            line_ts = self._line_ts_epoch_seconds(line)
+            if (
+                line_ts is not None
+                and self._last_penalty_added_ts is not None
+                and 0.0 <= line_ts - self._last_penalty_added_ts <= self.PENALTY_ADDED_DEDUP_SECONDS
+            ):
+                # Duplicate of a penalty already attributed to the correct
+                # lap by the first (detection-time) event. Without this, the
+                # deadline-expiry copy lands after the next lap has started
+                # and wrongly invalidates it.
+                log_debug(
+                    Component.LOG_PARSER,
+                    "[VALIDITY] Ignoring duplicate PENALTY_ADDED within "
+                    f"{self.PENALTY_ADDED_DEDUP_SECONDS:.0f}s of previous event",
+                )
+                return
+            if line_ts is not None:
+                self._last_penalty_added_ts = line_ts
         ip = self._ip
         in_progress_started = bool(
             ip.splits
@@ -1508,6 +1543,12 @@ class LogParser:
             lap_number = pending.physics_lap_number or pending.lap_number
             validity = self._session_manager.get_lap_validity_data(lap_number)
             if validity is None or validity.source != "shm_graphics":
+                log_debug(
+                    Component.LOG_PARSER,
+                    "[VALIDITY] SHM fallback skipped — no shm_graphics validity "
+                    f"for #{pending.lap_number} (phys={pending.physics_lap_number}, "
+                    f"time_ms={pending.lap_time_ms}, validity={validity})",
+                )
                 return
             is_valid = validity.is_valid
 
@@ -1519,8 +1560,11 @@ class LogParser:
         pending.validity_source = "shm_graphics"
         log_debug(
             Component.LOG_PARSER,
-            f"[VALIDITY] Applied SHM fallback to pending lap "
-            f"#{pending.lap_number}: {pending.lap_state.value}",
+            "[VALIDITY] SHM fallback verdict "
+            f"#{pending.lap_number} phys={pending.physics_lap_number} "
+            f"time_ms={pending.lap_time_ms} "
+            f"source={'completion' if completion_matches else 'validity_map'} "
+            f"is_valid={is_valid} -> {pending.lap_state.value}",
         )
 
     def _flush_pending_lap(self) -> Optional[LapData]:

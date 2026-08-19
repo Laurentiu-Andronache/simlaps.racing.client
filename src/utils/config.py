@@ -11,6 +11,7 @@ from dataclasses import dataclass, field, asdict
 from typing import Any, Optional
 
 from src.utils.structured_logger import Component, log_warning
+from src.core.security import is_secret_configured
 
 
 # Default configuration values
@@ -44,8 +45,14 @@ def get_config_dir() -> Path:
 
 
 def get_config_path() -> Path:
-    """Get the configuration file path."""
-    return get_config_dir() / "config.json"
+    """Get the configuration file path.
+
+    When APP_SECRET is not configured (debug mode), a separate
+    ``config-debug.json`` file is used so debug settings don't
+    overwrite the production config.
+    """
+    filename = "config-debug.json" if not is_secret_configured() else "config.json"
+    return get_config_dir() / filename
 
 
 @dataclass
