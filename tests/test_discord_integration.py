@@ -467,7 +467,7 @@ class TestAppDiscordPosting:
             session_manager=app._session_manager,
             pb_cache=app._pb_cache,
             history_entries=app._history_entries,
-            submit_lap=app._submit_lap,
+            schedule_submission=app._schedule_lap_submission,
             create_history_entry=HistoryEntry,
         )
 
@@ -511,7 +511,7 @@ class TestAppDiscordPosting:
             session_manager=app._session_manager,
             pb_cache=app._pb_cache,
             history_entries=app._history_entries,
-            submit_lap=app._submit_lap,
+            schedule_submission=app._schedule_lap_submission,
             create_history_entry=HistoryEntry,
         )
 

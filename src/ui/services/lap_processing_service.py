@@ -4,7 +4,7 @@ Owns lap-complete orchestration for telemetry lap boundary recording,
 submission eligibility, history/card synchronization, and auto-submit trigger.
 """
 
-from typing import Awaitable, Callable, Optional
+from typing import Callable, Optional
 
 from src.core.pb_cache import PBCache
 from src.core.telemetry_capture import TelemetryCapture
@@ -35,7 +35,7 @@ class LapProcessingService:
         session_manager: SharedSessionManager,
         pb_cache: PBCache,
         history_entries: list[HistoryEntry],
-        submit_lap: Callable[..., Awaitable[None]],
+        schedule_submission: Callable[..., None],
         create_history_entry: Callable[..., HistoryEntry],
     ) -> Optional[str]:
         """Process lap completion, update UI/history, and optionally auto-submit.
@@ -73,6 +73,17 @@ class LapProcessingService:
                 "Telemetry missed lap boundary; not starting capture from lap-complete",
                 lap_number=lap.lap_number,
             )
+
+        # OUTLAP is a structural timing boundary, not a result. Telemetry
+        # needs the boundary above to exclude the pit-exit circuit, but it must
+        # not become a card, history entry, PB, or submission.
+        if (getattr(lap, "lap_type", None) or "").upper() == "OUTLAP":
+            log_debug(
+                Component.APP,
+                "Outlap boundary recorded; suppressing result presentation",
+                lap_number=lap.lap_number,
+            )
+            return updated_track
 
         # Determine if we should submit this lap. The log parser's verdict
         # is authoritative for completed laps: it uses the game's own
@@ -181,8 +192,14 @@ class LapProcessingService:
 
         # Auto-submit if enabled
         if should_submit:
-            log_debug(Component.APP, "Auto-submitting lap", lap_number=lap.lap_number)
-            await submit_lap(card, session, lap, history_entry, pb_was_new=pb_was_new)
-            log_debug(Component.APP, "Auto-submit complete", lap_number=lap.lap_number)
+            log_debug(Component.APP, "Queueing auto-submit", lap_number=lap.lap_number)
+            schedule_submission(
+                card,
+                session,
+                lap,
+                history_entry,
+                pb_was_new,
+            )
+            log_debug(Component.APP, "Auto-submit queued", lap_number=lap.lap_number)
 
         return updated_track

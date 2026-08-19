@@ -221,17 +221,13 @@ class TestEmitGameStatusVariations:
 class TestOutlapFlagClearing:
     """Test outlap flag clearing on split detection."""
 
-    def test_outlap_flag_cleared_on_first_split_of_flying_lap(self):
-        """Regression test: outlap flag should clear when S1 of flying lap is detected.
-        
-        Bug scenario: User exits pits → "Outplap split" detected → drives outlap
-        → completes outlap (no log event) → starts flying lap → completes lap #1.
-        Without clearing the flag, lap #1 would be incorrectly marked as OUTLAP
-        even though game_valid=True.
-        
-        AC Evo doesn't log outlap completions, so we clear the flag when we see
-        the first split (S1) of a new lap, indicating the outlap ended and a
-        timed lap began.
+    def test_nonzero_first_sector_does_not_end_outlap(self):
+        """A non-zero S1 can still belong to the outlap.
+
+        At Laguna Seca the timing line is before pit exit. ACE rejects the
+        short pit-box-to-line prefix, then emits a normal non-zero S1 while the
+        driver is completing the full outlap. That S1 must not turn the
+        outlap into a displayed invalid lap.
         """
         parser = LogParser()
         parser.current_session = SessionData(
@@ -246,17 +242,12 @@ class TestOutlapFlagClearing:
         parser._ip.is_outlap = True
         assert parser._ip.is_outlap is True
         
-        # User drives outlap (no completion event logged)
-        # Then crosses start/finish to begin lap 1
-        # First split of new flying lap is detected (S1, split id=0)
+        # First sector of the full pit-exit circuit.
         line = "[2024-01-01 12:00:00] [gameplay] [info] On Split start 0 end 123456 id 0 splittime 123456"
         parser._handle_splits_practice(line)
         
-        # Outlap flag should be cleared
-        assert parser._ip.is_outlap is False
-        # Split should be recorded for the flying lap
-        assert 0 in parser._ip.splits
-        assert parser._ip.splits[0] == 123456
+        assert parser._ip.is_outlap is True
+        assert 0 not in parser._ip.splits
         
     def test_outlap_flag_not_cleared_on_non_first_split(self):
         """Outlap flag should only clear on S1 (split id=0), not other splits."""
@@ -296,7 +287,7 @@ class TestOutlapFlagClearing:
                 "On Split start true end false id 0 splittime 0")
         parser._handle_splits_practice(line)
 
-        # Outlap flag cleared even though splittime is 0
+        # A zero-time start marker is the special Tourist-layout transition.
         assert parser._ip.is_outlap is False
         # Zero-time start marker recorded to preserve contiguous keys
         assert parser._ip.splits.get(0) == 0

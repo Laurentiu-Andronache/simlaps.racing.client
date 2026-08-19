@@ -39,26 +39,33 @@ async def generate_ai_prompt(
 
     os.makedirs(output_dir, exist_ok=True)
 
-    laps = data.get("laps", [])
-    if not laps:
+    all_laps = data.get("laps", [])
+    if not all_laps:
         with open(ai_prompt_path, "w", encoding="utf-8") as f:
             f.write("No telemetry data available for coaching.\n")
         return ai_prompt_path
 
     hz = data.get("hz", 10.0)
-    # Coaching ignores lap validity: invalid laps are still analysed.
+    valid_laps = [lap for lap in all_laps if lap.get("is_valid", True)]
+    invalid_laps = [lap for lap in all_laps if not lap.get("is_valid", True)]
     requested_best_lap_num = data.get("best_lap_num")
     best_lap = next(
         (
             lap
-            for lap in laps
+            for lap in valid_laps
             if lap.get("lap_num") == requested_best_lap_num
         ),
         None,
     )
+    if best_lap is None and valid_laps:
+        best_lap = min(valid_laps, key=lambda lap: lap["lap_time_s"])
+    no_valid_laps = best_lap is None
     if best_lap is None:
-        best_lap = min(laps, key=lambda lap: lap["lap_time_s"])
-    worst_lap = max(laps, key=lambda l: l["lap_time_s"])
+        # The analyzer forces diagnostic mode when no valid lap exists. Keep
+        # a local fallback only so legacy/direct callers still get a useful
+        # diagnostic prompt without labelling the lap as a valid session best.
+        best_lap = min(all_laps, key=lambda lap: lap["lap_time_s"])
+    worst_lap = max(valid_laps or all_laps, key=lambda l: l["lap_time_s"])
     time_diff = worst_lap["lap_time_s"] - best_lap["lap_time_s"]
     track_label = data.get("track_label") or data.get("track_name") or "Unknown Track"
     ref_corners = data.get("ref_corners", [])
@@ -66,10 +73,16 @@ async def generate_ai_prompt(
     analysis_mode = data.get("analysis_mode", "diagnostic")
     analysis_confidence = data.get("analysis_confidence", "low")
     analysis_notes = list(data.get("analysis_notes", []))
+    if no_valid_laps:
+        analysis_mode = "diagnostic"
+        ref_corners = []
+        note = "No valid completed laps were available; invalid laps are shown for diagnostics only."
+        if note not in analysis_notes:
+            analysis_notes.append(note)
     authoritative_progress_ratio = float(data.get("authoritative_progress_ratio", 0.0) or 0.0)
     plausible_frame_ratio = float(data.get("plausible_frame_ratio", 0.0) or 0.0)
-    reference_lap_num = data.get("reference_lap_num", best_lap["lap_num"])
-    comparison_lap_num = data.get("comparison_lap_num", best_lap["lap_num"])
+    reference_lap_num = data.get("reference_lap_num")
+    comparison_lap_num = data.get("comparison_lap_num")
 
     # ── Car name from shared session data
     car_model: str = data.get("car") or "Unknown Car"
@@ -81,23 +94,85 @@ async def generate_ai_prompt(
         lines.append("")
         lines.append(f"Track: {track_label}")
         lines.append(f"Car: {car_model}")
-        lines.append(f"Laps available: {len(laps)}")
+        lines.append(f"Laps available: {len(all_laps)}")
         lines.append(f"Analysis confidence: {analysis_confidence}")
         lines.append(f"Authoritative progress coverage: {authoritative_progress_ratio:.0%}")
         lines.append(f"Plausible physics coverage: {plausible_frame_ratio:.0%}")
         lines.append("")
-        lines.append("Detailed corner coaching has been suppressed because the lap alignment is not trustworthy enough.")
+        if no_valid_laps:
+            lines.append(
+                "Detailed corner coaching has been suppressed because no valid "
+                "completed lap is available."
+            )
+        else:
+            lines.append(
+                "Detailed corner coaching has been suppressed because the lap "
+                "alignment is not trustworthy enough."
+            )
         if analysis_notes:
             lines.append("")
             lines.append("Reasons:")
             for note in analysis_notes:
                 lines.append(f"- {note}")
         lines.append("")
-        lines.append("Use the session only for diagnostics until graphics-based progress coverage is reliable.")
+        if no_valid_laps:
+            lines.append(
+                "Use this session only for invalid-lap diagnostics; record at "
+                "least one valid lap for coaching."
+            )
+        else:
+            lines.append(
+                "Use this session only for diagnostics; no coaching conclusions "
+                "should be drawn from it."
+            )
 
         with open(ai_prompt_path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
         return ai_prompt_path
+
+    if (
+        not data.get("comparison_available", comparison_lap_num is not None)
+        or comparison_lap_num is None
+        or comparison_lap_num == reference_lap_num
+    ):
+        lines.append("COMPARATIVE COACHING UNAVAILABLE")
+        lines.append("")
+        lines.append(f"Track: {track_label}")
+        lines.append(f"Car: {car_model}")
+        lines.append(f"Detected laps: {len(all_laps)}")
+        lines.append(f"Valid laps: {len(valid_laps)}")
+        lines.append(f"Analysis confidence: {analysis_confidence}")
+        lines.append("")
+        lines.append(
+            "Only one coachable valid lap is available. Relative corner deltas, "
+            "time-loss rankings, and theoretical-best estimates are suppressed."
+        )
+        lines.append("")
+        lines.append(f"- Best lap:   #{best_lap['lap_num']}  {best_lap['lap_time_str']}")
+        lines.append(f"- Top speed:  {best_lap['max_speed']:.1f} km/h")
+        if best_lap.get("fuel_used") is not None:
+            lines.append(f"- Fuel used:  {best_lap['fuel_used']:.3f}L")
+        if invalid_laps:
+            lines.append("")
+            lines.append("INVALID LAPS (diagnostic only; excluded from coaching):")
+            for lap in invalid_laps:
+                lines.append(
+                    f"- Lap {lap['lap_num']}: {lap['lap_time_str']} [INVALID]"
+                )
+        if analysis_notes:
+            lines.append("")
+            lines.append("ANALYSIS NOTES:")
+            for note in analysis_notes:
+                lines.append(f"- {note}")
+
+        with open(ai_prompt_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        return ai_prompt_path
+
+    # From this point onward every actionable aggregate is based only on
+    # authoritative valid laps. Invalid laps remain available above solely as
+    # diagnostic inventory and cannot influence coaching recommendations.
+    laps = valid_laps
 
     # ── Car name from shared session data
     car_model: str = data.get("car") or "Unknown Car"
@@ -178,7 +253,7 @@ async def generate_ai_prompt(
 
     # ── Session overview
     lines.append("SESSION OVERVIEW:")
-    lines.append(f"- Total laps analysed: {len(laps)}")
+    lines.append(f"- Valid laps analysed: {len(laps)} of {len(all_laps)} detected")
     lines.append(f"- Best lap:   #{best_lap['lap_num']}  {best_lap['lap_time_str']}")
     lines.append(f"- Worst lap:  #{worst_lap['lap_num']}  {worst_lap['lap_time_str']}")
     lines.append(f"- Delta best/worst: {time_diff:.2f}s")
@@ -190,8 +265,12 @@ async def generate_ai_prompt(
     _lap_times = [lap["lap_time_s"] for lap in laps if lap.get("lap_time_s")]
     if len(_lap_times) >= 3:
         _trend_raw = _trend_direction(_lap_times, threshold=0.15)
-        # Map _trend_direction output: FALLING lap times = improving, RISING = degrading, FLAT = consistent
-        _trend_label = {"FALLING": "improving", "RISING": "degrading", "FLAT": "consistent"}.get(_trend_raw, _trend_raw.lower())
+        # Only strictly monotonic changes are called improving/degrading.
+        _trend_label = {
+            "FALLING": "improving",
+            "RISING": "degrading",
+            "FLAT": "no monotonic trend",
+        }.get(_trend_raw, _trend_raw.lower())
         _time_strs = " → ".join(f"{t:.1f}" if isinstance(t, (int, float)) else str(t) for t in _lap_times[:8])
         if len(_lap_times) > 8:
             _time_strs += " …"
@@ -215,6 +294,12 @@ async def generate_ai_prompt(
                 lines.append(f"- Est. laps remaining: ~{_laps_remaining} (current fuel {_last_fuel:.1f}L)")
 
     lines.append("")
+
+    if invalid_laps:
+        lines.append("INVALID LAPS (diagnostic only; excluded from coaching):")
+        for lap in invalid_laps:
+            lines.append(f"  Lap {lap['lap_num']}: {lap['lap_time_str']} [INVALID]")
+        lines.append("")
 
     # ── Outlier detection
     outliers: List[tuple] = []

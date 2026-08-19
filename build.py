@@ -216,6 +216,15 @@ def build_executable():
     icon_png_path = "assets/icon.png"
     if os.path.exists(icon_png_path):
         cmd.extend(["--add-data", f"{icon_png_path};assets"])
+
+    # Saved telemetry reports are self-contained and load these pinned chart
+    # libraries from the frozen application's extraction directory.
+    analyzer_vendor_path = "src/core/analyzer/vendor"
+    if os.path.isdir(analyzer_vendor_path):
+        cmd.extend([
+            "--add-data",
+            f"{analyzer_vendor_path};src/core/analyzer/vendor",
+        ])
     
     # Include .env file for runtime secret loading
     if os.path.exists(".env"):
