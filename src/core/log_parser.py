@@ -115,6 +115,12 @@ class LogParser:
 
         # In-progress lap accumulator
         self._ip = InProgressLap()
+        # Practice pit exits can arm the structural outlap flag before ACE
+        # rejects a short pit-to-line prefix. Keep the following full-lap
+        # splits aside so an exact, explicitly-valid SHM completion can
+        # recover that timed lap without exposing ordinary structural
+        # outlaps in the UI.
+        self._outlap_candidate_splits: dict[int, int] = {}
 
         # Most recently completed lap, buffered until either:
         #   a) the game's authoritative `Relevant onSplit ... valid` line
@@ -383,6 +389,7 @@ class LogParser:
 
     def _reset_in_progress(self) -> None:
         self._ip = InProgressLap()
+        self._outlap_candidate_splits = {}
         self._pending_penalty_warning = False
 
     def _parse_authoritative_lap_validity(
@@ -1124,8 +1131,12 @@ class LogParser:
                 "for new flying lap detected")
             self._ip.is_outlap = False
         
-        # Skip recording splits during outlap (but flag was already cleared above if needed)
+        # Do not put structural-outlap splits in the ordinary accumulator.
+        # Retain them separately, though: some tracks reject the pit prefix
+        # and then time the following full circuit as a valid lap. An exact
+        # SHM completion verdict can safely promote that candidate later.
         if self._ip.is_outlap:
+            self._outlap_candidate_splits[split_idx] = split_ms
             return
         
         # Record the split (including the id 0 start-line marker at splittime 0).
@@ -1244,13 +1255,18 @@ class LogParser:
             None,
         )
         ip = self._ip
-        split_keys: list[int] = sorted(ip.splits.keys())
-        split_times: list[int] = [ip.splits[key] for key in split_keys]
+        completion_splits = (
+            self._outlap_candidate_splits
+            if ip.is_outlap and self._outlap_candidate_splits
+            else ip.splits
+        )
+        split_keys: list[int] = sorted(completion_splits.keys())
+        split_times: list[int] = [completion_splits[key] for key in split_keys]
 
         # ── Sector extraction ─────────────────────────────────────────────────
-        s1: Optional[int] = ip.splits.get(0)
-        s2: Optional[int] = ip.splits.get(1)
-        s3: Optional[int] = ip.splits.get(2)
+        s1: Optional[int] = completion_splits.get(0)
+        s2: Optional[int] = completion_splits.get(1)
+        s3: Optional[int] = completion_splits.get(2)
 
         # S1 corruption check — race grid start produces an inflated time in
         # slot 0 (cumulative time before the player crosses the start/finish
@@ -1522,13 +1538,15 @@ class LogParser:
     def _apply_shm_fallback_validity(self, pending: LapData) -> None:
         """Use live graphics validity when ACE omits its log verdict.
 
-        ``Relevant onSplit`` remains authoritative whenever it arrives.  This
-        fallback is only consulted while finalising a still-pending lap, and
-        OUTLAP remains a stronger structural classification from the logs.
-        """
-        if pending.lap_state == LapState.OUTLAP:
-            return
+        ``Relevant onSplit`` remains authoritative whenever it arrives. This
+        fallback is only consulted while finalising a still-pending lap.
 
+        OUTLAP normally remains a stronger structural classification. The
+        sole exception is an exact SHM completion with ``is_valid is True``:
+        that proves ACE accepted the full timed circuit following a rejected
+        pit prefix. An invalid or missing completion remains OUTLAP so
+        Laguna-style structural outlaps stay suppressed.
+        """
         completion = self._session_manager.get_lap_completion_by_time(
             pending.lap_time_ms
         )
@@ -1537,6 +1555,12 @@ class LogParser:
             and completion.lap_time_ms == pending.lap_time_ms
             and completion.is_valid is not None
         )
+        was_outlap = pending.lap_state == LapState.OUTLAP
+        if was_outlap and not (
+            completion_matches and completion.is_valid is True
+        ):
+            return
+
         if completion_matches:
             is_valid = bool(completion.is_valid)
         else:
@@ -1558,6 +1582,19 @@ class LogParser:
         )
         pending.lap_type = pending.lap_state.value
         pending.validity_source = "shm_graphics"
+
+        if was_outlap and is_valid and self.current_session is not None:
+            # The provisional OUTLAP did not enter a stint at construction
+            # time. Enrol it now that the completion has been proven valid.
+            stint = self._ensure_stint(pending.tyre_compound)
+            if pending.lap_number not in stint.lap_numbers:
+                stint.add_lap(
+                    pending.lap_number,
+                    pending.fuel_used if pending.fuel_reliable else None,
+                )
+                stint.lap_numbers.sort()
+            pending.stint_number = stint.stint_number
+
         log_debug(
             Component.LOG_PARSER,
             "[VALIDITY] SHM fallback verdict "

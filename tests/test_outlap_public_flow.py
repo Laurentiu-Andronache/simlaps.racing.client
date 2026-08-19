@@ -11,6 +11,183 @@ from src.ui.services.lap_processing_service import LapProcessingService
 from src.utils.config import AppConfig
 
 
+def _publish_shm_completion(
+    manager: SharedSessionManager,
+    *,
+    completed_laps: int,
+    lap_time_ms: int,
+    is_valid: bool,
+) -> None:
+    """Publish one timed-lap boundary through the real SHM manager API."""
+    manager.update_from_graphics_shm(
+        {
+            "total_lap_count": completed_laps - 1,
+            "current_lap_time_ms": lap_time_ms - 50,
+            "last_laptime_ms": 0,
+            "is_valid_lap": is_valid,
+        }
+    )
+    manager.update_from_graphics_shm(
+        {
+            "total_lap_count": completed_laps,
+            "current_lap_time_ms": 50,
+            "last_laptime_ms": lap_time_ms,
+            "is_valid_lap": True,
+        }
+    )
+
+
+def _format_lap_time(lap_time_ms: int) -> str:
+    minutes, remainder = divmod(lap_time_ms, 60_000)
+    seconds, milliseconds = divmod(remainder, 1_000)
+    return f"{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
+
+
+@pytest.mark.asyncio
+async def test_valid_timed_lap_after_rejected_pit_prefix_is_not_suppressed(tmp_path):
+    """Replay the audited Red Bull Ring shape through the public parser flow."""
+    car_id = "45dee0b268b7dc7c-9bb207d2d0ce68ad"
+    lap_times = [64419, 64344, 64509, 70218, 63804, 62916, 62808, 77901]
+    lap_validity = [True, True, False, False, False, False, True, False]
+    sectors = [
+        (28761, 18165, 17493),
+        (27633, 18636, 18075),
+        (27975, 19353, 17181),
+        (28305, 24066, 17847),
+        (27135, 18315, 18354),
+        (27561, 18387, 16968),
+        (27699, 18543, 16566),
+        (27111, 18177, 32613),
+    ]
+
+    manager = SharedSessionManager()
+    for lap_number, (lap_time_ms, is_valid) in enumerate(
+        zip(lap_times, lap_validity),
+        start=1,
+    ):
+        _publish_shm_completion(
+            manager,
+            completed_laps=lap_number,
+            lap_time_ms=lap_time_ms,
+            is_valid=is_valid,
+        )
+
+    lines = [
+        "[2026-08-18 15:00:00.000] [gameplay] [info] Outplap split",
+        "[2026-08-18 15:00:01.000] [gameplay] [error] "
+        "Couldn't create lap from opensplits (carId player): Splitcollection 1/3",
+    ]
+    for lap_number, (lap_time_ms, lap_sectors) in enumerate(
+        zip(lap_times, sectors),
+        start=1,
+    ):
+        lines.extend(
+            [
+                f"[2026-08-18 15:{lap_number:02d}:00.000] [physics] [info] "
+                f"Lap test evOnLapCompleted {lap_number} completed",
+                f"[2026-08-18 15:{lap_number:02d}:00.010] [gameplay] [info] "
+                f"On Split start false end false id 0 splittime {lap_sectors[0]}",
+                f"[2026-08-18 15:{lap_number:02d}:00.020] [gameplay] [info] "
+                f"On Split start false end false id 1 splittime {lap_sectors[1]}",
+                f"[2026-08-18 15:{lap_number:02d}:00.030] [gameplay] [info] "
+                f"On Split start true end true id 2 splittime {lap_sectors[2]}",
+                f"[2026-08-18 15:{lap_number:02d}:00.040] [gameplay] [info] "
+                f"New lap carId {car_id}: {_format_lap_time(lap_time_ms)}",
+            ]
+        )
+
+    log_file = tmp_path / "red-bull-ring-rejected-prefix.log"
+    log_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    telemetry = MagicMock()
+    telemetry.is_capturing.return_value = True
+    home = MagicMock()
+    home._lap_count = 0
+    history = []
+    submissions = MagicMock()
+    service = LapProcessingService()
+
+    def add_lap(*_args):
+        home._lap_count += 1
+        return MagicMock()
+
+    home.add_lap.side_effect = add_lap
+
+    async def present_lap(session, lap):
+        await service.handle_lap_complete(
+            session=session,
+            lap=lap,
+            home_page=home,
+            telemetry_capture=telemetry,
+            config=AppConfig(auto_submit=False, telemetry_enabled=True),
+            session_manager=manager,
+            pb_cache=MagicMock(),
+            history_entries=history,
+            schedule_submission=submissions,
+            create_history_entry=lambda **values: SimpleNamespace(**values),
+        )
+
+    parser = LogParser(
+        log_path=str(log_file),
+        session_manager=manager,
+    )
+    parser.current_session = SessionData(
+        track="Red Bull Ring GP",
+        car="ks_mazda_mx5_nd_cup",
+        player_id="76561197986609341",
+        session_type="PRACTICE",
+        car_uuid=car_id,
+    )
+    parser.context.player_id = "76561197986609341"
+    parser.context.car_uuid = car_id
+    parser.context.tyre.set_all("S")
+
+    sessions = await parser.parse_file()
+
+    assert len(sessions) == 1
+    session = sessions[0]
+    assert [lap.lap_number for lap in session.laps] == list(range(1, 9))
+    assert [lap.lap_time_ms for lap in session.laps] == lap_times
+    assert [lap.lap_state for lap in session.laps] == [
+        LapState.VALID,
+        LapState.VALID,
+        LapState.INVALID_GAME,
+        LapState.INVALID_GAME,
+        LapState.INVALID_GAME,
+        LapState.INVALID_GAME,
+        LapState.VALID,
+        LapState.INVALID_GAME,
+    ]
+    assert len(session.valid_laps) == 3
+    assert session.best_lap is not None
+    assert session.best_lap.lap_number == 7
+    assert session.best_lap.lap_time_ms == 62808
+    assert (
+        session.laps[0].sector1_ms,
+        session.laps[0].sector2_ms,
+        session.laps[0].sector3_ms,
+    ) == sectors[0]
+    assert session.laps[0].sectors_consistent is True
+    assert session.laps[0].validity_source == "shm_graphics"
+    assert session.stints[0].lap_numbers == list(range(1, 9))
+
+    # Feed the recovered parser result through the same presentation and
+    # telemetry-boundary service used by the live client.
+    for lap in session.laps:
+        await present_lap(session, lap)
+
+    assert [call.args[1].lap_time_ms for call in home.add_lap.call_args_list] == lap_times
+    assert len(history) == 8
+    assert [call.args for call in telemetry.record_lap_boundary.call_args_list] == [
+        (lap_time_ms, lap_number, lap_state.value)
+        for lap_number, (lap_time_ms, lap_state) in enumerate(
+            zip(lap_times, [lap.lap_state for lap in session.laps]),
+            start=1,
+        )
+    ]
+    submissions.assert_not_called()
+
+
 @pytest.mark.asyncio
 async def test_laguna_live_log_flow_records_outlap_boundary_without_card(tmp_path):
     """Replay the signal order observed in the 2026-08-18 live session.
@@ -163,3 +340,50 @@ def test_shm_completion_waits_for_armed_outlap_log_classification():
     assert parser._take_ready_shm_lap() is None
     assert parser.current_session.laps == []
     assert parser._last_shm_completion_observed_at == completion.observed_at
+
+
+@pytest.mark.parametrize("completion_validity", [False, None])
+def test_outlap_needs_explicit_valid_completion_to_be_promoted(
+    completion_validity,
+):
+    manager = MagicMock()
+    manager.get_lap_completion_by_time.return_value = (
+        LapCompletionData(
+            completed_laps=1,
+            lap_time_ms=115494,
+            is_valid=completion_validity,
+            timestamp="2026-08-18T11:33:37+00:00",
+            observed_at=1.0,
+        )
+        if completion_validity is not None
+        else None
+    )
+    manager.get_lap_validity_data.return_value = SimpleNamespace(
+        is_valid=True,
+        source="shm_graphics",
+    )
+    parser = LogParser(session_manager=manager)
+    parser.current_session = SessionData(
+        track="laguna_seca gp",
+        car="ks_mazda_mx5_nd_cup",
+        session_type="PRACTICE",
+    )
+    pending = SimpleNamespace(
+        lap_number=1,
+        physics_lap_number=2,
+        lap_time_ms=115494,
+        lap_state=LapState.OUTLAP,
+        lap_type=LapState.OUTLAP.value,
+        is_valid=False,
+        validity_source="heuristic",
+        tyre_compound="S",
+        fuel_used=None,
+        fuel_reliable=True,
+        stint_number=1,
+    )
+
+    parser._apply_shm_fallback_validity(pending)
+
+    assert pending.lap_state == LapState.OUTLAP
+    assert pending.is_valid is False
+    assert pending.validity_source == "heuristic"
