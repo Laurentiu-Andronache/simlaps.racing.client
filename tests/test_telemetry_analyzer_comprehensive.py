@@ -88,6 +88,40 @@ class TestBuildTrack:
         
         assert len(track) == 5
 
+    def test_build_track_dead_reckons_position_from_velocity(self):
+        """Regression: ACE physics SHM has no world_position and 0.8.x does
+        not populate graphics car_coordinates, so the track map rendered
+        empty (all x/z = 0). Without a world position, x/z must be
+        dead-reckoned from world-frame physics velocity."""
+        frames = []
+        for i in range(100):
+            f = create_mock_frame(i, speed=36.0)  # 10 m/s
+            f.physics["velocity"] = {"x": 10.0, "y": 0.0, "z": 0.0}
+            frames.append(f)
+
+        track = build_track(frames, hz=10.0)
+
+        xs = [pt["x"] for pt in track]
+        zs = [pt["z"] for pt in track]
+        # 10 m/s over 10s = ~100 m along x, no z movement
+        assert max(xs) - min(xs) == pytest.approx(99.0, abs=2.0)
+        assert max(zs) - min(zs) == 0.0
+
+    def test_build_track_world_position_takes_precedence_over_velocity(self):
+        """A real world position must win over the velocity fallback."""
+        frames = []
+        for i in range(10):
+            f = create_mock_frame(i, speed=36.0)
+            f.physics["world_position"] = {"x": 500.0 + i, "z": -200.0}
+            f.physics["velocity"] = {"x": 10.0, "y": 0.0, "z": 0.0}
+            frames.append(f)
+
+        track = build_track(frames, hz=10.0)
+
+        assert track[0]["x"] == 500.0
+        assert track[-1]["x"] == 509.0
+        assert track[0]["z"] == -200.0
+
 
 class TestDetectLaps:
     """Test lap detection algorithms."""
@@ -1903,6 +1937,47 @@ class TestFixedMeasurementWindow:
         # 0-1 points. segment_time_s must be None, not 0.0.
         if corners:
             assert corners[0]["segment_time_s"] is None or corners[0]["segment_time_s"] > 0.0
+
+    def test_canonical_bins_adapt_to_dense_corner_profile(self):
+        """Regression: the Nordschleife 24H profile (72 corners, windows as
+        narrow as 0.005 of the lap) got zero canonical corners because the
+        fixed 200-bin grid left <4 samples per corner window, suppressing
+        all coaching. Bins must adapt to the narrowest corner window."""
+        from src.core.analyzer.canonical import _canonical_bins_for_profile, _build_canonical_lap
+        from src.core.analyzer.corner_detection import _detect_profiled_corners_canonical
+
+        dense_profile = {
+            "corners": [
+                {"id": i + 1, "name": f"C{i + 1}", "start": 0.005 + i * 0.005, "end": 0.01 + i * 0.005}
+                for i in range(72)
+            ]
+        }
+
+        assert _canonical_bins_for_profile(None) == 200
+        assert _canonical_bins_for_profile({"corners": [{"start": 0.1, "end": 0.2}]}) == 200
+        assert _canonical_bins_for_profile(dense_profile) >= 1600
+
+        lap_track = [
+            {
+                "frame": i, "norm_pos": i / 7199.0, "speed": 100.0 + (i % 37),
+                "x": 0.0, "z": 0.0, "heading": 0.0, "steer": 0.05, "brake": 0.1, "gas": 0.5,
+            }
+            for i in range(7200)
+        ]
+        fine = _build_canonical_lap(
+            lap_track, lap_start_frame=0, hz=10.0,
+            bins=_canonical_bins_for_profile(dense_profile),
+        )
+        fine_corners = _detect_profiled_corners_canonical(
+            fine["samples"], dense_profile, hz=10.0, authoritative_progress=True,
+        )
+        assert len(fine_corners) == 72
+
+        coarse = _build_canonical_lap(lap_track, lap_start_frame=0, hz=10.0, bins=200)
+        coarse_corners = _detect_profiled_corners_canonical(
+            coarse["samples"], dense_profile, hz=10.0, authoritative_progress=True,
+        )
+        assert len(coarse_corners) == 0
 
     @pytest.mark.asyncio
     async def test_theoretical_best_uses_gap_sum_not_segment_sum(self):

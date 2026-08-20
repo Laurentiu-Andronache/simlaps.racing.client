@@ -42,6 +42,17 @@ def build_track(frames: List[FrameData], hz: float = 1.0, start_idx: int = 0) ->
                 x = wp_x
             if wp_z is not None:
                 z = wp_z
+        else:
+            # No world position in ACE SHM: dead-reckon from world-frame
+            # velocity so the track map still has a shape. Relative per-lap
+            # geometry is all the map needs; absolute accuracy is irrelevant.
+            vel = ph.get("velocity")
+            if isinstance(vel, dict) and hz > 0:
+                vel_x = _optional_float(vel.get("x"))
+                vel_z = _optional_float(vel.get("z"))
+                if vel_x is not None and vel_z is not None:
+                    x += vel_x / hz
+                    z += vel_z / hz
 
         graphics_norm_pos = None
         if gr.get("has_authoritative_progress"):

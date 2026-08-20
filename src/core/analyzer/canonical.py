@@ -3,12 +3,35 @@ from typing import Any, Dict, List, Optional
 
 from src.core.analyzer._util import _interpolate_value, _optional_float
 
+_DEFAULT_BINS = 200
+_MIN_SAMPLES_PER_WINDOW = 8
+
+
+def _canonical_bins_for_profile(profile: Optional[Dict[str, Any]]) -> int:
+    """Pick a canonical grid resolution that fits the corner profile.
+
+    Dense profiles (e.g. Nordschleife 24H: 72 corners with windows as
+    narrow as 0.005 of the lap) need far more than the default 200 bins,
+    otherwise every corner window falls below the minimum sample count
+    and corner detection yields nothing.
+    """
+    corners = (profile or {}).get("corners") or []
+    widths = [
+        float(c["end"]) - float(c["start"])
+        for c in corners
+        if c.get("start") is not None and c.get("end") is not None
+    ]
+    min_width = min((w for w in widths if w > 0), default=0.0)
+    if min_width <= 0.0:
+        return _DEFAULT_BINS
+    return max(_DEFAULT_BINS, int(_MIN_SAMPLES_PER_WINDOW / min_width) + 2)
+
 
 def _build_canonical_lap(
     lap_track: List[Dict],
     lap_start_frame: int,
     hz: float,
-    bins: int = 200,
+    bins: int = _DEFAULT_BINS,
 ) -> Optional[Dict[str, Any]]:
     """Resample a lap onto a common progress grid."""
     samples: List[Dict[str, Any]] = []

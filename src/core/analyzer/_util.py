@@ -282,14 +282,21 @@ def _trend_direction(values: List[float], threshold: float) -> str:
 
 # ── Track profile selection ───────────────────────────────────────────────
 
-def _select_track_profile_for_analysis(track_name: Optional[str]) -> tuple[Optional[str], Optional[Dict[str, Any]]]:
-    """Resolve a track profile from the reported session track name."""
+def _select_track_profile_for_analysis(
+    track_name: Optional[str],
+    config_name: Optional[str] = None,
+) -> tuple[Optional[str], Optional[Dict[str, Any]]]:
+    """Resolve a track profile from the reported session track name.
+
+    ``config_name`` comes from the static shared-memory region and is the
+    authoritative layout selector (e.g. "Nordschleife" vs "GP" vs "24H").
+    """
     if not track_name:
         return None, None
-    track_key, track_profile = select_track_profile(track_name=track_name)
+    track_key, track_profile = select_track_profile(track_name=track_name, config_name=config_name)
     if track_profile:
         return track_key, track_profile
-    return select_track_profile(path=track_name)
+    return select_track_profile(path=track_name, config_name=config_name)
 
 
 # ── Car state extraction ──────────────────────────────────────────────────

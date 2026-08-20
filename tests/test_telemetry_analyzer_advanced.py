@@ -10,6 +10,7 @@ import pytest
 from unittest.mock import Mock, patch, MagicMock
 from src.core.telemetry_analyzer import (
     _select_track_profile_for_analysis,
+    _read_static_track_config,
     get_physics,
     AnalysisResult,
 )
@@ -49,6 +50,35 @@ class TestSelectTrackProfile:
         # Path fallback should resolve to the spa profile
         assert profile is not None
         assert "corners" in profile
+
+    def test_select_track_profile_by_static_config_nordschleife(self):
+        """Static config "Nordschleife" selects the plain Nordschleife layout."""
+        track_key, profile = _select_track_profile_for_analysis(
+            "Nurburgring", "Nordschleife"
+        )
+        assert track_key == "nurburgring_nordschleife"
+        assert profile["config_key"] == "nordschleife"
+
+    def test_select_track_profile_by_static_config_gp(self):
+        """Static config "GP" selects the GP layout, not the Nordschleife 24h."""
+        track_key, profile = _select_track_profile_for_analysis(
+            "Nurburgring", "GP"
+        )
+        assert track_key == "nurburgring_gp"
+        assert profile["config_key"] == "gp"
+
+    def test_read_static_track_config_extracts_names(self):
+        """Static frames yield authoritative track/config names."""
+        frames = [
+            FrameData(
+                timestamp="",
+                frame_number=i,
+                physics={},
+                static={"track": "Nurburgring", "track_configuration": "Nordschleife"},
+            )
+            for i in range(3)
+        ]
+        assert _read_static_track_config(frames) == ("Nurburgring", "Nordschleife")
 
 
 class TestAnalysisResult:

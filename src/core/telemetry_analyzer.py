@@ -36,7 +36,7 @@ from src.core.analyzer._util import (
     variation_label, classify_corner_issue,
     format_car_state, balance_hint,
 )
-from src.core.analyzer.canonical import _build_canonical_lap
+from src.core.analyzer.canonical import _build_canonical_lap, _canonical_bins_for_profile
 from src.core.analyzer.corner_detection import (
     _detect_profiled_corners_canonical,
     detect_corners, detect_profiled_corners,
@@ -89,6 +89,24 @@ def _nearest_lap_marker_by_time(markers: List, timing_lap_time: Any):
     return min(candidates, key=lambda candidate: (candidate[0], candidate[1]))[2]
 
 
+def _read_static_track_config(frames: List[FrameData]) -> tuple[Optional[str], Optional[str]]:
+    """Extract authoritative track/config names from the static SHM region.
+
+    AC Evo publishes ``track`` / ``track_configuration`` in the static region;
+    these are the reliable layout selectors (graphics lap-length reads garbage
+    in 0.8.x). The static payload is constant across frames, so the first
+    populated values win.
+    """
+    track = config = None
+    for frame in frames:
+        static = frame.static or {}
+        track = track or static.get("track") or None
+        config = config or static.get("track_configuration") or None
+        if track and config:
+            break
+    return track, config
+
+
 class TelemetryAnalyzer:
     """Analyzes telemetry data and generates reports."""
 
@@ -118,7 +136,10 @@ class TelemetryAnalyzer:
             log_warning(Component.ANALYZER, "Analysis skipped: insufficient frames", frames=len(frames), prefix=output_prefix)
             return await self._generate_empty_result(output_prefix)
 
-        track_key, track_profile = _select_track_profile_for_analysis(track_name)
+        static_track_name, static_config_name = _read_static_track_config(frames)
+        track_key, track_profile = _select_track_profile_for_analysis(
+            static_track_name or track_name, static_config_name
+        )
         if track_profile:
             log_info(Component.ANALYZER, "Track profile selected", profile=track_profile['display_name'])
         else:
@@ -319,7 +340,9 @@ class TelemetryAnalyzer:
                 lambda pt: (pt.get("frame_quality") or 0.0) >= _PLAUSIBLE_FRAME_THRESHOLD,
             )
             lap_quality_score = round(lap_progress_ratio * 0.7 + lap_plausible_ratio * 0.3, 3)
-            canonical_lap = _build_canonical_lap(lap_track, lap_start_frame=s, hz=hz, bins=200)
+            canonical_lap = _build_canonical_lap(
+                lap_track, lap_start_frame=s, hz=hz, bins=_canonical_bins_for_profile(track_profile),
+            )
             uses_canonical_progress = canonical_lap is not None
 
             if (
