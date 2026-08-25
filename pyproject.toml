@@ -52,3 +52,24 @@ version = {attr = "src.version.VERSION"}
 
 [tool.setuptools.package-data]
 "src.core.analyzer" = ["vendor/*.js", "vendor/*.md"]
+
+[tool.ruff]
+# Target Python version and line lengths
+target-version = "py311"
+line-length = 88
+
+[tool.ruff.lint]
+# Enable specific rule categories
+# E/W = Pycodestyle, F = Pyflakes, I = Isort, B = Bugbear, S = Bandit (Security)
+select = ["E", "W", "F", "I", "B", "S"]
+ignore = []
+
+[tool.ruff.lint.per-file-ignores]
+# Ignore security checks (S) inside your unit tests
+"tests/**/*.py" = ["S101"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unused_configs = true
+ignore_missing_imports = true
