@@ -29,15 +29,25 @@ def test_main_runs_app_successfully(
 @patch("src.main.run_app", side_effect=KeyboardInterrupt)
 @patch("src.main.sys.exit")
 def test_main_keyboard_interrupt_exits_zero(mock_exit, _mock_run_app) -> None:
-    main_mod.main()
+    with patch("src.main.log_info") as log_info:
+        main_mod.main()
+    log_info.assert_called_once_with(main_mod.Component.APP, "Shutting down")
     mock_exit.assert_called_once_with(0)
 
 
 @patch("src.main.run_app", side_effect=RuntimeError("fatal"))
 @patch("src.main.sys.exit")
 def test_main_exception_exits_one(mock_exit, _mock_run_app) -> None:
-    with patch.object(main_mod.sys, "frozen", False, create=True):
-        main_mod.main()
+    with patch("src.main.log_exception") as log_exception:
+        with patch.object(main_mod.sys, "frozen", False, create=True):
+            main_mod.main()
+    logged_exception = log_exception.call_args.args[2]
+    assert isinstance(logged_exception, RuntimeError)
+    log_exception.assert_called_once_with(
+        main_mod.Component.APP,
+        "Fatal error",
+        logged_exception,
+    )
     mock_exit.assert_called_once_with(1)
 
 
@@ -62,7 +72,7 @@ def test_frozen_path_setup() -> None:
                 assert "C:\\fake" in main_mod.sys.path
 
 
-def test_async_exception_handler_with_exception(capsys) -> None:
+def test_async_exception_handler_with_exception() -> None:
     loop = MagicMock()
     with patch("src.main.asyncio.new_event_loop", return_value=loop):
         with patch("src.main.asyncio.set_event_loop"):
@@ -70,13 +80,14 @@ def test_async_exception_handler_with_exception(capsys) -> None:
                 main_mod.main()
 
     handler = loop.set_exception_handler.call_args[0][0]
-    handler(loop, {"message": "task failed", "exception": RuntimeError("boom")})
+    error = RuntimeError("boom")
+    with patch("src.main.log_exception") as log_exception:
+        handler(loop, {"message": "task failed", "exception": error})
 
-    captured = capsys.readouterr()
-    assert "ASYNCIO ERROR" in captured.out
+    log_exception.assert_called_once_with(main_mod.Component.APP, "task failed", error)
 
 
-def test_async_exception_handler_without_exception(capsys) -> None:
+def test_async_exception_handler_without_exception() -> None:
     loop = MagicMock()
     with patch("src.main.asyncio.new_event_loop", return_value=loop):
         with patch("src.main.asyncio.set_event_loop"):
@@ -84,7 +95,7 @@ def test_async_exception_handler_without_exception(capsys) -> None:
                 main_mod.main()
 
     handler = loop.set_exception_handler.call_args[0][0]
-    handler(loop, {"message": "task failed"})
+    with patch("src.main.log_error") as log_error:
+        handler(loop, {"message": "task failed"})
 
-    captured = capsys.readouterr()
-    assert "ASYNCIO ERROR" in captured.out
+    log_error.assert_called_once_with(main_mod.Component.APP, "task failed")
