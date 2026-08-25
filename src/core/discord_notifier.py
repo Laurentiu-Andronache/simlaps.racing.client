@@ -172,41 +172,20 @@ class DiscordNotifier:
         Returns:
             True if successful, False otherwise
         """
-        try:
-            # Create a realistic test lap with sample data
-            test_lap = DiscordLapPayload(
-                track_name="laguna_seca",
-                car_name="ks_porsche_992_gt3_cup",
-                lap_time_ms=92295,
-                valid=True,
-                steam_id="76561198321627695",
-                steam_name="TestUser",
-                is_personal_best=True,
-                created_at=datetime.now(),
-                sector_times_ms=[28456, 32123, 31716],  # Sample sector times
-                fuel_used_liters=3.2,
-                tire_compound="SC",
-            )
-            
-            # Use the same embed creation as real laps
-            test_embed = self.create_lap_embed(test_lap)
-            
-            payload = {
-                "embeds": [test_embed]
-            }
-            
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.post(
-                    self.webhook_url,
-                    json=payload,
-                    headers={"Content-Type": "application/json"}
-                )
-                
-                return response.status_code in (200, 204)
-                
-        except (RuntimeError, ValueError, TypeError) as e:
-            log_error(Component.DISCORD, f"Discord test message failed: {e}")
-            return False
+        test_lap = DiscordLapPayload(
+            track_name="laguna_seca",
+            car_name="ks_porsche_992_gt3_cup",
+            lap_time_ms=92295,
+            valid=True,
+            steam_id="76561198321627695",
+            steam_name="TestUser",
+            is_personal_best=True,
+            created_at=datetime.now(),
+            sector_times_ms=[28456, 32123, 31716],
+            fuel_used_liters=3.2,
+            tire_compound="SC",
+        )
+        return await self.post_lap(test_lap)
     
     @staticmethod
     def validate_webhook_url(url: str) -> bool:
