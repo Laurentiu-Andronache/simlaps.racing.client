@@ -5,8 +5,6 @@ Targets the big uncovered chunk (lines 992-1092).
 """
 
 import pytest
-import os
-os.environ["APP_SECRET"] = "0000000000000000000000000000000000000000000000000000000000000000"
 
 from src.core.log_parser import LogParser
 from src.models import LapData, SessionData, LapState

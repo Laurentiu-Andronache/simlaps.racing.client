@@ -9,9 +9,6 @@ import asyncio
 from unittest.mock import patch, MagicMock, mock_open
 from pathlib import Path
 
-import os
-os.environ["APP_SECRET"] = "0000000000000000000000000000000000000000000000000000000000000000"
-
 from src.core.log_parser import LogParser
 from src.models import SessionData, LapData, LapState, InProgressLap
 

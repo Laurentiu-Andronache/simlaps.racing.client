@@ -19,13 +19,8 @@ exist on the current parser.
 """
 
 import asyncio
-import os
 
 import pytest
-
-os.environ["APP_SECRET"] = (
-    "0000000000000000000000000000000000000000000000000000000000000000"
-)
 
 from src.core.log_parser import LogParser
 from src.models import SessionData

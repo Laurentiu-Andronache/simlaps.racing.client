@@ -5,11 +5,7 @@ Tests HMAC signing, game detection, and secret management.
 """
 
 import pytest
-import os
 from unittest.mock import patch, MagicMock
-
-# Set a test secret before importing security module
-os.environ["APP_SECRET"] = "0000000000000000000000000000000000000000000000000000000000000000"
 
 from src.core.security import (
     sign_payload,
@@ -28,34 +24,29 @@ from src.core.security import (
 class TestSecretManagement:
     """Test secret loading and retrieval."""
     
-    def test_get_app_secret_returns_bytes(self):
+    def test_get_app_secret_returns_bytes(self, configured_app_secret):
         """Test that get_app_secret returns bytes."""
         secret = get_app_secret()
         assert isinstance(secret, bytes)
         assert len(secret) == 64  # 64 hex chars = 32 bytes
     
-    def test_app_secret_matches_env(self):
+    def test_app_secret_matches_configured_fixture(self, configured_app_secret):
         """Test that loaded secret matches environment variable."""
         secret = get_app_secret()
-        expected = os.environ["APP_SECRET"].encode('utf-8')
+        expected = configured_app_secret.encode('utf-8')
         assert secret == expected
 
     def test_is_secret_configured_and_get_app_secret_without_secret(self):
         """Test offline behavior when APP_SECRET is not set."""
         from src.core import security
 
-        assert is_secret_configured() is True
-
-        original = security.APP_SECRET
-        try:
-            security.APP_SECRET = None
-            assert is_secret_configured() is False
-            with pytest.raises(RuntimeError, match="APP_SECRET environment variable not set"):
-                get_app_secret()
-        finally:
-            security.APP_SECRET = original
+        assert security.APP_SECRET is None
+        assert is_secret_configured() is False
+        with pytest.raises(RuntimeError, match="APP_SECRET environment variable not set"):
+            get_app_secret()
 
 
+@pytest.mark.usefixtures("configured_app_secret")
 class TestHMACSigning:
     """Test HMAC-SHA256 signing functionality."""
     

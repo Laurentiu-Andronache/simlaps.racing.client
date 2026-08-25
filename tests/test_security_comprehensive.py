@@ -19,6 +19,7 @@ from src.core.security import (
 )
 
 
+@pytest.mark.usefixtures("configured_app_secret")
 class TestSecretManagement:
     """Test secret management."""
 
@@ -35,6 +36,7 @@ class TestSecretManagement:
             pytest.skip("APP_SECRET not set in environment")
 
 
+@pytest.mark.usefixtures("configured_app_secret")
 class TestSigning:
     """Test payload signing and verification."""
 
@@ -168,6 +170,7 @@ class TestNonceAndTimestamp:
         assert timestamp < 10**15  # Not too far in the future (milliseconds)
 
 
+@pytest.mark.usefixtures("configured_app_secret")
 class TestEdgeCases:
     """Test edge cases and error handling."""
 
@@ -184,6 +187,7 @@ class TestEdgeCases:
             pytest.skip("APP_SECRET not set in environment")
 
 
+@pytest.mark.usefixtures("configured_app_secret")
 class TestIntegration:
     """Test integration scenarios."""
 
@@ -252,6 +256,7 @@ class TestSteamUser:
             pytest.skip("Steam user detection not available")
 
 
+@pytest.mark.usefixtures("configured_app_secret")
 class TestSigningEdgeCases:
     """Test signing edge cases."""
 
