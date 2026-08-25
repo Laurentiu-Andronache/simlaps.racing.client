@@ -501,27 +501,8 @@ class SharedSessionManager:
 
     # Legacy update entry points
     def update_lap_from_logs(self, lap_data: LapData, session_data: Optional[SessionData] = None) -> None:
-        player_payload: Dict[str, Any] = {}
         if session_data is not None:
-            with self._lock:
-                md = self._session_data.session_metadata
-                md.session_id = session_data.session_id
-                md.game_version = session_data.game_version
-                md.session_type = session_data.session_type
-                md.track = session_data.track
-                md.weather = session_data.weather
-
-                self._mark_source("game_version", "logs")
-                self._mark_source("session_type", "logs")
-                self._mark_source("track", "logs")
-
-            player_payload = {
-                "steam_id": session_data.player_id,
-                "player_name": session_data.player_name,
-                "car_uuid": session_data.car_uuid,
-                "car_model": session_data.car,
-            }
-            self.update_player_identification_from_logs(player_payload)
+            self.update_session_metadata_from_logs(session_data)
 
         self.update_sector_splits_from_logs(
             lap_data.lap_number,
@@ -576,6 +557,10 @@ class SharedSessionManager:
             md.track = session_data.track
             md.weather = session_data.weather
 
+            self._mark_source("game_version", "logs")
+            self._mark_source("session_type", "logs")
+            self._mark_source("track", "logs")
+
         self.update_player_identification_from_logs(
             {
                 "steam_id": session_data.player_id,
@@ -586,25 +571,10 @@ class SharedSessionManager:
         )
 
     def update_from_logs(self, log_session_data: SessionData) -> None:
-        with self._lock:
-            md = self._session_data.session_metadata
-            md.session_id = log_session_data.session_id
-            md.game_version = log_session_data.game_version
-            md.session_type = log_session_data.session_type
-            md.track = log_session_data.track
-            md.weather = log_session_data.weather
-
-        self.update_player_identification_from_logs(
-            {
-                "steam_id": log_session_data.player_id,
-                "player_name": log_session_data.player_name,
-                "car_uuid": log_session_data.car_uuid,
-                "car_model": log_session_data.car,
-            }
-        )
+        self.update_session_metadata_from_logs(log_session_data)
 
         for lap in log_session_data.laps:
-            self.update_lap_from_logs(lap, session_data=log_session_data)
+            self.update_lap_from_logs(lap)
 
     def update_from_static_shm(self, static_data: Dict[str, Any]) -> None:
         self.update_session_metadata_from_static_shm(static_data)
