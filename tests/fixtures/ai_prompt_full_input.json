@@ -1,0 +1,46 @@
+{
+  "hz": 10.0,
+  "laps": [
+    {
+      "lap_num": 1,
+      "lap_time_s": 100.0,
+      "lap_time_str": "1:40.00",
+      "max_speed": 200.0,
+      "avg_speed": 150.0,
+      "start_frame": 0,
+      "end_frame": 1000,
+      "corners": [
+        {"id": 1, "name": "T1", "apex_speed": 80.0, "entry_speed": 100.0, "exit_speed": 90.0, "start_frame": 10, "end_frame": 30, "apex_frame": 20, "segment_time_s": 3.0, "confidence_label": "high", "entry_state": null, "apex_state": null, "exit_state": null},
+        {"id": 2, "name": "T2", "apex_speed": 70.0, "entry_speed": 90.0, "exit_speed": 80.0, "start_frame": 50, "end_frame": 80, "apex_frame": 65, "segment_time_s": 4.0, "confidence_label": "high", "entry_state": null, "apex_state": null, "exit_state": null}
+      ],
+      "track": []
+    },
+    {
+      "lap_num": 2,
+      "lap_time_s": 105.0,
+      "lap_time_str": "1:45.00",
+      "max_speed": 195.0,
+      "avg_speed": 145.0,
+      "start_frame": 0,
+      "end_frame": 1050,
+      "corners": [
+        {"id": 1, "name": "T1", "apex_speed": 85.0, "entry_speed": 100.0, "exit_speed": 95.0, "start_frame": 10, "end_frame": 30, "apex_frame": 20, "segment_time_s": 2.5, "confidence_label": "high", "entry_state": null, "apex_state": null, "exit_state": null},
+        {"id": 2, "name": "T2", "apex_speed": 75.0, "entry_speed": 90.0, "exit_speed": 85.0, "start_frame": 50, "end_frame": 80, "apex_frame": 65, "segment_time_s": 3.5, "confidence_label": "high", "entry_state": null, "apex_state": null, "exit_state": null}
+      ],
+      "track": []
+    }
+  ],
+  "best_lap_num": 1,
+  "reference_lap_num": 1,
+  "comparison_lap_num": 2,
+  "ref_corners": [{"id": 1, "name": "T1"}, {"id": 2, "name": "T2"}],
+  "corner_data": {},
+  "corner_speeds": {},
+  "analysis_mode": "full",
+  "analysis_confidence": "high",
+  "analysis_notes": [],
+  "authoritative_progress_ratio": 1.0,
+  "plausible_frame_ratio": 1.0,
+  "track_label": "Test Track",
+  "car": "Test Car"
+}
