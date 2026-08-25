@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 from src.ui.services.settings_service import SettingsService
 from src.ui.components.telemetry_status import TelemetryButton
 from src.utils.config import AppConfig
@@ -11,6 +13,7 @@ def _make_app() -> SimpleNamespace:
     app.page = MagicMock()
     app._config = AppConfig(server_url="https://simlaps.racing", telemetry_enabled=False)
     app._config_manager = MagicMock()
+    app._config_manager.set.return_value = True
     app._discord_notifier = None
     app._pb_cache = MagicMock()
     app._pb_cache.server_url = "https://simlaps.racing"
@@ -215,3 +218,122 @@ def test_apply_updates_pb_cache_when_server_url_changes():
 
     get_pb_cache_for_server.assert_called_once_with("https://new-server.com")
     assert app._pb_cache is new_cache
+
+
+def test_apply_persists_while_all_live_state_still_uses_previous_config():
+    app = _make_app()
+    previous = app._config
+    old_discord = MagicMock()
+    old_pb_cache = app._pb_cache
+    old_api_client = MagicMock()
+    old_parser = app._log_parser
+    old_analyzer = MagicMock()
+    old_button = MagicMock()
+    capture = MagicMock(record_frames=False)
+    app._discord_notifier = old_discord
+    app._api_client = old_api_client
+    app._telemetry_capture = capture
+    app._telemetry_analyzer = old_analyzer
+    app._telemetry_button = old_button
+
+    config = AppConfig(
+        server_url="https://new-server.com",
+        log_path="C:/new-logs",
+        discord_enabled=True,
+        discord_webhook_url="https://discord.com/api/webhooks/new",
+        telemetry_enabled=True,
+        telemetry_output_path="C:/new-telemetry",
+    )
+
+    def assert_unpublished(persisted):
+        assert persisted is config
+        assert app._config is previous
+        assert app._discord_notifier is old_discord
+        assert app._pb_cache is old_pb_cache
+        assert app._api_client is old_api_client
+        assert app._log_parser is old_parser
+        assert app._telemetry_analyzer is old_analyzer
+        assert app._telemetry_button is old_button
+        capture.set_record_frames.assert_not_called()
+        capture.configure.assert_not_called()
+        app.stop_monitoring.assert_not_called()
+        app._home_page.update_config.assert_not_called()
+        return True
+
+    app._config_manager.set.side_effect = assert_unpublished
+
+    SettingsService().apply(
+        app=app,
+        config=config,
+        create_discord_notifier=MagicMock(return_value=MagicMock()),
+        get_pb_cache_for_server=MagicMock(return_value=MagicMock()),
+        create_api_client=MagicMock(return_value=MagicMock()),
+        create_log_parser=MagicMock(return_value=MagicMock()),
+    )
+
+    assert app._config is config
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"server_url": "https://new-server.com"},
+        {"log_path": "C:/new-logs"},
+        {
+            "discord_enabled": True,
+            "discord_webhook_url": "https://discord.com/api/webhooks/new",
+        },
+        {
+            "telemetry_enabled": True,
+            "telemetry_output_path": "C:/new-telemetry",
+            "telemetry_debug_logs": True,
+        },
+    ],
+    ids=["server", "log", "discord", "telemetry"],
+)
+def test_apply_persistence_failure_does_not_mutate_live_state(changes):
+    app = _make_app()
+    previous = app._config
+    old_discord = MagicMock()
+    old_pb_cache = app._pb_cache
+    old_api_client = MagicMock()
+    old_parser = app._log_parser
+    old_analyzer = MagicMock()
+    old_button = MagicMock()
+    capture = MagicMock(record_frames=False)
+    app._discord_notifier = old_discord
+    app._api_client = old_api_client
+    app._telemetry_capture = capture
+    app._telemetry_analyzer = old_analyzer
+    app._telemetry_button = old_button
+    app._config_manager.set.return_value = False
+    config_values = previous.to_dict()
+    config_values.update(changes)
+    config = AppConfig.from_dict(config_values)
+
+    with pytest.raises(OSError, match="Could not save application settings"):
+        SettingsService().apply(
+            app=app,
+            config=config,
+            create_discord_notifier=MagicMock(return_value=MagicMock()),
+            get_pb_cache_for_server=MagicMock(return_value=MagicMock()),
+            create_api_client=MagicMock(return_value=MagicMock()),
+            create_log_parser=MagicMock(return_value=MagicMock()),
+        )
+
+    assert app._config is previous
+    assert app._discord_notifier is old_discord
+    assert app._pb_cache is old_pb_cache
+    assert app._api_client is old_api_client
+    assert app._log_parser is old_parser
+    assert app._telemetry_capture is capture
+    assert app._telemetry_analyzer is old_analyzer
+    assert app._telemetry_button is old_button
+    capture.set_record_frames.assert_not_called()
+    capture.configure.assert_not_called()
+    app.stop_monitoring.assert_not_called()
+    app.start_monitoring.assert_not_called()
+    app._init_telemetry_services.assert_not_called()
+    app._attach_telemetry_ui.assert_not_called()
+    app._home_page.update_config.assert_not_called()
+    app.page.run_task.assert_not_called()
