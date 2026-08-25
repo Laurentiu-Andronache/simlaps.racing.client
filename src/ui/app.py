@@ -6,7 +6,6 @@ detects user from game logs automatically.
 """
 
 import flet as ft
-import asyncio
 import os
 import sys
 from typing import Optional
@@ -17,13 +16,13 @@ from .pages.settings import SettingsPage
 from .components.pb_cache_viewer import show_pb_cache_dialog
 from .pages.history import HistoryPage, HistoryEntry
 from .components.lap_card import LapCard, LapCardStatus
-from .components.status_bar import ConnectionStatus
 from .components.telemetry_status import TelemetryButton
 from .components.feedback import show_snackbar
 from .services.app_lifecycle_service import AppLifecycleService
 from .services.lap_processing_service import LapProcessingService
 from .services.lap_submission_service import LapSubmissionService
 from .services.monitoring_service import MonitoringService
+from .services.session_lifecycle_service import SessionLifecycleService
 from .services.settings_service import SettingsService
 from .services.telemetry_lifecycle_service import TelemetryLifecycleService
 from .services.user_bootstrap_service import UserBootstrapService
@@ -111,6 +110,13 @@ class SimLapsApp:
         log_info(Component.APP, "Starting initialization")
         self._init_services()
         self._init_pages()
+        self._session_lifecycle_service = SessionLifecycleService(
+            home_page=self._home_page,
+            session_manager=self._session_manager,
+            telemetry_capture=self._telemetry_capture,
+            start_capture=self._start_telemetry_capture,
+            stop_capture=self._stop_telemetry_capture,
+        )
         self._attach_telemetry_ui()
         self._show_page(AppPage.HOME)
         log_info(Component.APP, "Initialization complete")
@@ -267,6 +273,10 @@ class SimLapsApp:
             log_exception(Component.APP, "Failed to initialize telemetry", e)
             self._telemetry_capture = None
             self._telemetry_analyzer = None
+        finally:
+            session_lifecycle = getattr(self, "_session_lifecycle_service", None)
+            if session_lifecycle is not None:
+                session_lifecycle.set_telemetry_capture(self._telemetry_capture)
 
     def _attach_telemetry_ui(self):
         """Attach telemetry UI controls after the home page exists."""
@@ -498,70 +508,16 @@ class SimLapsApp:
             self._home_page.set_status(status)
     
     async def _on_car_removed(self):
-        """Handle player car removal — authoritative session-end signal from game log."""
-        log_info(Component.APP, "Car removed from session — stopping telemetry capture")
-        if self._telemetry_capture and self._telemetry_capture.is_capturing():
-            await asyncio.sleep(1.0)  # Brief pause to capture any final frames
-            await self._stop_telemetry_capture("car_removed")
+        """Delegate the player-car removal boundary."""
+        await self._session_lifecycle_service.handle_car_removed()
 
     async def _on_session_restart(self):
-        """Handle pause-menu Restart Session.
-
-        AC Evo restarts the same session in place without emitting a fresh
-        ``Game Started!`` line, so any telemetry buffer accumulated during
-        the aborted run would otherwise contaminate the restarted run's
-        analysis (and pollute fuel-per-lap deltas). Drop the buffer and
-        immediately spin up a fresh capture so the first lap of the
-        restarted session is fully recorded.
-        """
-        log_info(Component.APP, "Session restart — discarding telemetry buffer and restarting")
-        log_debug(Component.APP, "Session restart detected; restarting telemetry capture")
-        self._session_manager.reset()
-        if self._telemetry_capture and self._telemetry_capture.is_capturing():
-            await self._stop_telemetry_capture("session_restart", discard=True)
-        await self._start_telemetry_capture()
+        """Delegate the pause-menu restart boundary."""
+        await self._session_lifecycle_service.handle_session_restart()
 
     async def _on_game_status_change(self, is_running: bool):
         """Handle game running status change."""
-        if self._home_page:
-            self._home_page.set_game_running(is_running)
-            
-            if is_running:
-                self._home_page.set_connection_status(
-                    ConnectionStatus.CONNECTED,
-                    "Session active - recording laps",
-                )
-                # Log shared session state before reset
-                best_before = self._session_manager.get_best_lap_time()
-                all_times_before = self._session_manager.get_all_lap_times()
-                log_info(Component.APP,
-                    f"[GAME_STATUS] True — resetting shared session. "
-                    f"Best lap before reset: {best_before}, "
-                    f"timing entries: {len(all_times_before)}"
-                )
-                # Clear stale lap validity / timing data from the previous session.
-                self._session_manager.reset()
-                best_after = self._session_manager.get_best_lap_time()
-                all_times_after = self._session_manager.get_all_lap_times()
-                log_info(Component.APP,
-                    f"[GAME_STATUS] Reset complete. "
-                    f"Best lap after reset: {best_after}, "
-                    f"timing entries: {len(all_times_after)}"
-                )
-                # Start telemetry capture
-                log_info(Component.APP, "Triggering telemetry capture start (session active)")
-                await self._start_telemetry_capture()
-            else:
-                # Still connected/monitoring, just no active session
-                self._home_page.set_connection_status(
-                    ConnectionStatus.CONNECTED,
-                    "Monitoring - waiting for session...",
-                )
-                # Stop telemetry capture and analyze
-                # Add a small delay to allow final frames to be captured
-                if self._telemetry_capture and self._telemetry_capture.is_capturing():
-                    await asyncio.sleep(2.0)
-                await self._stop_telemetry_capture("session_end")
+        await self._session_lifecycle_service.handle_game_status_change(is_running)
     
     async def _start_telemetry_capture(self):
         """Start telemetry capture when game session begins."""
