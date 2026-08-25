@@ -9,13 +9,39 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 from datetime import datetime
 
-# Set test secret before importing
-import os
-os.environ["APP_SECRET"] = "0000000000000000000000000000000000000000000000000000000000000000"
-
 from src.core.api_client import APIClient, SubmissionStatus, SubmissionResult
 from src.core.security import GameProcessStatus
 from src.models import SessionData, LapData, LapState, SharedSessionManager
+
+
+@pytest.fixture
+def sample_session():
+    """Create a fresh sample session for each test."""
+    return SessionData(
+        session_id="test-session-123",
+        game_version="1.0.0",
+        session_type="PRACTICE",
+        car="ks_porsche_992_gt3_cup",
+        track="spa_francorchamps",
+        player_id="76561198321627695",
+        player_name="TestUser",
+    )
+
+
+@pytest.fixture
+def sample_lap():
+    """Create a fresh sample lap for each test."""
+    return LapData(
+        lap_number=1,
+        physics_lap_number=1,
+        lap_time_ms=138456,
+        lap_time_str="2:18.456",
+        sector1_ms=45000,
+        sector2_ms=48000,
+        sector3_ms=45456,
+        is_valid=True,
+        tyre_compound="SC",
+    )
 
 
 class TestAPIClientInit:
@@ -60,36 +86,9 @@ class TestSubmissionResult:
         assert result.lap_id == "lap-123"
 
 
+@pytest.mark.usefixtures("configured_app_secret")
 class TestSubmitLap:
     """Test lap submission functionality."""
-    
-    @pytest.fixture
-    def sample_session(self):
-        """Create a sample session for testing."""
-        return SessionData(
-            session_id="test-session-123",
-            game_version="1.0.0",
-            session_type="PRACTICE",
-            car="ks_porsche_992_gt3_cup",
-            track="spa_francorchamps",
-            player_id="76561198321627695",
-            player_name="TestUser",
-        )
-    
-    @pytest.fixture
-    def sample_lap(self):
-        """Create a sample lap for testing."""
-        return LapData(
-            lap_number=1,
-            physics_lap_number=1,
-            lap_time_ms=138456,
-            lap_time_str="2:18.456",
-            sector1_ms=45000,
-            sector2_ms=48000,
-            sector3_ms=45456,
-            is_valid=True,
-            tyre_compound="SC",
-        )
     
     @pytest.mark.asyncio
     @patch('src.core.api_client.is_game_running')
@@ -382,6 +381,7 @@ class TestSubmitLap:
         assert "Steam ID" in result.message
 
 
+@pytest.mark.usefixtures("configured_app_secret")
 class TestErrorHandling:
     """Test API error handling."""
     
@@ -447,34 +447,6 @@ class TestVersionCheck:
 
 class TestAPIClientAdvanced:
     """Advanced API client tests for coverage."""
-
-    @pytest.fixture
-    def sample_session(self):
-        """Create a sample session for testing."""
-        return SessionData(
-            session_id="test-session-123",
-            game_version="1.0.0",
-            session_type="PRACTICE",
-            car="ks_porsche_992_gt3_cup",
-            track="spa_francorchamps",
-            player_id="76561198321627695",
-            player_name="TestUser",
-        )
-
-    @pytest.fixture
-    def sample_lap(self):
-        """Create a sample lap for testing."""
-        return LapData(
-            lap_number=1,
-            physics_lap_number=1,
-            lap_time_ms=138456,
-            lap_time_str="2:18.456",
-            sector1_ms=45000,
-            sector2_ms=48000,
-            sector3_ms=45456,
-            is_valid=True,
-            tyre_compound="SC",
-        )
 
     def test_set_server_url(self):
         """Test setting server URL."""
@@ -553,36 +525,9 @@ class TestAPIClientAdvanced:
             assert isinstance(client, APIClient)
 
 
+@pytest.mark.usefixtures("configured_app_secret")
 class TestSubmitLapErrorResponses:
     """Test lap submission with various error responses."""
-
-    @pytest.fixture
-    def sample_session(self):
-        """Create a sample session for testing."""
-        return SessionData(
-            session_id="test-session-123",
-            game_version="1.0.0",
-            session_type="PRACTICE",
-            car="ks_porsche_992_gt3_cup",
-            track="spa_francorchamps",
-            player_id="76561198321627695",
-            player_name="TestUser",
-        )
-
-    @pytest.fixture
-    def sample_lap(self):
-        """Create a sample lap for testing."""
-        return LapData(
-            lap_number=1,
-            physics_lap_number=1,
-            lap_time_ms=138456,
-            lap_time_str="2:18.456",
-            sector1_ms=45000,
-            sector2_ms=48000,
-            sector3_ms=45456,
-            is_valid=True,
-            tyre_compound="SC",
-        )
 
     @pytest.mark.asyncio
     @patch('src.core.api_client.is_game_running')
@@ -868,32 +813,39 @@ class TestNoSecret:
 
     @pytest.mark.asyncio
     @patch('httpx.AsyncClient.post')
-    async def test_submit_lap_no_secret(self, mock_post):
-        """Submit is skipped and no network call is made when no secret is set."""
+    async def test_submit_lap_no_secret(self, mock_post, monkeypatch):
+        """Offline submission stops before game, signing, client, or HTTP work."""
         from types import SimpleNamespace
 
-        with patch('src.core.api_client.is_secret_configured', return_value=False):
-            client = APIClient()
-            session = SimpleNamespace(player_id="76561198321627695")
-            lap = SimpleNamespace(
-                lap_time_str="1:29.556",
-                lap_time_ms=89556,
-                is_valid=True,
-                tyre_compound="SC",
-            )
+        game_check = MagicMock(side_effect=AssertionError("game detection must not run"))
+        signer = MagicMock(side_effect=AssertionError("signing must not run"))
+        monkeypatch.setattr("src.core.api_client.is_game_running", game_check)
+        monkeypatch.setattr("src.core.api_client.sign_payload", signer)
+        client = APIClient()
+        get_client = AsyncMock(side_effect=AssertionError("HTTP client must not be created"))
+        monkeypatch.setattr(client, "_get_client", get_client)
+        session = SimpleNamespace(player_id="76561198321627695")
+        lap = SimpleNamespace(
+            lap_time_str="1:29.556",
+            lap_time_ms=89556,
+            is_valid=True,
+            tyre_compound="SC",
+        )
 
-            result = await client.submit_lap(session, lap)
+        result = await client.submit_lap(session, lap)
 
         assert result.status == SubmissionStatus.NO_SECRET
         assert "offline" in result.message.lower()
+        game_check.assert_not_called()
+        signer.assert_not_called()
+        get_client.assert_not_awaited()
         mock_post.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_test_secret_no_secret(self):
         """test_secret returns an offline message without network activity."""
-        with patch('src.core.api_client.is_secret_configured', return_value=False):
-            client = APIClient()
-            success, message = await client.test_secret()
+        client = APIClient()
+        success, message = await client.test_secret()
 
         assert success is False
         assert "offline" in message.lower()
@@ -902,9 +854,8 @@ class TestNoSecret:
     @patch('httpx.AsyncClient.get')
     async def test_test_connection_no_secret(self, mock_get):
         """test_connection returns an offline message without contacting the server."""
-        with patch('src.core.api_client.is_secret_configured', return_value=False):
-            client = APIClient()
-            success, message = await client.test_connection()
+        client = APIClient()
+        success, message = await client.test_connection()
 
         assert success is False
         assert "offline" in message.lower()

@@ -9,17 +9,29 @@ running within the test window. Triggering it up front makes those tests
 deterministic.
 """
 
-import os
-
-os.environ.setdefault(
-    "APP_SECRET",
-    "0000000000000000000000000000000000000000000000000000000000000000",
-)
-
 import pytest
 
+from src.core import security
 from src.core.log_parser import LapData, LogParser, SessionData
 from src.utils.structured_logger import log_debug, Component
+
+
+TEST_APP_SECRET = "0000000000000000000000000000000000000000000000000000000000000000"
+
+
+@pytest.fixture(autouse=True)
+def _clear_app_secret(monkeypatch):
+    """Keep tests offline unless they explicitly request signing credentials."""
+    monkeypatch.delenv("APP_SECRET", raising=False)
+    monkeypatch.setattr(security, "APP_SECRET", None)
+
+
+@pytest.fixture
+def configured_app_secret(monkeypatch):
+    """Configure the deterministic test secret for signing-specific tests."""
+    monkeypatch.setenv("APP_SECRET", TEST_APP_SECRET)
+    monkeypatch.setattr(security, "APP_SECRET", TEST_APP_SECRET)
+    return TEST_APP_SECRET
 
 
 def make_parser(car_id: str, with_completed_lap: bool = False) -> LogParser:

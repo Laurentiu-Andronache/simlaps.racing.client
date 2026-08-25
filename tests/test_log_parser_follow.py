@@ -6,8 +6,6 @@ This targets the biggest uncovered chunk (lines 1262-1382).
 
 import pytest
 import asyncio
-import os
-os.environ["APP_SECRET"] = "0000000000000000000000000000000000000000000000000000000000000000"
 
 from src.core.log_parser import LogParser
 from src.models import LapState, SessionData, SharedSessionManager
