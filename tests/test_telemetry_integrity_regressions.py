@@ -152,6 +152,15 @@ def test_build_track_uses_contact_centroid_and_preserves_fuel():
     assert [point["fuel"] for point in track] == [5.0, 4.9]
 
 
+def test_build_track_prefers_contact_centroid_over_velocity():
+    frame = _frame(0, fuel=5.0, x=-306.0, z=-206.0)
+    frame.physics["velocity"] = {"x": 10.0, "y": 0.0, "z": 5.0}
+
+    track = build_track([frame], hz=10.0)
+
+    assert (track[0]["x"], track[0]["z"]) == (-306.0, -206.0)
+
+
 def test_non_monotonic_series_is_not_labeled_rising_from_endpoints():
     assert _trend_direction([10.7, 86.4, 52.6, 13.0], threshold=0.15) == "FLAT"
 
