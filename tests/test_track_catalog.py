@@ -192,3 +192,52 @@ class TestTrackCatalog:
             assert "configs" in track_data
             assert "default_config" in track_data
             assert "aliases" in track_data
+
+
+class TestNordschleifeConfigSelection:
+    """Layout-aware profile selection for the Nürburgring Nordschleife."""
+
+    def test_static_nordschleife_selects_nordschleife_config(self):
+        """Static SHM config "Nordschleife" resolves to the plain layout."""
+        track_key, profile = select_track_profile(
+            track_name="Nurburgring", config_name="Nordschleife"
+        )
+
+        assert track_key == "nurburgring_nordschleife"
+        assert profile["config_key"] == "nordschleife"
+        assert profile["config_name"] == "Nordschleife"
+        assert len(profile["corners"]) == 53
+
+    def test_static_gp_selects_gp_config(self):
+        """Static SHM config "GP" skips the Nordschleife entry and finds GP."""
+        track_key, profile = select_track_profile(
+            track_name="Nurburgring", config_name="GP"
+        )
+
+        assert track_key == "nurburgring_gp"
+        assert profile["config_key"] == "gp"
+
+    def test_no_config_keeps_default_24h(self):
+        """Without a static config the 24h default is preserved."""
+        track_key, profile = select_track_profile(track_name="Nurburgring")
+
+        assert track_key == "nurburgring_nordschleife"
+        assert profile["config_key"] == "24h"
+
+    def test_touristenfahrten_alias_moved_to_nordschleife(self):
+        """touristenfahrten (= plain tourist layout) must not alias 24h."""
+        entry = TRACK_CATALOG["nurburgring_nordschleife"]
+        assert "touristenfahrten" not in entry["configs"]["24h"]["aliases"]
+        assert "touristenfahrten" in entry["configs"]["nordschleife"]["aliases"]
+        assert entry["default_config"] == "24h"
+
+    def test_nordschleife_corners_span_full_layout(self):
+        """The plain profile spans ~0.007-0.852, not the 24h's 0.01-0.40."""
+        profile = build_track_profile("nurburgring_nordschleife", "nordschleife")
+        starts = [corner["start"] for corner in profile["corners"]]
+        ends = [corner["end"] for corner in profile["corners"]]
+
+        assert min(starts) == pytest.approx(0.0073)
+        assert max(ends) == pytest.approx(0.852)
+        assert max(ends) > 0.85
+        assert profile["confidence"] == "estimated"

@@ -1493,8 +1493,7 @@
       "24h": {
         "name": "24H",
         "aliases": [
-          "24h",
-          "touristenfahrten"
+          "24h"
         ],
         "corners": [
           {
@@ -2000,6 +1999,386 @@
             "start": 0.39,
             "end": 0.4,
             "_confidence": "profiled"
+          }
+        ]
+      },
+      "nordschleife": {
+        "name": "Nordschleife",
+        "aliases": [
+          "nordschleife",
+          "touristenfahrten"
+        ],
+        "corners": [
+          {
+            "id": 1,
+            "name": "C1",
+            "start": 0.0073,
+            "end": 0.0143,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 2,
+            "name": "C2",
+            "start": 0.0167,
+            "end": 0.0237,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 3,
+            "name": "C3",
+            "start": 0.0251,
+            "end": 0.0321,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 4,
+            "name": "C4",
+            "start": 0.035,
+            "end": 0.042,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 5,
+            "name": "C5",
+            "start": 0.0433,
+            "end": 0.0503,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 6,
+            "name": "C6",
+            "start": 0.0483,
+            "end": 0.0553,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 7,
+            "name": "C7",
+            "start": 0.0545,
+            "end": 0.0615,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 8,
+            "name": "C8",
+            "start": 0.0607,
+            "end": 0.0677,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 9,
+            "name": "C9",
+            "start": 0.0733,
+            "end": 0.0803,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 10,
+            "name": "C10",
+            "start": 0.1115,
+            "end": 0.1185,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 11,
+            "name": "C11",
+            "start": 0.1819,
+            "end": 0.1889,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 12,
+            "name": "C12",
+            "start": 0.2106,
+            "end": 0.2176,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 13,
+            "name": "C13",
+            "start": 0.226,
+            "end": 0.233,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 14,
+            "name": "C14",
+            "start": 0.2424,
+            "end": 0.2494,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 15,
+            "name": "C15",
+            "start": 0.2497,
+            "end": 0.2567,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 16,
+            "name": "C16",
+            "start": 0.2888,
+            "end": 0.2958,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 17,
+            "name": "C17",
+            "start": 0.2976,
+            "end": 0.3046,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 18,
+            "name": "C18",
+            "start": 0.3092,
+            "end": 0.3162,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 19,
+            "name": "C19",
+            "start": 0.3226,
+            "end": 0.3296,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 20,
+            "name": "C20",
+            "start": 0.3345,
+            "end": 0.3415,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 21,
+            "name": "C21",
+            "start": 0.3391,
+            "end": 0.3461,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 22,
+            "name": "C22",
+            "start": 0.3525,
+            "end": 0.3595,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 23,
+            "name": "C23",
+            "start": 0.3786,
+            "end": 0.3856,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 24,
+            "name": "C24",
+            "start": 0.3896,
+            "end": 0.3966,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 25,
+            "name": "C25",
+            "start": 0.4167,
+            "end": 0.4237,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 26,
+            "name": "C26",
+            "start": 0.4285,
+            "end": 0.4355,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 27,
+            "name": "C27",
+            "start": 0.4734,
+            "end": 0.4804,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 28,
+            "name": "C28",
+            "start": 0.505,
+            "end": 0.512,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 29,
+            "name": "C29",
+            "start": 0.521,
+            "end": 0.528,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 30,
+            "name": "C30",
+            "start": 0.5414,
+            "end": 0.5484,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 31,
+            "name": "C31",
+            "start": 0.5554,
+            "end": 0.5624,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 32,
+            "name": "C32",
+            "start": 0.5767,
+            "end": 0.5837,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 33,
+            "name": "C33",
+            "start": 0.6052,
+            "end": 0.6122,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 34,
+            "name": "C34",
+            "start": 0.6127,
+            "end": 0.6197,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 35,
+            "name": "C35",
+            "start": 0.617,
+            "end": 0.624,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 36,
+            "name": "C36",
+            "start": 0.6243,
+            "end": 0.6313,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 37,
+            "name": "C37",
+            "start": 0.6403,
+            "end": 0.6473,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 38,
+            "name": "C38",
+            "start": 0.6529,
+            "end": 0.6599,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 39,
+            "name": "C39",
+            "start": 0.661,
+            "end": 0.668,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 40,
+            "name": "C40",
+            "start": 0.6732,
+            "end": 0.6802,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 41,
+            "name": "C41",
+            "start": 0.681,
+            "end": 0.688,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 42,
+            "name": "C42",
+            "start": 0.6924,
+            "end": 0.6994,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 43,
+            "name": "C43",
+            "start": 0.708,
+            "end": 0.715,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 44,
+            "name": "C44",
+            "start": 0.7161,
+            "end": 0.7231,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 45,
+            "name": "C45",
+            "start": 0.7355,
+            "end": 0.7425,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 46,
+            "name": "C46",
+            "start": 0.7455,
+            "end": 0.7525,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 47,
+            "name": "C47",
+            "start": 0.7636,
+            "end": 0.7706,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 48,
+            "name": "C48",
+            "start": 0.7925,
+            "end": 0.7995,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 49,
+            "name": "C49",
+            "start": 0.8033,
+            "end": 0.8103,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 50,
+            "name": "C50",
+            "start": 0.8145,
+            "end": 0.8215,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 51,
+            "name": "C51",
+            "start": 0.8304,
+            "end": 0.8374,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 52,
+            "name": "C52",
+            "start": 0.8406,
+            "end": 0.8476,
+            "_confidence": "estimated"
+          },
+          {
+            "id": 53,
+            "name": "C53",
+            "start": 0.845,
+            "end": 0.852,
+            "_confidence": "estimated"
           }
         ]
       }
@@ -3136,7 +3515,9 @@
       "nurburgring_gp",
       "nurburgring-gp",
       "nurburgring grand prix",
-      "nürburgring gp"
+      "nürburgring gp",
+      "nurburgring",
+      "nürburgring"
     ],
     "default_config": "gp",
     "configs": {

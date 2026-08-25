@@ -36,7 +36,7 @@ from src.core.analyzer._util import (
     variation_label, classify_corner_issue,
     format_car_state, balance_hint,
 )
-from src.core.analyzer.canonical import _build_canonical_lap
+from src.core.analyzer.canonical import _build_canonical_lap, _canonical_bins_for_profile
 from src.core.analyzer.corner_detection import (
     _detect_profiled_corners_canonical,
     detect_corners, detect_profiled_corners,
@@ -90,91 +90,22 @@ def _nearest_lap_marker_by_time(markers: List, timing_lap_time: Any):
     return min(candidates, key=lambda candidate: (candidate[0], candidate[1]))[2]
 
 
-def _clean_completed_lap_track(
-    lap_track: List[Dict[str, Any]],
-    completed_lap_time_ms: Any,
-    *,
-    hz: float,
-) -> tuple[List[Dict[str, Any]], int, int]:
-    """Remove non-driving samples and a stale prefix from a completed lap.
+def _read_static_track_config(frames: List[FrameData]) -> tuple[Optional[str], Optional[str]]:
+    """Extract authoritative track/config names from the static SHM region.
 
-    ACE's live current-lap timer can continue through ``BackToPit`` and a
-    subsequent pit exit even though the next reported completed-lap time only
-    covers the final on-track portion.  The finish-line boundary is still
-    authoritative; when the monotonic timer span is materially longer than
-    that completed time, retain the matching suffix.  Ordinary rounding and
-    normal pit-lane starts remain below the deliberately generous tolerance.
+    AC Evo publishes ``track`` / ``track_configuration`` in the static region;
+    these are the reliable layout selectors (graphics lap-length reads garbage
+    in 0.8.x). The static payload is constant across frames, so the first
+    populated values win.
     """
-    if not lap_track:
-        return [], 0, 0
-
-    active_track = [
-        point for point in lap_track if point.get("status_name") != "AC_PAUSE"
-    ]
-    paused_removed = len(lap_track) - len(active_track)
-
-    def finalize(points: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        if not paused_removed or not points:
-            return points
-        first_frame = points[0]["frame"]
-        compressed = []
-        for offset, point in enumerate(points):
-            sample = dict(point)
-            sample["source_frame"] = point["frame"]
-            sample["frame"] = first_frame + offset
-            compressed.append(sample)
-        return compressed
-
-    if len(active_track) < 20:
-        return finalize(active_track), 0, paused_removed
-
-    completed_time = _optional_float(completed_lap_time_ms)
-    if completed_time is None or completed_time <= 0:
-        return finalize(active_track), 0, paused_removed
-
-    timed_points: List[tuple[int, float]] = []
-    for index, point in enumerate(active_track):
-        timer = _optional_float(point.get("lap_time_ms"))
-        if timer is not None and timer >= 0:
-            timed_points.append((index, timer))
-    if len(timed_points) < 2:
-        return finalize(active_track), 0, paused_removed
-
-    sampling_tolerance_ms = max(1.0, 2_000.0 / max(hz, 1.0))
-    if any(
-        current_timer + sampling_tolerance_ms < previous_timer
-        for (_, previous_timer), (_, current_timer) in zip(
-            timed_points,
-            timed_points[1:],
-        )
-    ):
-        return finalize(active_track), 0, paused_removed
-
-    timer_start = timed_points[0][1]
-    timer_end = timed_points[-1][1]
-    timer_span = timer_end - timer_start
-    trim_tolerance_ms = max(
-        _LAP_SEGMENT_MIN_TRIM_MS,
-        completed_time * 0.05,
-        sampling_tolerance_ms * 2.0,
-    )
-    if timer_span <= completed_time + trim_tolerance_ms:
-        return finalize(active_track), 0, paused_removed
-
-    target_timer = timer_end - completed_time
-    trim_index = next(
-        (
-            index
-            for index, timer in timed_points
-            if timer >= target_timer
-        ),
-        0,
-    )
-    candidate = active_track[trim_index:]
-    if trim_index <= 0 or len(candidate) < 20:
-        return finalize(active_track), 0, paused_removed
-
-    return finalize(candidate), trim_index, paused_removed
+    track = config = None
+    for frame in frames:
+        static = frame.static or {}
+        track = track or static.get("track") or None
+        config = config or static.get("track_configuration") or None
+        if track and config:
+            break
+    return track, config
 
 
 class TelemetryAnalyzer:
@@ -206,7 +137,10 @@ class TelemetryAnalyzer:
             log_warning(Component.ANALYZER, "Analysis skipped: insufficient frames", frames=len(frames), prefix=output_prefix)
             return await self._generate_empty_result(output_prefix)
 
-        track_key, track_profile = _select_track_profile_for_analysis(track_name)
+        static_track_name, static_config_name = _read_static_track_config(frames)
+        track_key, track_profile = _select_track_profile_for_analysis(
+            static_track_name or track_name, static_config_name
+        )
         if track_profile:
             log_info(Component.ANALYZER, "Track profile selected", profile=track_profile['display_name'])
         else:
@@ -428,10 +362,7 @@ class TelemetryAnalyzer:
             )
             lap_quality_score = round(lap_progress_ratio * 0.7 + lap_plausible_ratio * 0.3, 3)
             canonical_lap = _build_canonical_lap(
-                lap_track,
-                lap_start_frame=effective_start_frame,
-                hz=hz,
-                bins=200,
+                lap_track, lap_start_frame=s, hz=hz, bins=_canonical_bins_for_profile(track_profile),
             )
             uses_canonical_progress = canonical_lap is not None
 

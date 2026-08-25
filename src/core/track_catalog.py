@@ -108,27 +108,49 @@ def select_track_profile(
         tuple: (track_key, track_profile) or (None, None) if not found
     """
     if track_name:
-        # Direct match first
+        # Collect every catalog entry whose key or aliases match the name.
+        # A single track name can map to several entries (e.g. "Nurburgring"
+        # matches both the Nordschleife and GP catalogs), so we cannot stop
+        # at the first hit when a specific config is requested.
+        matching_keys: list[str] = []
         if track_name in TRACK_CATALOG:
-            track = TRACK_CATALOG[track_name]
-            return track_name, build_track_profile(track_name, track["default_config"])
-
-        # Search aliases
+            matching_keys.append(track_name)
+        tn_lower = track_name.lower()
         for track_key, track in TRACK_CATALOG.items():
+            if track_key == track_name:
+                continue
             labels = [track_key, *track.get("aliases", [])]
-            if track_name.lower() in [l.lower() for l in labels]:
-                if config_name:
-                    for config_key, config in track["configs"].items():
-                        config_labels = [config_key, *config.get("aliases", [])]
-                        if config_name.lower() in [l.lower() for l in config_labels]:
-                            return track_key, build_track_profile(track_key, config_key)
-                return track_key, build_track_profile(track_key, track["default_config"])
+            if tn_lower in [label.lower() for label in labels]:
+                matching_keys.append(track_key)
+
+        # Prefer a config whose key/aliases match config_name across ALL
+        # matching tracks before falling back to any default.
+        if config_name:
+            cfg_lower = config_name.lower()
+            for track_key in matching_keys:
+                track = TRACK_CATALOG[track_key]
+                for config_key, config in track["configs"].items():
+                    config_labels = [config_key, *config.get("aliases", [])]
+                    if cfg_lower in [label.lower() for label in config_labels]:
+                        return track_key, build_track_profile(track_key, config_key)
+
+        # Fall back to the default config of the first matching track.
+        if matching_keys:
+            track_key = matching_keys[0]
+            return track_key, build_track_profile(track_key, TRACK_CATALOG[track_key]["default_config"])
+
         return None, None
 
     if path:
         path_l = os.path.normpath(path).lower()
         for track_key, track in TRACK_CATALOG.items():
             if any(alias in path_l for alias in track.get("aliases", [])):
+                if config_name:
+                    cfg_lower = config_name.lower()
+                    for config_key, config in track["configs"].items():
+                        config_labels = [config_key, *config.get("aliases", [])]
+                        if cfg_lower in [label.lower() for label in config_labels]:
+                            return track_key, build_track_profile(track_key, config_key)
                 for config_key, config in track["configs"].items():
                     if any(alias in path_l for alias in config.get("aliases", [])):
                         return track_key, build_track_profile(track_key, config_key)

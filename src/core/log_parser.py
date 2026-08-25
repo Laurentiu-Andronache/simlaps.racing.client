@@ -2200,6 +2200,8 @@ class LogParser:
                         if _latest is not None and _latest != self.log_path:
                             self._flush_pending_compound_batch()
                             log_debug(Component.LOG_PARSER, f"[NEW_LOG] Switching to {_latest.name}")
+                            if self._last_emitted_game_status is not False:
+                                await self._emit_game_status(False, trigger="new log file detected")
                             self.context = LogContext()
                             self.current_session = None
                             self._emit_callbacks = True
@@ -2218,6 +2220,8 @@ class LogParser:
                     if current_size is not None and current_size < fh.tell():
                         self._flush_pending_compound_batch()
                         log_debug(Component.LOG_PARSER, "[TRUNCATE] Log file reset — restarting context")
+                        if self._last_emitted_game_status is not False:
+                            await self._emit_game_status(False, trigger="log file truncated")
                         self.context = LogContext()
                         self.current_session = None
                         self._emit_callbacks = True
