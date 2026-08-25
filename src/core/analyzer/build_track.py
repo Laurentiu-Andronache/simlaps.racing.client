@@ -12,6 +12,28 @@ from src.core.analyzer._util import (
 from src.utils.structured_logger import log_debug, Component
 
 
+def _contact_point_centroid(value: Any) -> tuple[float, float] | None:
+    """Return the car-centre X/Z proxy from decoded tyre contact points."""
+    if not isinstance(value, (list, tuple)):
+        return None
+
+    coordinates: list[tuple[float, float]] = []
+    for point in value[:4]:
+        if not isinstance(point, dict):
+            continue
+        point_x = _optional_float(point.get("x"))
+        point_z = _optional_float(point.get("z"))
+        if point_x is not None and point_z is not None:
+            coordinates.append((point_x, point_z))
+
+    if not coordinates:
+        return None
+    return (
+        sum(point[0] for point in coordinates) / len(coordinates),
+        sum(point[1] for point in coordinates) / len(coordinates),
+    )
+
+
 def build_track(frames: List[FrameData], hz: float = 1.0, start_idx: int = 0) -> List[Dict]:
     """Build track map from frames."""
     track = []
@@ -103,6 +125,7 @@ def build_track(frames: List[FrameData], hz: float = 1.0, start_idx: int = 0) ->
             "x": x,
             "z": z,
             "speed": speed,
+            "fuel": _optional_float(ph.get("fuel")),
             "heading": _optional_float(ph.get("heading")) or 0.0,
             "steer": _optional_float(ph.get("steer_angle")) or 0.0,
             "brake": _optional_float(ph.get("brake")) or 0.0,

@@ -4,6 +4,7 @@ Tests for Discord integration functionality.
 Tests Discord notifier, PB cache, and integration points.
 """
 
+import httpx
 import pytest
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -141,6 +142,34 @@ class TestDiscordNotifier:
             notifier = DiscordNotifier("https://discord.com/api/webhooks/test")
             result = await notifier.send_test_message()
             assert result is True
+
+    @pytest.mark.asyncio
+    async def test_send_test_message_delegates_to_lap_delivery(self):
+        """The test path must use the same delivery behavior as real laps."""
+        notifier = DiscordNotifier("https://discord.com/api/webhooks/test")
+        notifier.post_lap = AsyncMock(return_value=False)
+
+        result = await notifier.send_test_message()
+
+        assert result is False
+        notifier.post_lap.assert_awaited_once()
+        test_lap = notifier.post_lap.await_args.args[0]
+        assert test_lap.track_name == "laguna_seca"
+        assert test_lap.car_name == "ks_porsche_992_gt3_cup"
+        assert test_lap.lap_time_ms == 92295
+        assert test_lap.is_personal_best is True
+
+    @pytest.mark.asyncio
+    async def test_send_test_message_handles_timeout_like_real_lap(self):
+        """Regression: test-webhook timeouts must return False, not escape."""
+        with patch("httpx.AsyncClient") as mock_client:
+            mock_client.return_value.__aenter__.return_value.post.side_effect = (
+                httpx.TimeoutException("Discord timed out")
+            )
+
+            notifier = DiscordNotifier("https://discord.com/api/webhooks/test")
+
+            assert await notifier.send_test_message() is False
     
     def test_validate_webhook_url(self):
         """Test webhook URL validation."""
@@ -467,7 +496,7 @@ class TestAppDiscordPosting:
             session_manager=app._session_manager,
             pb_cache=app._pb_cache,
             history_entries=app._history_entries,
-            submit_lap=app._submit_lap,
+            schedule_submission=app._schedule_lap_submission,
             create_history_entry=HistoryEntry,
         )
 
@@ -511,7 +540,7 @@ class TestAppDiscordPosting:
             session_manager=app._session_manager,
             pb_cache=app._pb_cache,
             history_entries=app._history_entries,
-            submit_lap=app._submit_lap,
+            schedule_submission=app._schedule_lap_submission,
             create_history_entry=HistoryEntry,
         )
 

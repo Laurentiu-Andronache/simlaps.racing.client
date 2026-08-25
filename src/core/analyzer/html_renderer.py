@@ -3,10 +3,19 @@
 import json
 import os
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from src.core.analyzer._util import _optional_float
 from src.utils.structured_logger import log_debug, Component
+
+
+_VENDOR_DIR = Path(__file__).with_name("vendor")
+
+
+def _load_vendor_script(filename: str) -> str:
+    """Load a pinned chart dependency bundled with source and frozen builds."""
+    return (_VENDOR_DIR / filename).read_text(encoding="utf-8")
 
 
 async def render_html(
@@ -67,6 +76,11 @@ async def render_html(
             "lap_time_str": lap["lap_time_str"],
             "max_speed": round(lap["max_speed"], 1),
             "avg_speed": round(lap["avg_speed"], 1),
+            "fuel_used": (
+                round(lap["fuel_used"], 3)
+                if lap.get("fuel_used") is not None
+                else None
+            ),
             "is_valid": lap.get("is_valid", True),
             "confidence_label": lap.get("confidence_label"),
             "track": track_slim,
@@ -102,6 +116,8 @@ async def render_html(
         "best_lap_num": data["best_lap_num"],
         "reference_lap_num": data.get("reference_lap_num"),
         "comparison_lap_num": data.get("comparison_lap_num"),
+        "comparison_available": data.get("comparison_available", False),
+        "valid_lap_nums": data.get("valid_lap_nums", []),
         "analysis_mode": data.get("analysis_mode"),
         "analysis_confidence": data.get("analysis_confidence"),
         "analysis_notes": data.get("analysis_notes", []),
@@ -110,7 +126,11 @@ async def render_html(
         "corner_speeds": corner_speeds_json,
     })
 
-    html_content = build_html_template(data_json)
+    html_content = build_html_template(
+        data_json,
+        chart_js=_load_vendor_script("chart.umd.min.js"),
+        annotation_js=_load_vendor_script("chartjs-plugin-annotation.min.js"),
+    )
 
     with open(html_path, "w", encoding="utf-8") as f:
         f.write(html_content)
@@ -119,16 +139,25 @@ async def render_html(
     return html_path
 
 
-def build_html_template(data_json: str) -> str:
+def build_html_template(
+    data_json: str,
+    *,
+    chart_js: Optional[str] = None,
+    annotation_js: Optional[str] = None,
+) -> str:
     """Build the full HTML report template with all chart sections."""
+    chart_js = chart_js or _load_vendor_script("chart.umd.min.js")
+    annotation_js = annotation_js or _load_vendor_script(
+        "chartjs-plugin-annotation.min.js"
+    )
     return r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>AC Evo Lap Analysis</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js"></script>
+<script>__CHART_JS__</script>
+<script>__ANNOTATION_JS__</script>
 <style>
   :root { --bg: #0d0d0f; --panel: #16181d; --border: #2a2d36; --text: #e0e2ea; --muted: #6b7280; --accent: #3b82f6; --green: #22c55e; --red: #ef4444; --orange: #f97316; --yellow: #eab308; }
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -292,7 +321,8 @@ function makeLapFilters(containerId, onChange) {
     const btn = document.createElement('button');
     btn.className = 'lap-btn active';
     btn.style.color = lapColor(lap.lap_num);
-    btn.textContent = `L${lap.lap_num}${lap.lap_num===DATA.best_lap_num?'*':''} - ${lap.lap_time_str}`;
+    const validity = lap.is_valid ? '' : ' [INVALID]';
+    btn.textContent = `L${lap.lap_num}${lap.lap_num===DATA.best_lap_num?'*':''} - ${lap.lap_time_str}${validity}`;
     btn.dataset.lap = lap.lap_num;
     btn.addEventListener('click', () => {
       if (activeLaps.has(lap.lap_num)) activeLaps.delete(lap.lap_num);
@@ -305,12 +335,13 @@ function makeLapFilters(containerId, onChange) {
 
 function renderStats() {
   const row = document.getElementById('stats-row');
-  const bestLap = DATA.laps.find(l => l.lap_num === DATA.best_lap_num) || DATA.laps.reduce((best, lap) => lap.lap_time_s < best.lap_time_s ? lap : best, DATA.laps[0]);
-  const maxSpd = Math.max(...DATA.laps.map(l => l.max_speed));
+  const validLaps = DATA.laps.filter(l => l.is_valid);
+  const bestLap = DATA.laps.find(l => l.lap_num === DATA.best_lap_num && l.is_valid) || null;
+  const maxSpd = validLaps.length ? Math.max(...validLaps.map(l => l.max_speed)) : null;
   const stats = [
     { label: 'Laps', value: DATA.laps.length },
-    { label: 'Best Lap', value: bestLap.lap_time_str },
-    { label: 'Top Speed', value: maxSpd.toFixed(0) + ' km/h' },
+    { label: 'Best Lap', value: bestLap ? bestLap.lap_time_str : 'N/A' },
+    { label: 'Valid-Lap Top Speed', value: maxSpd !== null ? maxSpd.toFixed(0) + ' km/h' : 'N/A' },
     { label: 'Corners / Lap', value: DATA.ref_corners.length },
   ];
   row.innerHTML = stats.map(s => `<div class="stat"><div class="label">${s.label}</div><div class="value">${s.value}</div></div>`).join('');
@@ -327,7 +358,8 @@ function renderStats() {
     notice.style.display = 'none';
   }
   const prefix = DATA.track_label || DATA.track_name || '';
-  document.getElementById('session-info').textContent = `${prefix ? prefix + '  |  ' : ''}${DATA.laps.length} laps detected  -  best ${bestLap.lap_time_str}`;
+  const bestText = bestLap ? bestLap.lap_time_str : 'N/A (no valid lap)';
+  document.getElementById('session-info').textContent = `${prefix ? prefix + '  |  ' : ''}${DATA.laps.length} laps detected  -  best ${bestText}`;
 }
 
 /* ── Track map ─────────────────────────────────────────────── */
@@ -399,7 +431,7 @@ function buildSpeedChart() {
     borderColor: lapColor(lap.lap_num), backgroundColor: 'transparent', borderWidth: 1.8, pointRadius: 0, tension: 0.3,
   }));
   const annotations = {};
-  const bestLap = DATA.laps.find(l => l.lap_num === DATA.best_lap_num) || DATA.laps[0];
+  const bestLap = DATA.laps.find(l => l.lap_num === DATA.best_lap_num && l.is_valid) || null;
   if (bestLap) {
     bestLap.corners.forEach(c => {
       const s = (c.start_frame - bestLap.start_frame) / Math.max(bestLap.track.length - 1, 1) * 100;
@@ -549,7 +581,7 @@ function showError(msg) {
 window.addEventListener('DOMContentLoaded', () => {
   try {
     if (typeof Chart === 'undefined') {
-      showError('Chart.js library failed to load from CDN. Check your internet connection.');
+      showError('Bundled Chart.js library failed to load.');
       return;
     }
     renderStats();
@@ -557,7 +589,7 @@ window.addEventListener('DOMContentLoaded', () => {
     DATA.laps.forEach(l => {
       const opt = document.createElement('option');
       opt.value = l.lap_num;
-      opt.textContent = `Lap ${l.lap_num}${l.lap_num===DATA.best_lap_num?'*':''} (${l.lap_time_str})`;
+      opt.textContent = `Lap ${l.lap_num}${l.lap_num===DATA.best_lap_num?'*':''} (${l.lap_time_str})${l.is_valid?'':' [INVALID]'}`;
       sel.appendChild(opt);
     });
     makeLapFilters('speed-lap-filters', rebuildAll);
@@ -589,4 +621,6 @@ window.addEventListener('DOMContentLoaded', () => {
 });
 </script>
 </body>
-</html>""".replace("__DATA__", data_json)
+</html>""".replace("__DATA__", data_json).replace(
+        "__CHART_JS__", chart_js
+    ).replace("__ANNOTATION_JS__", annotation_js)

@@ -9,5 +9,5 @@ class AnalysisResult:
     html_path: Optional[str]
     ai_prompt_path: Optional[str]
     laps_detected: int
-    best_lap_time: float
+    best_lap_time: Optional[float]
     track_name: Optional[str]

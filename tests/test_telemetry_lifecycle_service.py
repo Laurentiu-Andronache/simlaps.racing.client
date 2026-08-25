@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -69,6 +69,44 @@ async def test_stop_capture_runs_analysis_and_sets_complete_status():
         2,
         "analysis.html",
     )
+
+
+@pytest.mark.asyncio
+async def test_stop_capture_logs_none_when_all_invalid_session_has_no_best():
+    service = TelemetryLifecycleService()
+    telemetry_capture = MagicMock()
+    telemetry_capture.get_output_prefix.return_value = "all-invalid"
+    telemetry_capture.is_capturing.return_value = True
+    telemetry_capture.stop_capture = AsyncMock(return_value=[{"speed": 100}])
+    telemetry_capture.get_metadata.return_value = {}
+    telemetry_capture.get_lap_boundaries.return_value = []
+    telemetry_analyzer = MagicMock()
+    telemetry_analyzer.analyze = AsyncMock(
+        return_value=SimpleNamespace(
+            laps_detected=3,
+            best_lap_time=None,
+            html_path="analysis.html",
+            ai_prompt_path="prompt.txt",
+        )
+    )
+
+    with patch("src.ui.services.telemetry_lifecycle_service.log_info") as log_info:
+        await service.stop_capture(
+            reason="session_end",
+            discard=False,
+            telemetry_capture=telemetry_capture,
+            telemetry_analyzer=telemetry_analyzer,
+            home_page=MagicMock(),
+            current_track_name="Laguna Seca",
+        )
+
+    completion_logs = [
+        call
+        for call in log_info.call_args_list
+        if len(call.args) > 1 and call.args[1] == "Telemetry analysis complete"
+    ]
+    assert len(completion_logs) == 1
+    assert completion_logs[0].kwargs["best_lap_time"] == "none"
 
 
 @pytest.mark.asyncio

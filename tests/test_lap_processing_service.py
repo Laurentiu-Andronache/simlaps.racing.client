@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -19,7 +19,7 @@ def _make_deps(*, auto_submit: bool = False, submit_invalid_laps: bool = False, 
     pb_cache = MagicMock()
     telemetry_capture = None
     history_entries: list = []
-    submit_lap = AsyncMock()
+    schedule_submission = MagicMock()
     home_page = MagicMock()
     home_page._lap_count = 1
     return dict(
@@ -28,7 +28,7 @@ def _make_deps(*, auto_submit: bool = False, submit_invalid_laps: bool = False, 
         pb_cache=pb_cache,
         telemetry_capture=telemetry_capture,
         history_entries=history_entries,
-        submit_lap=submit_lap,
+        schedule_submission=schedule_submission,
         home_page=home_page,
     )
 
@@ -64,7 +64,7 @@ async def test_handle_lap_complete_shm_valid_cannot_resurrect_parser_invalid():
     )
 
     deps["home_page"].add_lap.assert_called_once_with(session, lap, LapCardStatus.INVALID)
-    deps["submit_lap"].assert_not_awaited()
+    deps["schedule_submission"].assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -98,7 +98,7 @@ async def test_handle_lap_complete_ignores_shm_invalid_verdict_in_race_session()
     )
 
     deps["home_page"].add_lap.assert_called_once_with(session, lap, LapCardStatus.SUBMITTING)
-    deps["submit_lap"].assert_awaited_once()
+    deps["schedule_submission"].assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -133,7 +133,7 @@ async def test_handle_lap_complete_ignores_shm_invalid_verdict_in_practice_sessi
     )
 
     deps["home_page"].add_lap.assert_called_once_with(session, lap, LapCardStatus.SUBMITTING)
-    deps["submit_lap"].assert_awaited_once()
+    deps["schedule_submission"].assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -163,7 +163,7 @@ async def test_handle_lap_complete_uses_invalid_status_when_not_submitting_inval
     )
 
     deps["home_page"].add_lap.assert_called_once_with(session, lap, LapCardStatus.INVALID)
-    deps["submit_lap"].assert_not_awaited()
+    deps["schedule_submission"].assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -315,6 +315,10 @@ async def test_handle_lap_complete_records_structural_outlap_boundary():
     deps["telemetry_capture"].record_lap_boundary.assert_called_once_with(
         120000, 1, "OUTLAP"
     )
+    deps["home_page"].add_lap.assert_not_called()
+    deps["pb_cache"].check_and_update_pb.assert_not_called()
+    deps["schedule_submission"].assert_not_called()
+    assert deps["history_entries"] == []
 
 
 @pytest.mark.asyncio

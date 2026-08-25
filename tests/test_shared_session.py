@@ -3,6 +3,7 @@
 from concurrent.futures import ThreadPoolExecutor
 import time
 import tracemalloc
+from unittest.mock import MagicMock
 
 from src.models import (
     LapData,
@@ -10,6 +11,57 @@ from src.models import (
     SessionData,
     SharedSessionManager,
 )
+
+
+def test_update_from_logs_reuses_metadata_sync_and_processes_laps() -> None:
+    manager = SharedSessionManager()
+    metadata_sync = MagicMock(wraps=manager.update_session_metadata_from_logs)
+    manager.update_session_metadata_from_logs = metadata_sync
+    session = SessionData(
+        session_id="session-logs",
+        game_version="0.9.4",
+        session_type="RACE",
+        car="ks_ferrari_296_gt3",
+        track="monza",
+        weather="clear",
+        player_id="76561198321627695",
+        player_name="Driver",
+        car_uuid="player-car",
+        laps=[
+            LapData(
+                lap_number=1,
+                physics_lap_number=1,
+                lap_time_ms=110000,
+                lap_time_str="1:50.000",
+                is_valid=True,
+            )
+        ],
+    )
+
+    manager.update_from_logs(session)
+
+    metadata_sync.assert_called_once_with(session)
+    metadata = manager.get_session_metadata_data()
+    assert metadata.session_id == "session-logs"
+    assert metadata.game_version == "0.9.4"
+    assert metadata.session_type == "RACE"
+    assert metadata.track == "monza"
+    assert metadata.weather == "clear"
+
+    identity = manager.get_player_identification()
+    assert identity.steam_id == "76561198321627695"
+    assert identity.player_name == "Driver"
+    assert identity.car_uuid == "player-car"
+    assert identity.car_model == "ks_ferrari_296_gt3"
+
+    sources = manager.get_data_sources()
+    assert sources["game_version"] == {"logs"}
+    assert sources["session_type"] == {"logs"}
+    assert sources["track"] == {"logs"}
+
+    timing = manager.get_lap_timing_data(1)
+    assert timing is not None
+    assert timing.completed_lap_time == 110000.0
 
 
 def test_update_from_graphics_sets_timing_and_fuel() -> None:

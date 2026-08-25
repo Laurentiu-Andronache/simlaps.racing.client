@@ -272,11 +272,6 @@ def _trend_direction(values: List[float], threshold: float) -> str:
         return "RISING"
     if all(d < -threshold for d in diffs):
         return "FALLING"
-    span = values[-1] - values[0]
-    if span > threshold * (len(values) - 1):
-        return "RISING"
-    if span < -threshold * (len(values) - 1):
-        return "FALLING"
     return "FLAT"
 
 

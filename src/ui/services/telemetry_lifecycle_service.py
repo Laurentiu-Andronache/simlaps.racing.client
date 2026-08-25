@@ -138,7 +138,11 @@ class TelemetryLifecycleService:
                         Component.APP,
                         "Analysis complete",
                         laps=result.laps_detected,
-                        best_lap_time=f"{result.best_lap_time:.1f}s",
+                        best_lap_time=(
+                            f"{result.best_lap_time:.1f}s"
+                            if result.best_lap_time is not None
+                            else "none"
+                        ),
                     )
                     if home_page:
                         home_page.set_telemetry_status(
@@ -228,7 +232,11 @@ class TelemetryLifecycleService:
                     Component.APP,
                     "Telemetry analysis complete",
                     laps=result.laps_detected,
-                    best_lap_time=f"{result.best_lap_time:.2f}s",
+                    best_lap_time=(
+                        f"{result.best_lap_time:.2f}s"
+                        if result.best_lap_time is not None
+                        else "none"
+                    ),
                     html_path=result.html_path,
                     ai_prompt_path=result.ai_prompt_path,
                 )

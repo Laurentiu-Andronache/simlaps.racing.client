@@ -417,7 +417,7 @@ class SimLapsApp:
                 session_manager=self._session_manager,
                 pb_cache=self._pb_cache,
                 history_entries=self._history_entries,
-                submit_lap=self._submit_lap,
+                schedule_submission=self._schedule_lap_submission,
                 create_history_entry=HistoryEntry,
             )
             if updated_track is not None:
@@ -434,6 +434,24 @@ class SimLapsApp:
             history_entry.lap_time_ms = lap.lap_time_ms
             history_entry.timestamp = lap.timestamp
             history_entry.was_valid = lap.is_valid
+
+    def _schedule_lap_submission(
+        self,
+        card,
+        session: SessionData,
+        lap: LapData,
+        history_entry: HistoryEntry,
+        pb_was_new: Optional[bool] = None,
+    ) -> None:
+        """Hand submission off so log parsing can enrich the shared lap first."""
+        self.page.run_task(
+            self._submit_lap,
+            card,
+            session,
+            lap,
+            history_entry,
+            pb_was_new,
+        )
     
     async def _submit_lap(
         self,

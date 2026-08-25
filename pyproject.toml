@@ -49,3 +49,6 @@ include = ["src*"]
 
 [tool.setuptools.dynamic]
 version = {attr = "src.version.VERSION"}
+
+[tool.setuptools.package-data]
+"src.core.analyzer" = ["vendor/*.js", "vendor/*.md"]

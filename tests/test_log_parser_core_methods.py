@@ -234,15 +234,20 @@ class TestHandleOutlap:
         assert result is None
 
     def test_handle_outlap_signals_failed(self):
-        """Test couldn't create lap from opensplits."""
+        """Rejected practice pit prefix preserves the full-circuit outlap."""
         parser = LogParser()
-        parser.current_session = SessionData(track="spa", car="porsche")
+        parser.current_session = SessionData(
+            track="spa", car="porsche", session_type="PRACTICE"
+        )
+        parser._ip.is_outlap = True
+        parser._ip.splits = {2: 12345}
         line = "Couldn't create lap from opensplits"
         
         result = parser._handle_outlap_signals(line)
         
-        # Should reset in-progress
         assert result is None
+        assert parser._ip.is_outlap is True
+        assert parser._ip.splits == {}
 
     def test_outplap_split_ignored_in_race(self):
         """AC Evo emits one 'Outplap split' per car on the grid at race

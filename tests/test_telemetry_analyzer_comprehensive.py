@@ -1220,9 +1220,8 @@ class TestTelemetryAnalyzer:
         assert any("realigned" in note for note in data["analysis_notes"])
 
     @pytest.mark.asyncio
-    async def test_analyze_coaches_invalid_laps_and_keeps_validity_flags(self, tmp_path):
-        """Invalid laps remain visible, keep their validity flag, and are
-        eligible for best/reference selection — validity does not gate coaching."""
+    async def test_analyze_excludes_invalid_laps_from_best_and_coaching_selection(self, tmp_path):
+        """A faster invalid lap must remain visible without becoming a PB or coach lap."""
         from src.core.telemetry_analyzer import TelemetryAnalyzer
 
         lap_times = [70000, 60000, 65000, 75000]
@@ -1234,7 +1233,7 @@ class TestTelemetryAnalyzer:
             frames.append(
                 create_mock_frame(
                     frame_num,
-                    speed=100.0,
+                    speed=(333.0 if 60 <= frame_num < 120 else 100.0),
                     position=(frame_num % 60) / 60,
                     last_lap_time_ms=last_lap_time,
                 )
@@ -1261,19 +1260,22 @@ class TestTelemetryAnalyzer:
 
         data = html_spy.await_args.args[0]
         assert [lap["lap_num"] for lap in data["laps"]] == [1, 2, 3, 4]
-        assert [lap["is_valid"] for lap in data["laps"]] == [True, False, True, False]
-        assert data["best_lap_num"] == 2
-        assert data["reference_lap_num"] is not None
-        assert data["comparison_lap_num"] is not None
-        assert result.best_lap_time == pytest.approx(60.0)
+        valid_lap_numbers = {
+            lap["lap_num"] for lap in data["laps"] if lap["is_valid"]
+        }
+        assert data["best_lap_num"] == 3
+        assert data["reference_lap_num"] in valid_lap_numbers
+        assert data["comparison_lap_num"] in valid_lap_numbers
+        assert result.best_lap_time == pytest.approx(65.0)
 
         summary = json.loads((tmp_path / "session_history.jsonl").read_text().strip())
-        assert summary["best_lap_time_s"] == pytest.approx(60.0)
+        assert summary["best_lap_time_s"] == pytest.approx(65.0)
+        assert summary["top_speed"] == pytest.approx(100.0)
+        assert summary["laps"] == 2
 
     @pytest.mark.asyncio
-    async def test_analyze_all_invalid_session_still_produces_coaching(self, tmp_path):
-        """An all-invalid session still gets a best lap and full coaching —
-        validity is display metadata, not a gate on analysis."""
+    async def test_analyze_all_invalid_session_has_no_best_or_persisted_pb(self, tmp_path):
+        """An all-invalid session remains diagnostic and must not create PB history."""
         from src.core.telemetry_analyzer import TelemetryAnalyzer
 
         frames = []
@@ -1308,10 +1310,13 @@ class TestTelemetryAnalyzer:
             )
 
         data = html_spy.await_args.args[0]
-        assert data["best_lap_num"] == 2
-        assert result.best_lap_time == pytest.approx(59.0)
-        assert [lap["is_valid"] for lap in data["laps"]] == [False, False]
-        assert not any("No valid completed laps" in note for note in data["analysis_notes"])
+        assert data["best_lap_num"] is None
+        assert data["reference_lap_num"] is None
+        assert data["comparison_lap_num"] is None
+        assert data["analysis_mode"] == "diagnostic"
+        assert any("No valid completed laps" in note for note in data["analysis_notes"])
+        assert result.best_lap_time is None
+        assert not (tmp_path / "session_history.jsonl").exists()
 
     @pytest.mark.asyncio
     async def test_analyze_compares_with_summary_before_persisting_current_session(self, tmp_path):
