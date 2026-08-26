@@ -38,6 +38,25 @@ class TestLogParserFlow:
     """Test complete log parsing workflow."""
 
     @pytest.mark.asyncio
+    async def test_large_parse_file_yields_to_event_loop(self, tmp_path):
+        """A large one-shot parse must let sibling async work run promptly."""
+        log_file = tmp_path / "large.log"
+        log_file.write_text("unrelated log line\n" * 600)
+        parser = LogParser(log_path=str(log_file))
+        completion_order = []
+
+        async def heartbeat():
+            await asyncio.sleep(0)
+            completion_order.append("heartbeat")
+
+        heartbeat_task = asyncio.create_task(heartbeat())
+        await parser.parse_file()
+        completion_order.append("parse")
+        await heartbeat_task
+
+        assert completion_order == ["heartbeat", "parse"]
+
+    @pytest.mark.asyncio
     async def test_parse_empty_log(self, tmp_path):
         """Test parsing an empty log file."""
         log_file = tmp_path / "empty.log"

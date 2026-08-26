@@ -11,7 +11,7 @@ import sys
 import time
 import asyncio
 from datetime import datetime
-from typing import Optional, Callable, Awaitable
+from typing import AsyncIterator, Optional, Callable, Awaitable, TextIO
 from pathlib import Path
 
 # Import data models from the models module
@@ -45,6 +45,18 @@ UserDetectedCallback = Callable[[str, Optional[str]], Awaitable[None]]
 GameVersionCallback  = Callable[[str], Awaitable[None]]
 SessionEndCallback   = Callable[[], Awaitable[None]]
 SessionRestartCallback = Callable[[], Awaitable[None]]
+
+
+async def _iter_lines_cooperatively(
+    file_handle: TextIO,
+    *,
+    yield_every: int = 256,
+) -> AsyncIterator[str]:
+    """Read lines in order without monopolizing the event-loop thread."""
+    for line_number, line in enumerate(file_handle, start=1):
+        if line_number % yield_every == 0:
+            await asyncio.sleep(0)
+        yield line
 
 
 # ─── Main parser ──────────────────────────────────────────────────────────────
@@ -1975,7 +1987,7 @@ class LogParser:
 
         await self._emit_status(f"Parsing {self.log_path} …")
         with open(self.log_path, "r", encoding="utf-8", errors="ignore") as fh:
-            for line in fh:
+            async for line in _iter_lines_cooperatively(fh):
                 completed = self._process_line(line)
                 if completed and self.current_session:
                     await self._emit_lap(self.current_session, completed)
@@ -2021,7 +2033,9 @@ class LogParser:
 
                 # ── Historical pass ────────────────────────────────────────────────
                 historical_laps = 0
-                for line in fh:
+                async for line in _iter_lines_cooperatively(fh):
+                    if not self._running:
+                        return
                     try:
                         lap = self._process_line(line)
                         if lap:
