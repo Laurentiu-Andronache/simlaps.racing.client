@@ -616,11 +616,11 @@ def decode_physics_ac(data: bytes) -> Optional[Physics]:
 #   across 42 s of lap 1) where physics dead-reckoning periodically returned
 #   0.0 — confirming the graphics value is the authoritative source.
 #
-# The 15 ``bool`` fields documented between ``rpm`` and ``display_speed_kmh``
-# are skipped; the doc's bool-count appears to disagree with reality and we
-# don't currently need them. Sub-structs (tyre states, damage, electronics,
+# ACE 0.9.0 live captures confirm that the 15 documented ``bool`` fields
+# between ``rpm`` and ``display_speed_kmh`` occupy consecutive bytes 42..56.
+# Sub-structs (tyre states, damage, electronics,
 # pit info, instrumentation, session/timing state, assists, car_coordinates)
-# are also skipped — only their fixed sizes matter for offset arithmetic.
+# remain skipped — only their fixed sizes matter for offset arithmetic.
 GRAPHICS_EVO_MIN_SIZE = 4096
 
 # Top-level scalar offsets (0-indexed bytes from start of buffer).
@@ -631,6 +631,21 @@ _GE_FOCUSED_CAR_ID_B = 16
 _GE_PLAYER_CAR_ID_A = 24
 _GE_PLAYER_CAR_ID_B = 32
 _GE_RPM = 40
+_GE_IS_RPM_LIMITER_ON = 42
+_GE_IS_CHANGE_UP_RPM = 43
+_GE_IS_CHANGE_DOWN_RPM = 44
+_GE_TC_ACTIVE = 45
+_GE_ABS_ACTIVE = 46
+_GE_ESC_ACTIVE = 47
+_GE_LAUNCH_ACTIVE = 48
+_GE_IS_IGNITION_ON = 49
+_GE_IS_ENGINE_RUNNING = 50
+_GE_KERS_IS_CHARGING = 51
+_GE_IS_WRONG_WAY = 52
+_GE_IS_DRS_AVAILABLE = 53
+_GE_BATTERY_IS_CHARGING = 54
+_GE_IS_MAX_KJ_PER_LAP_REACHED = 55
+_GE_IS_MAX_CHARGE_KJ_PER_LAP_REACHED = 56
 _GE_DISPLAY_SPEED_KMH = 58
 _GE_DISPLAY_SPEED_MPH = 60
 _GE_DISPLAY_SPEED_MS = 62
@@ -852,6 +867,21 @@ def decode_graphics_evo(data: bytes) -> Optional[Dict[str, Any]]:
         packet_id = struct.unpack_from("<i", data, _GE_PACKET_ID)[0]
         status = struct.unpack_from("<i", data, _GE_STATUS)[0]
         rpm = struct.unpack_from("<H", data, _GE_RPM)[0]
+        is_rpm_limiter_on = bool(data[_GE_IS_RPM_LIMITER_ON])
+        is_change_up_rpm = bool(data[_GE_IS_CHANGE_UP_RPM])
+        is_change_down_rpm = bool(data[_GE_IS_CHANGE_DOWN_RPM])
+        tc_active = bool(data[_GE_TC_ACTIVE])
+        abs_active = bool(data[_GE_ABS_ACTIVE])
+        esc_active = bool(data[_GE_ESC_ACTIVE])
+        launch_active = bool(data[_GE_LAUNCH_ACTIVE])
+        is_ignition_on = bool(data[_GE_IS_IGNITION_ON])
+        is_engine_running = bool(data[_GE_IS_ENGINE_RUNNING])
+        kers_is_charging = bool(data[_GE_KERS_IS_CHARGING])
+        is_wrong_way = bool(data[_GE_IS_WRONG_WAY])
+        is_drs_available = bool(data[_GE_IS_DRS_AVAILABLE])
+        battery_is_charging = bool(data[_GE_BATTERY_IS_CHARGING])
+        is_max_kj_per_lap_reached = bool(data[_GE_IS_MAX_KJ_PER_LAP_REACHED])
+        is_max_charge_kj_per_lap_reached = bool(data[_GE_IS_MAX_CHARGE_KJ_PER_LAP_REACHED])
         display_speed_kmh = struct.unpack_from("<h", data, _GE_DISPLAY_SPEED_KMH)[0]
         display_speed_mph = struct.unpack_from("<h", data, _GE_DISPLAY_SPEED_MPH)[0]
         gear_int = struct.unpack_from("<h", data, _GE_GEAR_INT)[0]
@@ -1081,6 +1111,21 @@ def decode_graphics_evo(data: bytes) -> Optional[Dict[str, Any]]:
         # ── Powertrain / inputs
         "rpm": rpm,
         "rpm_percent": rpm_percent,
+        "is_rpm_limiter_on": is_rpm_limiter_on,
+        "is_change_up_rpm": is_change_up_rpm,
+        "is_change_down_rpm": is_change_down_rpm,
+        "tc_active": tc_active,
+        "abs_active": abs_active,
+        "esc_active": esc_active,
+        "launch_active": launch_active,
+        "is_ignition_on": is_ignition_on,
+        "is_engine_running": is_engine_running,
+        "kers_is_charging": kers_is_charging,
+        "is_wrong_way": is_wrong_way,
+        "is_drs_available": is_drs_available,
+        "battery_is_charging": battery_is_charging,
+        "is_max_kj_per_lap_reached": is_max_kj_per_lap_reached,
+        "is_max_charge_kj_per_lap_reached": is_max_charge_kj_per_lap_reached,
         "gear_int": gear_int,
         "max_gears": max_gears,
         "engine_type": engine_type,
