@@ -10,6 +10,7 @@ import ctypes
 import json
 import os
 import sys
+import tempfile
 import time
 import traceback
 from dataclasses import asdict, dataclass, field
@@ -24,7 +25,7 @@ from src.core.telemetry_decoder import (
 from src.models import SharedSessionManager
 from src.utils.structured_logger import log_debug, log_info, log_warning, log_error, log_exception, Component
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Callable, NamedTuple, TextIO
+from typing import Any, Dict, Iterator, List, Optional, Callable, NamedTuple, TextIO
 
 # Windows-specific imports for safe shared memory access. Keep the public
 # handle defined on every platform so tests and callers can replace the
@@ -250,6 +251,14 @@ class TelemetryCapture:
     # Once lap boundaries are recorded we skip idle timeout entirely and rely
     # on the "remove car" log signal as the authoritative session-end trigger.
     IDLE_TIMEOUT_SECONDS = 120.0
+    # Full telemetry is retained on disk after this many resident frames.
+    # At 20 Hz this keeps roughly two minutes of the active session in RAM;
+    # older frames remain ordered in the private spool until finalization.
+    MAX_RESIDENT_FRAMES = 2_000
+    # A corrupt/unavailable temp directory must not turn into an unbounded
+    # memory fallback.  Stopping at the ceiling preserves all frames already
+    # captured and lets the normal stop path analyze complete laps only.
+    MAX_SPOOL_BYTES = 512 * 1024 * 1024
 
     def __init__(
         self,
@@ -258,6 +267,7 @@ class TelemetryCapture:
         debug_logs: bool = False,
         session_manager: Optional[SharedSessionManager] = None,
         record_frames: bool = True,
+        resident_frame_limit: Optional[int] = None,
     ):
         # ``debug_logs`` gates three on-disk artefacts that are only useful
         # for reverse-engineering / capture-loop debugging:
@@ -279,6 +289,17 @@ class TelemetryCapture:
         self._record_frames = record_frames
         self._hz = hz
         self._frames: List[FrameData] = []
+        self._max_resident_frames = max(
+            1,
+            int(resident_frame_limit or self.MAX_RESIDENT_FRAMES),
+        )
+        self._spool_path: Optional[str] = None
+        self._spool_file: Optional[TextIO] = None
+        self._spooled_frame_count = 0
+        self._frame_count = 0
+        self._retention_limit_reached = False
+        self._spool_read_failed = False
+        self._static_snapshot: Optional[Dict[str, Any]] = None
         self._running = False
         self._task: Optional[asyncio.Task] = None
         self._readers: Dict[str, RegionReader] = {}
@@ -325,14 +346,14 @@ class TelemetryCapture:
         if was_recording and not record:
             # Switching to validity-only — drop buffered frames to free
             # memory and prevent stale data from being analyzed later.
-            self._frames.clear()
+            self._clear_frame_storage()
             self._lap_boundaries.clear()
             self._recording_awaiting_boundary = False
             self._awaiting_lap_time_ms = None
             log_info(Component.TELEMETRY, "Switched to validity-only mode",
                      frames_dropped="cleared")
         elif record and not was_recording:
-            self._frames.clear()
+            self._clear_frame_storage()
             self._lap_boundaries.clear()
             self._recording_awaiting_boundary = self._running
             self._awaiting_lap_time_ms = None
@@ -394,7 +415,117 @@ class TelemetryCapture:
 
     def get_frame_count(self) -> int:
         """Get number of captured frames."""
-        return len(self._frames)
+        return self._frame_count or len(self._frames)
+
+    def _close_spool(self, *, remove: bool = False) -> None:
+        """Close and optionally remove the private frame spool."""
+        if self._spool_file is not None:
+            try:
+                self._spool_file.flush()
+                self._spool_file.close()
+            except OSError:
+                pass
+            self._spool_file = None
+        if remove and self._spool_path:
+            try:
+                os.unlink(self._spool_path)
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                log_warning(Component.TELEMETRY, "Could not remove telemetry spool", error=str(exc))
+            self._spool_path = None
+
+    def _clear_frame_storage(self) -> None:
+        """Discard both resident and spooled frames."""
+        self._close_spool(remove=True)
+        self._frames.clear()
+        self._spooled_frame_count = 0
+        self._frame_count = 0
+        self._retention_limit_reached = False
+        self._spool_read_failed = False
+        self._static_snapshot = None
+
+    def _ensure_spool(self) -> bool:
+        if self._spool_file is not None:
+            return True
+        try:
+            if self._spool_path:
+                self._spool_file = open(self._spool_path, "a", encoding="utf-8")
+            else:
+                spool_fd, spool_path = tempfile.mkstemp(
+                    prefix="simlaps-telemetry-",
+                    suffix=".jsonl",
+                )
+                self._spool_path = spool_path
+                self._spool_file = os.fdopen(spool_fd, "a", encoding="utf-8")
+            return True
+        except OSError as exc:
+            log_error(Component.TELEMETRY, "Could not create telemetry spool", error=str(exc))
+            return False
+
+    def _spool_frame(self, frame: FrameData) -> bool:
+        """Write one frame to disk, enforcing the hard spool ceiling."""
+        try:
+            encoded = json.dumps(frame.to_dict(), separators=(",", ":")) + "\n"
+            current_size = os.path.getsize(self._spool_path) if self._spool_path else 0
+            if current_size + len(encoded.encode("utf-8")) > self.MAX_SPOOL_BYTES:
+                log_error(
+                    Component.TELEMETRY,
+                    "Telemetry spool ceiling reached; finalizing capture",
+                    max_bytes=self.MAX_SPOOL_BYTES,
+                )
+                return False
+            if not self._ensure_spool():
+                return False
+            assert self._spool_file is not None
+            self._spool_file.write(encoded)
+            self._spool_file.flush()
+            self._spooled_frame_count += 1
+            return True
+        except (OSError, TypeError, ValueError) as exc:
+            log_error(Component.TELEMETRY, "Could not spool telemetry frame", error=str(exc))
+            return False
+
+    def _retain_frame(self, frame: FrameData) -> bool:
+        """Retain a frame without allowing the resident buffer to grow unbounded."""
+        self._frames.append(frame)
+        self._frame_count += 1
+        while len(self._frames) > self._max_resident_frames:
+            oldest = self._frames.pop(0)
+            if self._spool_frame(oldest):
+                continue
+            # Keep the frame rather than silently dropping it.  The capture
+            # loop stops immediately, so this is at most one frame over the
+            # configured resident ceiling and finalization remains lossless.
+            self._frames.insert(0, oldest)
+            self._retention_limit_reached = True
+            self._stop_reason = "telemetry_retention_limit"
+            self._running = False
+            return False
+        return True
+
+    def _iter_all_frames(self) -> Iterator[FrameData]:
+        """Yield spooled frames followed by the resident tail in order."""
+        self._spool_read_failed = False
+        self._close_spool()
+        if self._spool_path:
+            try:
+                with open(self._spool_path, "r", encoding="utf-8") as spool:
+                    for line in spool:
+                        payload = json.loads(line)
+                        yield FrameData(**payload)
+            except (OSError, TypeError, ValueError) as exc:
+                log_error(Component.TELEMETRY, "Could not read telemetry spool", error=str(exc))
+                self._spool_read_failed = True
+                return
+        yield from self._frames
+
+    def _materialize_frames(self) -> List[FrameData]:
+        frames = list(self._iter_all_frames())
+        # Never hand the analyzer a resident tail when the older spooled
+        # prefix could not be read: that would create a misleading partial
+        # report. The next lifecycle cleanup removes the failed spool.
+        return [] if self._spool_read_failed else frames
 
     def record_lap_boundary(
         self,
@@ -419,7 +550,7 @@ class TelemetryCapture:
             return
 
         if self._recording_awaiting_boundary:
-            self._frames.clear()
+            self._clear_frame_storage()
             self._lap_boundaries.clear()
             self._recording_awaiting_boundary = False
             self._awaiting_lap_time_ms = None
@@ -437,7 +568,9 @@ class TelemetryCapture:
         # Analyzer track points are indexed relative to the retained frame
         # buffer. Absolute sample numbers continue across the armed outlap and
         # therefore point at the wrong lap after that prefix is discarded.
-        frame_idx = len(self._frames) - 1
+        # The boundary index is relative to the complete retained sequence,
+        # not the resident tail after older frames were spooled.
+        frame_idx = (self._frame_count or len(self._frames)) - 1
         self._lap_boundaries.append(
             LapBoundary(frame_idx, lap_time_ms, lap_number, lap_type)
         )
@@ -478,7 +611,7 @@ class TelemetryCapture:
             and completed_laps == 0
             and current <= 1_000
         ):
-            self._frames.clear()
+            self._clear_frame_storage()
             self._lap_boundaries.clear()
             self._recording_awaiting_boundary = False
             self._awaiting_lap_time_ms = None
@@ -494,7 +627,7 @@ class TelemetryCapture:
         if previous is None or previous < 5_000 or current > 1_000:
             return False
 
-        self._frames.clear()
+        self._clear_frame_storage()
         self._lap_boundaries.clear()
         self._recording_awaiting_boundary = False
         self._awaiting_lap_time_ms = None
@@ -525,7 +658,7 @@ class TelemetryCapture:
                 os.makedirs(output_dir, exist_ok=True)
 
             with open(output_path, "w", encoding="utf-8") as f:
-                for frame in self._frames:
+                for frame in self._iter_all_frames():
                     dump_entry = {
                         "timestamp": frame.timestamp,
                         "frame_number": frame.frame_number,
@@ -535,7 +668,7 @@ class TelemetryCapture:
                     }
                     f.write(json.dumps(dump_entry) + "\n")
 
-            log_debug(Component.TELEMETRY, "Saved raw dump", path=output_path, frames=len(self._frames))
+            log_debug(Component.TELEMETRY, "Saved raw dump", path=output_path, frames=self.get_frame_count())
             return True
         except Exception as e:
             log_exception(Component.TELEMETRY, "Error saving raw dump", e)
@@ -612,7 +745,7 @@ class TelemetryCapture:
 
     def get_frames(self) -> List[FrameData]:
         """Get captured frames."""
-        return self._frames.copy()
+        return self._materialize_frames()
 
     def get_metadata(self) -> Optional[CaptureMetadata]:
         """Get capture metadata."""
@@ -755,6 +888,13 @@ class TelemetryCapture:
 
         static_data = frame.get("static") or {}
         if isinstance(static_data, dict) and not static_data.get("error"):
+            # The static mapping describes session/car capabilities and is
+            # normally constant. Reuse the decoded dictionary so every frame
+            # does not retain an identical copy.
+            if static_data and static_data == self._static_snapshot:
+                frame["static"] = self._static_snapshot
+            elif static_data:
+                self._static_snapshot = static_data
             self._session_manager.update_from_static_shm(static_data)
 
         physics_data = frame.get("physics") or {}
@@ -808,7 +948,7 @@ class TelemetryCapture:
             log_info(Component.TELEMETRY, "Game not running yet - will retry in capture loop")
 
         self._running = True
-        self._frames = []
+        self._clear_frame_storage()
         self._lap_boundaries = []
         self._recording_awaiting_boundary = self._record_frames
         self._awaiting_lap_time_ms = None
@@ -853,13 +993,14 @@ class TelemetryCapture:
             # are debug artefacts only - gated on the same setting as the
             # normal-path dumps so a disabled telemetry-debug-logs toggle
             # is honored even on the crash branch.
-            if self._frames and self._debug_logs:
+            if self.get_frame_count() and self._debug_logs:
                 prefix = self._output_prefix or self._make_output_prefix()
                 compat_dump_path = os.path.join(self._output_dir, f"crash_capture_{prefix}.jsonl")
                 raw_dump_path = os.path.join(self._output_dir, f"crash_dump_{prefix}.jsonl")
                 self.export_to_jsonl(compat_dump_path)
                 self.save_raw_dump(raw_dump_path)
                 log_info(Component.TELEMETRY, "Emergency dump saved", path=raw_dump_path)
+            self._clear_frame_storage()
 
     async def _capture_loop(self):
         """Main capture loop with continuous retry for game startup."""
@@ -947,7 +1088,7 @@ class TelemetryCapture:
                         self._record_frames
                         and not self._recording_awaiting_boundary
                     ):
-                        self._frames.append(frame)
+                        self._retain_frame(frame)
                     frame_num += 1
                     self._all_disconnected_since = None
                     
@@ -1021,7 +1162,7 @@ class TelemetryCapture:
         # Save raw dump for reverse-engineering if we captured frames.
         # Gated behind the telemetry-debug-logs setting because in normal
         # use these files are large and not surfaced in the UI.
-        if self._frames and self._debug_logs:
+        if self.get_frame_count() and self._debug_logs:
             prefix = self._output_prefix or self._make_output_prefix()
             compat_dump_path = os.path.join(self._output_dir, f"capture_{prefix}.jsonl")
             raw_dump_path = os.path.join(self._output_dir, f"raw_dump_{prefix}.jsonl")
@@ -1047,9 +1188,16 @@ class TelemetryCapture:
             List of captured frames
         """
         if not self._running:
-            return self._frames.copy()
+            frames = self.get_frames()
+            # Auto-stop normally calls ``clear`` after analysis, but callers
+            # may finalize an already-ended capture directly. Do not leave a
+            # private spool behind in that case; preserve legacy resident
+            # list behavior for callers that supplied ``_frames`` directly.
+            if self._spool_path:
+                self._clear_frame_storage()
+            return frames
 
-        log_info(Component.TELEMETRY, "Capture stopped", reason=reason, frames=len(self._frames))
+        log_info(Component.TELEMETRY, "Capture stopped", reason=reason, frames=self.get_frame_count())
         self._stop_reason = reason
         self._running = False
 
@@ -1077,7 +1225,11 @@ class TelemetryCapture:
                 pass
             self._diag_file = None
 
-        return self._frames.copy()
+        frames = self._materialize_frames()
+        # The caller owns the returned list; the capture must not retain a
+        # second unbounded copy after finalization.
+        self._clear_frame_storage()
+        return frames
 
     def export_to_jsonl(self, path: str) -> bool:
         """Export captured frames to JSONL file for debugging.
@@ -1096,11 +1248,11 @@ class TelemetryCapture:
                     meta_dict["capture_metadata"] = self._metadata.to_dict()
                 f.write(json.dumps(meta_dict) + "\n")
 
-                for frame in self._frames:
+                for frame in self._iter_all_frames():
                     frame_dict = self._build_compat_frame_record(frame)
                     f.write(json.dumps(frame_dict) + "\n")
 
-            log_debug(Component.TELEMETRY, "Exported frames", path=path, frames=len(self._frames))
+            log_debug(Component.TELEMETRY, "Exported frames", path=path, frames=self.get_frame_count())
             return True
         except Exception as e:
             log_error(Component.TELEMETRY, "Export failed", error=str(e))
@@ -1108,7 +1260,7 @@ class TelemetryCapture:
 
     def clear(self):
         """Clear captured frames to free memory."""
-        self._frames = []
+        self._clear_frame_storage()
         self._metadata = None
 
 

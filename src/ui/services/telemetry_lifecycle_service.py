@@ -99,7 +99,8 @@ class TelemetryLifecycleService:
         analyzer — the method still finalises the capture loop cleanly.
         """
         output_prefix = telemetry_capture.get_output_prefix() if telemetry_capture else None
-        frame_count = len(telemetry_capture.get_frames()) if telemetry_capture else 0
+        frames = telemetry_capture.get_frames() if telemetry_capture else []
+        frame_count = len(frames)
         log_info(
             Component.APP,
             "Telemetry auto-stop",
@@ -115,9 +116,6 @@ class TelemetryLifecycleService:
             )
 
         if telemetry_capture:
-            frames = telemetry_capture.get_frames()
-            frame_count = len(frames)
-
             if frame_count > 0 and telemetry_analyzer is not None:
                 log_info(Component.APP, "Starting analysis", frames=frame_count)
                 try:
@@ -161,6 +159,9 @@ class TelemetryLifecycleService:
             else:
                 if home_page:
                     home_page.set_telemetry_status(TelemetryStatus.IDLE)
+            # get_frames() may materialize a disk-backed capture for analysis;
+            # release both the resident tail and temporary spool afterwards.
+            telemetry_capture.clear()
 
     async def stop_capture(
         self,
