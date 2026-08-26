@@ -28,7 +28,6 @@ classifiers = [
 dependencies = [
     "flet>=0.86.5,<0.87",
     "httpx>=0.27.0",
-    "python-dotenv>=1.0.0",
     "psutil>=5.9.0",
 ]
 
@@ -51,6 +50,7 @@ include = ["src*"]
 version = {attr = "src.version.VERSION"}
 
 [tool.setuptools.package-data]
+"src.core" = ["data/*.json"]
 "src.core.analyzer" = ["vendor/*.js", "vendor/*.md"]
 
 [tool.ruff]

@@ -60,7 +60,9 @@ No `APP_SECRET` is required for local development or testing. If `APP_SECRET` is
 venv-sim-laps-client\Scripts\python.exe -m src.main
 ```
 
-If you want to test real submissions, copy `.env.example` to `.env` and set a real `APP_SECRET` provided by a project maintainer. **Never commit `.env` or any real secret.**
+If a project maintainer explicitly authorizes a real submission test, provision
+the temporary `APP_SECRET` in that test process's environment. Do not copy a
+placeholder into a release environment, and never commit a real secret.
 
 ## Testing
 
@@ -99,9 +101,9 @@ venv-sim-laps-client\Scripts\python.exe -m mypy src/
 
 ## Things to avoid
 
-- **Do not commit secrets.** `APP_SECRET`, Discord webhook URLs, and other sensitive values are handled through `.env` (which is ignored). GitHub will reject PRs containing secrets if secret scanning is enabled, and they can never be fully removed from public history.
+- **Do not commit secrets.** `APP_SECRET`, Discord webhook URLs, and other sensitive values are provided through environment variables. GitHub will reject PRs containing secrets if secret scanning is enabled, and they can never be fully removed from public history.
 - **Do not commit build artifacts.** `dist/`, `build/`, `obfuscated/`, `__pycache__/`, `*.pyc`, and telemetry dumps are all `.gitignore`d.
-- **Do not commit generated config files.** `config.json` and `SERVER_SECRET.txt` are user-specific and ignored.
+- **Do not commit generated config files.** `config.json` and build output are user-specific and ignored.
 - **Do not modify `.env.example` to include real values.** It should remain a template.
 
 ## Building (maintainers / release only)
@@ -112,7 +114,8 @@ The packaged Windows executable is produced with:
 python build.py
 ```
 
-This requires `pyinstaller` and `pyarmor` and an `APP_SECRET` in `.env`. Contributors do not normally need to run this.
+This requires `pyinstaller` and `pyarmor`, but no `APP_SECRET`: release builds
+are intentionally secret-free and can run offline.
 
 ## License
 

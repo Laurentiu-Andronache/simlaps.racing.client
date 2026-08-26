@@ -60,7 +60,8 @@ class SimLapsApp:
     """
     Main application controller.
     
-    No authentication required - uses signed payloads with embedded secret.
+    No authentication required - uses signed payloads with an externally
+    provisioned secret when submissions are explicitly enabled.
     User identity is detected from game logs (Steam ID).
     """
     

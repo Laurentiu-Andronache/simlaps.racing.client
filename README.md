@@ -109,7 +109,7 @@ pip install pyinstaller pyarmor
 
 ### Build Commands
 
-**Standard Build (with obfuscation + secret injection):**
+**Standard Build (with obfuscation):**
 ```bash
 python build.py
 ```
@@ -119,36 +119,33 @@ python build.py
 python build.py --no-obfuscate
 ```
 
-**Use specific secret:**
-```bash
-python build.py --secret <64-char-hex-string>
-```
-
 **Clean Build Artifacts:**
 ```bash
 python build.py --clean
 ```
 
+The build validates the PyArmor package layout before invoking PyInstaller.
+The licensed Windows PyArmor run remains an external smoke test, and PyArmor
+does not protect secrets bundled in an executable.
+
 The executable will be created at `dist/SimLapsClient.exe`.
 
 ### Build Output
 
-After a successful build, you'll find:
-- `dist/SimLapsClient.exe` — The client application
-- `dist/SERVER_SECRET.txt` — The secret to add to your server's `.env`
+After a successful build, you'll find `dist/SimLapsClient.exe`. The artifact
+contains no `.env`, `APP_SECRET`, or `SERVER_SECRET.txt`.
 
 ### Server Configuration
 
-After building, add the generated secret to your server's `.env`:
+The client build does not generate or distribute server credentials. It only
+uses `APP_SECRET` when an authorized operator explicitly provisions it in the
+installed client's process environment.
 
-```env
-CLIENT_APP_SECRET=<hex-string-from-SERVER_SECRET.txt>
-```
-
-Then run the Prisma migration:
-```bash
-npx prisma migrate dev --name add_used_nonce
-```
+The current shared-secret HMAC protocol is not a safe production credential
+distribution design: anyone who receives a reusable client secret can reuse
+it. A server-issued, per-user authentication redesign is still required before
+production submissions can be enabled in distributed clients. This build does
+not change the HMAC wire schema or invent local key storage.
 
 ## Project Structure
 
@@ -265,7 +262,7 @@ sim-laps-client/
 ├── acelogs/                  # Sample ACE log files for development
 ├── plans/                    # Architecture and design planning documents
 ├── extract.py                # ACE shared memory structure extraction utility
-├── build.py                  # Build script with obfuscation and secret injection
+├── build.py                  # Secret-free release build script
 ├── requirements.txt
 ├── requirements-dev.txt
 ├── pyproject.toml

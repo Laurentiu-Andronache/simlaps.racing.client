@@ -2,7 +2,7 @@
 API Client for SimLaps server communication.
 
 Handles lap time submissions with signed payloads for anti-cheat.
-No API key required - uses embedded app secret for signing.
+No API key required - uses an externally provisioned app secret for signing.
 """
 
 import httpx
@@ -43,7 +43,8 @@ class APIClient:
     Client for communicating with the SimLaps API.
     
     Uses signed payloads instead of API keys for authentication.
-    All submissions are cryptographically signed with an embedded app secret.
+    All submissions are cryptographically signed with an externally provisioned
+    app secret. Release artifacts never contain that credential.
     """
 
     DEFAULT_SERVER_URL = "https://simlaps.racing"
@@ -600,7 +601,7 @@ class APIClient:
 
     async def test_secret(self) -> tuple[bool, str]:
         """
-        Test if the embedded secret matches the server's secret.
+        Test if the externally provisioned secret matches the server's secret.
         
         Returns:
             Tuple of (success, message)

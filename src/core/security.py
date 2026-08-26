@@ -10,9 +10,7 @@ import hashlib
 import uuid
 import time
 import os
-import sys
 from typing import Optional
-from dotenv import load_dotenv
 
 from ..utils.structured_logger import log_debug, log_info, Component
 
@@ -32,33 +30,26 @@ except ImportError:
 
 
 # =============================================================================
-# APP SECRET - Load from environment
+# APP SECRET - Load from the process environment only
 # =============================================================================
-# Load .env file if it exists (for development)
-# When running as PyInstaller executable, .env is in _MEIPASS directory
-if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
-    # Running as compiled executable - .env is bundled in _MEIPASS
-    env_path = os.path.join(sys._MEIPASS, '.env')
-    if os.path.exists(env_path):
-        load_dotenv(env_path)
-    else:
-        # Fallback: try loading from executable directory
-        env_path = os.path.join(os.path.dirname(sys.executable), '.env')
-        if os.path.exists(env_path):
-            load_dotenv(env_path)
-else:
-    # Running as script - load from project root
-    load_dotenv()
-
-# Production secret for signing payloads
-# Matches CLIENT_APP_SECRET in server .env
-# Load from environment variable, fallback to None if not set
+# Do not load .env files here. In particular, release artifacts must not carry
+# a reusable client credential. Authorized submission environments can provide
+# APP_SECRET explicitly through their process environment.
 APP_SECRET = os.environ.get("APP_SECRET")
+
+# This value was shipped as the old .env.example placeholder. Treat it as
+# absent so copying that template cannot accidentally enable submissions.
+PLACEHOLDER_APP_SECRETS = frozenset({"blahtopsecret"})
+
+
+def _has_usable_secret() -> bool:
+    """Return whether APP_SECRET is explicitly provisioned and usable."""
+    return bool(APP_SECRET and APP_SECRET.strip() not in PLACEHOLDER_APP_SECRETS)
 
 
 def is_secret_configured() -> bool:
-    """Return True when APP_SECRET is present and non-empty."""
-    return bool(APP_SECRET)
+    """Return True when a non-placeholder APP_SECRET is provisioned."""
+    return _has_usable_secret()
 
 
 def get_app_secret() -> bytes:
@@ -68,11 +59,11 @@ def get_app_secret() -> bytes:
     Raises RuntimeError if APP_SECRET is not configured so the app can run without it
     until a signature is actually required.
     """
-    if not APP_SECRET:
+    if not _has_usable_secret():
         raise RuntimeError(
             "APP_SECRET environment variable not set. "
-            "Please set APP_SECRET in your .env file or environment. "
-            "See .env.example for the required format."
+            "Provision it explicitly in the process environment for authorized "
+            "submission tests."
         )
     return APP_SECRET.encode('utf-8')
 
@@ -365,5 +356,5 @@ def get_security_status() -> dict:
         'game_running': game_status.value if isinstance(game_status, GameProcessStatus) else game_status,
         'game_process': game_info,
         'psutil_available': PSUTIL_AVAILABLE,
-        'secret_configured': bool(APP_SECRET),
+        'secret_configured': is_secret_configured(),
     }
