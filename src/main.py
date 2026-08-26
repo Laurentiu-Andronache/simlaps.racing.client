@@ -24,6 +24,12 @@ else:
         sys.path.insert(0, parent_path)
 
 from src.ui.app import run_app
+from src.utils.structured_logger import (
+    Component,
+    log_error,
+    log_exception,
+    log_info,
+)
 
 
 def main():
@@ -34,11 +40,9 @@ def main():
             msg = context.get("message", "Unhandled exception in asyncio task")
             exception = context.get("exception")
             if exception:
-                print(f"\n[ASYNCIO ERROR] {msg}: {exception}")
-                import traceback
-                traceback.print_exception(type(exception), exception, exception.__traceback__)
+                log_exception(Component.APP, msg, exception)
             else:
-                print(f"\n[ASYNCIO ERROR] {msg}")
+                log_error(Component.APP, msg)
         
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -46,14 +50,10 @@ def main():
         
         run_app()
     except KeyboardInterrupt:
-        print("\nShutting down...")
+        log_info(Component.APP, "Shutting down")
         sys.exit(0)
     except Exception as e:
-        import traceback
-        print(f"\n{'='*50}")
-        print(f"Fatal error: {e}")
-        print(f"{'='*50}")
-        traceback.print_exc()
+        log_exception(Component.APP, "Fatal error", e)
         # Keep console open so user can see the error
         if getattr(sys, 'frozen', False):
             input("\nPress Enter to exit...")
@@ -65,11 +65,7 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        import traceback
-        print(f"\n{'='*50}")
-        print(f"Startup error: {e}")
-        print(f"{'='*50}")
-        traceback.print_exc()
+        log_exception(Component.APP, "Startup error", e)
         if getattr(sys, 'frozen', False):
             input("\nPress Enter to exit...")
         sys.exit(1)
