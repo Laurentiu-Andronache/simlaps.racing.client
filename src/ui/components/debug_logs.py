@@ -14,6 +14,7 @@ from datetime import datetime
 import flet as ft
 
 from .feedback import show_snackbar
+from .mount_safe import safe_update
 
 
 class SimpleLogCapture:
@@ -24,12 +25,15 @@ class SimpleLogCapture:
         self.lock = threading.Lock()
         self.capture_enabled = True  # Start enabled by default
 
-    def add_log(self, message):
+    def add_log(self, message, *, already_timestamped=False):
         """Add a log entry if capture is enabled."""
         if self.capture_enabled:
-            timestamp = time.strftime("%H:%M:%S")
             with self.lock:
-                self.logs.append(f"[{timestamp}] {message}")
+                if already_timestamped:
+                    self.logs.append(message)
+                else:
+                    timestamp = time.strftime("%H:%M:%S")
+                    self.logs.append(f"[{timestamp}] {message}")
 
     def get_logs(self) -> str:
         """Get captured logs as string."""
@@ -46,6 +50,62 @@ class SimpleLogCapture:
 
 # Global log capture instance
 _log_capture = SimpleLogCapture()
+
+_capture_lock = threading.RLock()
+_capture_installed = False
+_original_stdout = None
+_original_stderr = None
+_stdout_writer = None
+_stderr_writer = None
+
+
+class _UniversalWriter:
+    """Mirror a stream while capturing ordinary writes in the debug viewer."""
+
+    def __init__(self, original, capture):
+        self.original = original
+        self.capture = capture
+
+    def write(self, text):
+        if text is None:
+            return 0
+        if not isinstance(text, str):
+            text = str(text)
+
+        if self.original is not None:
+            try:
+                self.original.write(text)
+            except (OSError, IOError, ValueError):
+                # Expected when the underlying stream is closed during shutdown.
+                pass
+
+        if text.strip():
+            for line in text.rstrip().splitlines():
+                if line.strip():
+                    self.capture.add_log(line.rstrip())
+
+        return len(text)
+
+    def flush(self):
+        if self.original is not None:
+            try:
+                self.original.flush()
+            except (OSError, IOError, ValueError):
+                pass
+
+    def isatty(self):
+        if self.original is None:
+            return False
+        try:
+            return self.original.isatty()
+        except (OSError, IOError, AttributeError, ValueError):
+            return False
+
+    def __getattr__(self, name):
+        """Preserve stream attributes used by libraries writing to stdout/stderr."""
+        if self.original is None:
+            raise AttributeError(name)
+        return getattr(self.original, name)
 
 
 class DebugLogsViewer:
@@ -105,7 +165,7 @@ class DebugLogsViewer:
         """Clear logs."""
         _log_capture.clear_logs()
         self.logs_text.value = "Logs cleared."
-        self.logs_text.update()
+        safe_update(self.logs_text)
 
     def _export_game_logs(self, e=None):
         """Export game logs to file."""
@@ -205,75 +265,94 @@ class DebugLogsViewer:
 
 
 def start_log_capture():
-    """Start the global log capture system (smart, non-intrusive)."""
-    try:
-        is_frozen = getattr(sys, "frozen", False)
+    """Install the global log capture system once and return its active state."""
+    global _capture_installed, _original_stdout, _original_stderr
+    global _stdout_writer, _stderr_writer
 
-        original_stdout = getattr(sys, "stdout", None) or getattr(sys, "__stdout__", None)
-        original_stderr = getattr(sys, "stderr", None) or getattr(sys, "__stderr__", None)
+    with _capture_lock:
+        if _capture_installed:
+            return False
 
-        class UniversalWriter:
-            def __init__(self, original, capture):
-                self.original = original
-                self.capture = capture
-
-            def write(self, text):
-                if text is None:
-                    return 0
-                if not isinstance(text, str):
-                    text = str(text)
-
-                if self.original is not None:
-                    try:
-                        self.original.write(text)
-                    except (OSError, IOError, ValueError):
-                        # Expected: stream closed during shutdown or redirected
-                        # Silently ignore - capture continues regardless of original stream
-                        pass
-
-                if text.strip():
-                    for line in text.rstrip().splitlines():
-                        if line.strip():
-                            self.capture.add_log(line.rstrip())
-
-                return len(text)
-
-            def flush(self):
-                if self.original is not None:
-                    try:
-                        self.original.flush()
-                    except (OSError, IOError, ValueError):
-                        # Expected: stream closed during shutdown
-                        # Silently ignore - capture continues regardless
-                        pass
-
-            def isatty(self):
-                if self.original is None:
-                    return False
-                try:
-                    return self.original.isatty()
-                except (OSError, IOError, AttributeError):
-                    # Expected: stream closed or missing isatty method
-                    # Return False as safe default
-                    return False
-
-        sys.stdout = UniversalWriter(original_stdout, _log_capture)
-        sys.stderr = UniversalWriter(original_stderr, _log_capture)
-
-        _log_capture.add_log("[LOGS] Universal debug capture enabled")
-        _log_capture.add_log(f"[LOGS] Running as built executable: {is_frozen}")
-
-    except Exception as e:
-        _log_capture.add_log(f"[LOGS] Failed to start log capture: {e}")
         try:
-            import traceback
+            is_frozen = getattr(sys, "frozen", False)
 
-            _log_capture.add_log(traceback.format_exc())
-        except (ImportError, OSError, IOError):
-            # Expected: traceback module unavailable or capture write failed
-            # Silently ignore - we've already logged the primary error
-            pass
+            _original_stdout = getattr(sys, "stdout", None) or getattr(sys, "__stdout__", None)
+            _original_stderr = getattr(sys, "stderr", None) or getattr(sys, "__stderr__", None)
+            _stdout_writer = _UniversalWriter(_original_stdout, _log_capture)
+            _stderr_writer = _UniversalWriter(_original_stderr, _log_capture)
+            sys.stdout = _stdout_writer
+            sys.stderr = _stderr_writer
+            _capture_installed = True
+            _log_capture.capture_enabled = True
 
+            _log_capture.add_log("[LOGS] Universal debug capture enabled")
+            _log_capture.add_log(f"[LOGS] Running as built executable: {is_frozen}")
+            return True
+        except Exception as e:
+            # Restore whichever streams were replaced if installation failed partway.
+            if sys.stdout is _stdout_writer:
+                sys.stdout = _original_stdout
+            if sys.stderr is _stderr_writer:
+                sys.stderr = _original_stderr
+            _stdout_writer = None
+            _stderr_writer = None
+            _original_stdout = None
+            _original_stderr = None
+            _capture_installed = False
+            _log_capture.add_log(f"[LOGS] Failed to start log capture: {e}")
+            try:
+                import traceback
+
+                _log_capture.add_log(traceback.format_exc())
+            except (ImportError, OSError, IOError):
+                pass
+            return False
+
+
+def stop_log_capture():
+    """Restore streams installed by :func:`start_log_capture` exactly once."""
+    global _capture_installed, _original_stdout, _original_stderr
+    global _stdout_writer, _stderr_writer
+
+    with _capture_lock:
+        if not _capture_installed:
+            return False
+
+        # Do not overwrite a stream another owner installed after us.
+        if sys.stdout is _stdout_writer:
+            sys.stdout = _original_stdout
+        if sys.stderr is _stderr_writer:
+            sys.stderr = _original_stderr
+
+        _capture_installed = False
+        _log_capture.capture_enabled = False
+        _stdout_writer = None
+        _stderr_writer = None
+        _original_stdout = None
+        _original_stderr = None
+        return True
+
+
+def emit_structured_log(message: str, stream=None, *, capture=True):
+    """Capture one preformatted structured event and optionally mirror it once.
+
+    Structured logger messages already include a timestamp.  The event is sent
+    directly to the viewer and console output bypasses our stream wrappers so a
+    warning/error cannot be captured a second time.
+    """
+    if capture:
+        _log_capture.add_log(message, already_timestamped=True)
+    if stream is None:
+        return
+
+    target = getattr(stream, "original", stream)
+    if target is None:
+        return
+    try:
+        target.write(f"{message}\n")
+        target.flush()
+    except (OSError, IOError, ValueError, AttributeError):
+        pass
 
 
 def show_debug_logs(page: ft.Page):
@@ -283,6 +362,6 @@ def show_debug_logs(page: ft.Page):
 
 
 # Global function to add logs from anywhere
-def add_debug_log(message: str):
+def add_debug_log(message: str, *, already_timestamped=False):
     """Add a debug log entry."""
-    _log_capture.add_log(message)
+    _log_capture.add_log(message, already_timestamped=already_timestamped)

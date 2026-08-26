@@ -220,6 +220,88 @@ def test_from_dict_does_not_mutate_caller_dict() -> None:
     assert copy_for_call == original
 
 
+@pytest.mark.parametrize("bad_document", [None, [], ["theme", "light"], "config"])
+def test_from_dict_requires_top_level_object(bad_document) -> None:
+    config = AppConfig.from_dict(bad_document)
+
+    assert config == AppConfig()
+
+
+def test_from_dict_rejects_wrong_types_and_unsafe_ranges() -> None:
+    config = AppConfig.from_dict(
+        {
+            "auto_submit": 1,
+            "window_width": True,
+            "window_height": -1,
+            "window_x": "off-screen",
+            "max_history_items": 0,
+            "server_url": {"url": "https://example.test"},
+            "log_path": ["C:/logs"],
+            "telemetry_output_path": None,
+            "discord_webhook_url": ["https://discord.test/webhook"],
+            "theme": "blue",
+        }
+    )
+
+    defaults = AppConfig()
+    assert config.auto_submit is defaults.auto_submit
+    assert config.window_width == defaults.window_width
+    assert config.window_height == defaults.window_height
+    assert config.window_x is defaults.window_x
+    assert config.max_history_items == defaults.max_history_items
+    assert config.server_url == defaults.server_url
+    assert config.log_path == defaults.log_path
+    assert config.telemetry_output_path == defaults.telemetry_output_path
+    assert config.discord_webhook_url is None
+    assert config.theme == defaults.theme
+
+
+def test_load_repairs_invalid_json_object_and_keeps_backup(tmp_path, capsys) -> None:
+    config_path = tmp_path / "config.json"
+    original = {
+        "server_url": "https://secret-user:secret-pass@example.test",
+        "window_width": False,
+        "unknown_future_field": {"ignored": True},
+    }
+    config_path.write_text(json.dumps(original), encoding="utf-8")
+
+    config = ConfigManager(config_path=config_path).load()
+
+    assert config.server_url == original["server_url"]
+    assert config.window_width == AppConfig().window_width
+    backup = tmp_path / "config.json.bak"
+    assert json.loads(backup.read_text(encoding="utf-8")) == original
+    repaired = json.loads(config_path.read_text(encoding="utf-8"))
+    assert repaired["window_width"] == AppConfig().window_width
+    assert "unknown_future_field" not in repaired
+    assert "secret-pass" not in capsys.readouterr().out
+
+
+def test_load_repairs_scalar_document_and_keeps_backup(tmp_path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text("[1, 2, 3]", encoding="utf-8")
+
+    config = ConfigManager(config_path=config_path).load()
+
+    assert config == AppConfig()
+    assert (tmp_path / "config.json.bak").read_text(encoding="utf-8") == "[1, 2, 3]"
+    assert json.loads(config_path.read_text(encoding="utf-8")) == AppConfig().to_dict()
+
+
+def test_load_unknown_and_missing_fields_remain_ordinary_migration(tmp_path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps({"theme": "light", "unknown_future_field": "keep-compatible"}),
+        encoding="utf-8",
+    )
+
+    config = ConfigManager(config_path=config_path).load()
+
+    assert config.theme == "light"
+    assert config.max_history_items == AppConfig().max_history_items
+    assert not (tmp_path / "config.json.bak").exists()
+
+
 def test_set_replaces_and_persists_config(tmp_path) -> None:
     manager = ConfigManager(config_path=tmp_path / "config.json")
     manager.load()

@@ -6,6 +6,7 @@ Tests server communication, lap submission, and error handling.
 
 import pytest
 import asyncio
+import httpx
 from unittest.mock import AsyncMock, MagicMock, patch
 from datetime import datetime
 
@@ -860,3 +861,117 @@ class TestNoSecret:
         assert success is False
         assert "offline" in message.lower()
         mock_get.assert_not_called()
+
+
+def _response_with_body(status_code, body, *, parsed=None, parse_error=None):
+    """Build a response double that exercises the defensive decoder."""
+    response = MagicMock()
+    response.status_code = status_code
+    response.content = body
+    if parse_error is not None:
+        response.json.side_effect = parse_error
+    else:
+        response.json.return_value = parsed
+    response.headers = {}
+    return response
+
+
+@pytest.mark.usefixtures("configured_app_secret")
+class TestMalformedAPIResponses:
+    """Malformed remote bodies must never escape the API boundary."""
+
+    @pytest.mark.parametrize("status_code", [201, 400, 409, 422, 403])
+    @pytest.mark.parametrize(
+        "body, parsed",
+        [
+            (b"", None),
+            (b"<html>upstream failure</html>", None),
+            (b"[\"not an object\"]", ["not an object"]),
+            (b"\"scalar\"", "scalar"),
+            (b"{\"error\": {\"nested\": true}}", {"error": {"nested": True}}),
+            (b"{\"error\": 42}", {"error": 42}),
+        ],
+    )
+    def test_submit_statuses_map_malformed_body_to_stable_result(
+        self, status_code, body, parsed
+    ):
+        response = _response_with_body(status_code, body, parsed=parsed)
+        result = APIClient()._map_submission_response(response, {})
+
+        assert isinstance(result, SubmissionResult)
+        assert "upstream failure" not in result.message
+        assert "nested" not in result.message
+        assert "42" not in result.message
+        response.json.assert_called_once()
+
+    @pytest.mark.parametrize("status_code", [201, 400, 409, 422, 403])
+    def test_submit_oversized_body_is_not_parsed_or_exposed(self, status_code):
+        response = _response_with_body(
+            status_code,
+            b"x" * (APIClient.MAX_RESPONSE_BYTES + 1),
+            parse_error=AssertionError("oversized body must not be parsed"),
+        )
+        result = APIClient()._map_submission_response(response, {})
+
+        assert isinstance(result, SubmissionResult)
+        assert "x" * 100 not in result.message
+        response.json.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "endpoint, body",
+        [
+            ("test_secret", b"<html>error</html>"),
+            ("test_secret", b"[]"),
+            ("check_for_updates", b"42"),
+            ("check_for_updates", b"<html>error</html>"),
+        ],
+    )
+    async def test_test_and_update_endpoints_hide_malformed_bodies(
+        self, endpoint, body, monkeypatch
+    ):
+        monkeypatch.setattr("src.core.api_client.is_secret_configured", lambda: True)
+        response = _response_with_body(
+            200, body, parse_error=ValueError("raw parser detail")
+        )
+        request_method = "post" if endpoint == "test_secret" else "get"
+        with patch.object(
+            httpx.AsyncClient, request_method, new_callable=AsyncMock
+        ) as request:
+            request.return_value = response
+            result = await getattr(APIClient(), endpoint)()
+
+        if endpoint == "test_secret":
+            assert result[0] is False
+            assert "raw parser detail" not in result[1]
+            assert "Invalid response" in result[1]
+        else:
+            assert result == {"available": False}
+        response.json.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_connection_rejects_malformed_tracks_body(self):
+        response = _response_with_body(
+            200,
+            b"<html>not tracks</html>",
+            parse_error=ValueError("parser details"),
+        )
+        with patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock) as request:
+            request.return_value = response
+            success, message = await APIClient().test_connection()
+
+        assert success is False
+        assert message == APIClient.INVALID_RESPONSE_MESSAGE
+        assert "parser details" not in message
+        response.json.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_test_secret_500_rejects_malformed_body(self):
+        response = _response_with_body(500, b"[]", parsed=[])
+        with patch.object(httpx.AsyncClient, "post", new_callable=AsyncMock) as request:
+            request.return_value = response
+            success, message = await APIClient().test_secret()
+
+        assert success is False
+        assert message == "Server error"
+        response.json.assert_called_once()
