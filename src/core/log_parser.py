@@ -404,6 +404,68 @@ class LogParser:
         self._outlap_candidate_splits = {}
         self._pending_penalty_warning = False
 
+    def _reset_session_boundary(
+        self,
+        reason: str,
+        *,
+        finalize_current_session: bool,
+    ) -> None:
+        """Move the parser across a session/log boundary.
+
+        A boundary has two deliberately different contracts.  A normal game
+        start or an in-place restart finalises the old session so its final
+        completed lap remains available.  A rotated/truncated log is only a
+        new input stream: any pending lap belongs to the old stream and must
+        be discarded rather than reconciled with the new stream.
+
+        Keep all parser-side and shared-session state reset here.  In
+        particular, clearing only ``SharedSessionManager`` is insufficient:
+        a pending log lap, an already-emitted SHM lap, or the penalty dedup
+        timestamp can otherwise be matched by the first lap of the new
+        session.
+        """
+        old_session = self.current_session
+        old_pending = self._pending_lap
+        old_shm_laps = len(self._shm_emitted_laps)
+
+        if finalize_current_session:
+            self._finalise_current_session()
+        else:
+            self.current_session = None
+            self._session_active_from_logs = False
+
+        # ``_finalise_current_session`` clears the in-progress accumulator,
+        # but the explicit reset below is intentional: this helper is also
+        # used for boundaries where the old session is discarded.
+        self._reset_in_progress()
+        self._pending_lap = None
+        self._pending_lap_since = None
+        self._reconciled_lap = None
+        self._shm_emitted_laps.clear()
+        self._last_penalty_added_ts = None
+        self._current_stint = None
+        self._last_car_uuid = None
+        self._last_setup_car_uuid = None
+        self._pending_compound_ts = None
+        self._pending_compound_source_car_uuid = None
+        self._pending_compound_updates.clear()
+
+        # Reset after finalisation so the old session can be synced first, but
+        # before the caller creates/syncs the new session.  Seed the cursor
+        # from the fresh manager so old SHM completions cannot be consumed.
+        self._session_manager.reset()
+        latest_completion = self._session_manager.get_latest_lap_completion()
+        self._last_shm_completion_observed_at = (
+            latest_completion.observed_at if latest_completion else 0.0
+        )
+
+        log_debug(
+            Component.LOG_PARSER,
+            f"[BOUNDARY] {reason}: finalize={finalize_current_session} "
+            f"old_session={old_session is not None} "
+            f"old_pending={old_pending is not None} old_shm={old_shm_laps}",
+        )
+
     def _parse_authoritative_lap_validity(
         self,
         line: str,
@@ -541,21 +603,16 @@ class LogParser:
         prior_session_type = None
         if self.current_session:
             prior_session_type = self.current_session.session_type
-        # Reset parser-side per-session state so stale flags from the old run
-        # (penalty, track-limit, sector splits, physics_lap_num, etc.) don't
-        # leak into the first lap of the restarted session.
-        # Also reset the dedup guard so the upcoming game-status True event is
-        # not silently dropped (restart does not emit a fresh "Game Started!").
+        # Reset the status dedup guard so the restart can be observed by
+        # downstream consumers (restart does not emit a fresh Game Started).
         self._last_emitted_game_status = None
-        self._reset_in_progress()
-        if self.current_session:
-            self._finalise_current_session()
 
         # AC Evo only logs the tyre compound (setCompound / LOADING TYRE
         # COMPOUND) at the original session start, NOT after an in-place
         # restart. A pause-menu restart reuses the same car and tyres, so
         # snapshot the compound before _start_new_session wipes it and restore
         # it afterwards; otherwise the restarted session's laps show "Unknown".
+        self._flush_pending_compound_batch()
         preserved_tyre = self.context.tyre.snapshot()
 
         # AC Evo may restart in-place without a fresh session-start marker.
@@ -884,7 +941,10 @@ class LogParser:
                 "unrecognised format, session NOT created.  "
                 "Resetting shared session anyway."
             )
-            self._session_manager.reset()
+            self._reset_session_boundary(
+                "unrecognised Game Started", finalize_current_session=True
+            )
+            self.context.reset_for_new_session()
             return False
         m = self._pats["game_started"].search(line)
         if not m:
@@ -896,21 +956,13 @@ class LogParser:
             # Even though we can't parse the new session, we know a new game
             # session is starting.  Clear the shared session to prevent stale
             # lap timing/validity data from the previous session leaking in.
-            self._session_manager.reset()
+            self._reset_session_boundary(
+                "unrecognised Game Started", finalize_current_session=True
+            )
+            self.context.reset_for_new_session()
             return False
 
-        self._flush_pending_compound_batch()
-
-        old_car = self.current_session.car if self.current_session else "None"
-        old_laps = len(self.current_session.laps) if self.current_session else 0
-        old_pending = self._pending_lap is not None
-        if self.current_session:
-            log_debug(Component.LOG_PARSER,
-                f"[SESSION_START] Finalising previous session: car={old_car}  "
-                f"laps={old_laps}  pending_lap={old_pending}  "
-                f"session_id={self.current_session.session_id[:8]}..."
-            )
-            self._finalise_current_session()
+        self._reset_session_boundary("Game Started", finalize_current_session=True)
         self._session_active_from_logs = True
 
         raw_type, raw_track_desc, raw_car, raw_weather = (
@@ -962,7 +1014,6 @@ class LogParser:
         # in _emit_game_status() can also prevent the app-level reset() from
         # firing.  Explicitly clearing here guarantees the new session starts
         # with a clean shared state regardless of either code path.
-        self._session_manager.reset()
         self._sync_shared_session(self.current_session)
 
         log_debug(Component.LOG_PARSER,
@@ -1820,10 +1871,10 @@ class LogParser:
 
     def _start_new_session(self, session_type: str, _line: str) -> None:
         """Fallback session creator for edge cases (no 'Game Started!' seen)."""
-        self._flush_pending_compound_batch()
+        self._reset_session_boundary(
+            "fallback session start", finalize_current_session=True
+        )
         self.context.reset_for_new_session()
-        self._last_setup_car_uuid = None
-        self._pending_compound_source_car_uuid = None
         self.current_session = SessionData(
             session_type=SESSION_TYPE_MAP.get(session_type, session_type),
             game_version=self.context.game_version,
@@ -1837,9 +1888,6 @@ class LogParser:
         )
         self._reset_in_progress()
         self._finalise_stints()
-        # Reset shared session to prevent stale data from any prior session
-        # leaking into this fallback session.
-        self._session_manager.reset()
         self._sync_shared_session(self.current_session)
         log_debug(Component.LOG_PARSER, f"[SESSION] Fallback session created: type={session_type}")
 
@@ -2216,8 +2264,10 @@ class LogParser:
                             log_debug(Component.LOG_PARSER, f"[NEW_LOG] Switching to {_latest.name}")
                             if self._last_emitted_game_status is not False:
                                 await self._emit_game_status(False, trigger="new log file detected")
+                            self._reset_session_boundary(
+                                "log rotation", finalize_current_session=False
+                            )
                             self.context = LogContext()
-                            self.current_session = None
                             self._emit_callbacks = True
                             self._last_emitted_game_status = None
                             await self._emit_status("New game session log detected …")
@@ -2236,8 +2286,10 @@ class LogParser:
                         log_debug(Component.LOG_PARSER, "[TRUNCATE] Log file reset — restarting context")
                         if self._last_emitted_game_status is not False:
                             await self._emit_game_status(False, trigger="log file truncated")
+                        self._reset_session_boundary(
+                            "log truncation", finalize_current_session=False
+                        )
                         self.context = LogContext()
-                        self.current_session = None
                         self._emit_callbacks = True
                         self._last_emitted_game_status = None
                         await self._emit_status("Log file reset — restarting …")
