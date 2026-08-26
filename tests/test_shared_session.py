@@ -130,6 +130,86 @@ def test_graphics_lap_counter_transition_snapshots_completed_lap() -> None:
     assert manager.get_lap_time(2) is None
 
 
+def test_graphics_terminal_transition_does_not_publish_shutdown_completion() -> None:
+    """Ended timing/counter snapshots are teardown, not finish-line events."""
+    manager = SharedSessionManager()
+    manager.update_from_graphics_shm(
+        {
+            "total_lap_count": 0,
+            "current_lap_time_ms": 75000,
+            "last_laptime_ms": 0,
+            "is_valid_lap": False,
+            "session_phase": "Session",
+        }
+    )
+
+    manager.update_from_graphics_shm(
+        {
+            "total_lap_count": 1,
+            "current_lap_time_ms": 50,
+            "last_laptime_ms": 75684,
+            "is_valid_lap": True,
+            "session_phase": "Ended",
+        }
+    )
+
+    assert manager.get_latest_lap_completion() is None
+    assert manager.get_lap_completions_after(0.0) == []
+    assert manager._session_data.active_lap_is_valid is None
+    assert manager.get_lap_timing_data(2).last_lap_time_ms == 0
+
+
+def test_graphics_active_transition_still_publishes_completion() -> None:
+    """A matching transition in an active session remains a live completion."""
+    manager = SharedSessionManager()
+    manager.update_from_graphics_shm(
+        {
+            "total_lap_count": 0,
+            "current_lap_time_ms": 75000,
+            "last_laptime_ms": 0,
+            "is_valid_lap": True,
+            "session_phase": "Session",
+        }
+    )
+    manager.update_from_graphics_shm(
+        {
+            "total_lap_count": 1,
+            "current_lap_time_ms": 50,
+            "last_laptime_ms": 75684,
+            "is_valid_lap": True,
+            "session_phase": "Session",
+        }
+    )
+
+    completion = manager.get_latest_lap_completion()
+    assert completion is not None
+    assert completion.lap_time_ms == 75684
+
+
+def test_graphics_disqualified_and_teardown_states_suppress_completion() -> None:
+    for phase in ("Disqualified", "Teardown"):
+        manager = SharedSessionManager()
+        manager.update_from_graphics_shm(
+            {
+                "total_lap_count": 0,
+                "current_lap_time_ms": 75000,
+                "last_laptime_ms": 0,
+                "is_valid_lap": True,
+                "session_phase": "Session",
+            }
+        )
+        manager.update_from_graphics_shm(
+            {
+                "total_lap_count": 1,
+                "current_lap_time_ms": 50,
+                "last_laptime_ms": 75684,
+                "is_valid_lap": True,
+                "session_phase": phase,
+            }
+        )
+        assert manager.get_latest_lap_completion() is None
+
+
 def test_graphics_timer_reset_snapshots_invalid_lap_before_counter_advances() -> None:
     """ACE resets timing/validity before its completed-lap counter changes."""
     manager = SharedSessionManager()
@@ -283,6 +363,29 @@ def test_graphics_retains_multiple_unconsumed_lap_completions() -> None:
     completions = manager.get_lap_completions_after(0.0)
     assert [completion.lap_time_ms for completion in completions] == [66393, 65559]
     assert [completion.is_valid for completion in completions] == [True, False]
+
+
+def test_lap_completion_matching_tolerates_rounding_once_and_rejects_outside() -> None:
+    """Cross-source timing drift is accepted once, but never reused."""
+    manager = SharedSessionManager()
+    manager.update_from_graphics_shm({
+        "total_lap_count": 0,
+        "current_lap_time_ms": 100000,
+        "last_laptime_ms": 0,
+        "is_valid_lap": False,
+    })
+    manager.update_from_graphics_shm({
+        "total_lap_count": 1,
+        "current_lap_time_ms": 10,
+        "last_laptime_ms": 100000,
+        "is_valid_lap": True,
+    })
+
+    completion = manager.get_lap_completion_by_time(100001, consume=True)
+    assert completion is not None
+    assert completion.lap_time_ms == 100000
+    assert manager.get_lap_completion_by_time(100001) is None
+    assert manager.get_lap_completion_by_time(100000 + 3) is None
 
 
 def test_update_lap_from_logs_populates_player_and_sector_data() -> None:
@@ -591,7 +694,7 @@ def test_get_lap_time_uses_source_priority() -> None:
 
 
 def test_get_lap_time_graphics_fallback_when_no_log_time() -> None:
-    """Graphics SHM times must be visible when log-sourced times are absent."""
+    """Graphics SHM times remain visible for diagnostics without a verdict."""
     manager = SharedSessionManager()
 
     manager.update_lap_timing_from_graphics_shm(3, {"last_laptime_ms": 95000})
@@ -602,8 +705,98 @@ def test_get_lap_time_graphics_fallback_when_no_log_time() -> None:
     assert 3 in all_times
     assert all_times[3] == 95000.0
 
-    # get_best_lap_time must consider graphics times
+    # A timing sample without a finalized validity verdict is unknown, not a
+    # valid session best.
+    assert manager.get_best_lap_time() is None
+
+
+def test_get_best_lap_time_uses_only_finalized_valid_timed_laps() -> None:
+    manager = SharedSessionManager()
+
+    manager.update_lap_from_logs(
+        LapData(
+            lap_number=1,
+            physics_lap_number=1,
+            lap_time_ms=90000,
+            lap_time_str="1:30.000",
+            is_valid=False,
+            lap_state=LapState.INVALID_GAME,
+            lap_type=LapState.INVALID_GAME.value,
+        )
+    )
+    manager.update_lap_from_logs(
+        LapData(
+            lap_number=2,
+            physics_lap_number=2,
+            lap_time_ms=95000,
+            lap_time_str="1:35.000",
+            is_valid=True,
+            lap_state=LapState.VALID,
+            lap_type=LapState.VALID.value,
+        )
+    )
+
     assert manager.get_best_lap_time() == 95000.0
+
+
+def test_get_best_lap_time_is_none_when_all_finalized_laps_are_invalid() -> None:
+    manager = SharedSessionManager()
+
+    manager.update_lap_from_logs(
+        LapData(
+            lap_number=1,
+            physics_lap_number=1,
+            lap_time_ms=90000,
+            lap_time_str="1:30.000",
+            is_valid=False,
+            lap_state=LapState.INVALID_GAME,
+            lap_type=LapState.INVALID_GAME.value,
+        )
+    )
+
+    assert manager.get_best_lap_time() is None
+
+
+def test_get_best_lap_time_excludes_outlap_even_if_timed() -> None:
+    manager = SharedSessionManager()
+
+    manager.update_lap_from_logs(
+        LapData(
+            lap_number=1,
+            physics_lap_number=1,
+            lap_time_ms=90000,
+            lap_time_str="1:30.000",
+            is_valid=False,
+            lap_state=LapState.OUTLAP,
+            lap_type=LapState.OUTLAP.value,
+        )
+    )
+
+    assert manager.get_best_lap_time() is None
+
+
+def test_get_best_lap_time_waits_for_later_finalized_shm_lap_verdict() -> None:
+    manager = SharedSessionManager()
+
+    # SHM can expose the completed duration before the log parser has
+    # finalized whether the lap was a valid timed lap.
+    manager.update_lap_timing_from_graphics_shm(1, {"last_laptime_ms": 90000})
+    manager.update_lap_validity_from_graphics_shm(1, is_invalid=False)
+    assert manager.get_best_lap_time() is None
+
+    manager.update_lap_from_logs(
+        LapData(
+            lap_number=1,
+            physics_lap_number=1,
+            lap_time_ms=90000,
+            lap_time_str="1:30.000",
+            is_valid=True,
+            lap_state=LapState.VALID,
+            lap_type=LapState.VALID.value,
+        )
+    )
+
+    assert manager.get_best_lap_time() == 90000.0
 
 
 def test_validate_data_consistency_returns_empty_after_merge() -> None:

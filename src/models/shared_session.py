@@ -15,6 +15,30 @@ import time
 import uuid
 
 from .lap import LapData, SessionData
+from .constants import LAP_TIME_RECONCILIATION_TOLERANCE_MS
+
+
+_TERMINAL_SESSION_PHASES = frozenset({
+    "ended",
+    "disqualified",
+    "teardown",
+})
+
+
+def _is_terminal_graphics_state(
+    graphics_data: Dict[str, Any],
+    current_phase: Optional[str],
+) -> bool:
+    """Return whether a graphics snapshot is a terminal/teardown state."""
+    phase = graphics_data.get("session_phase", current_phase)
+    normalized_phase = str(phase or "").strip().casefold()
+    if normalized_phase in _TERMINAL_SESSION_PHASES:
+        return True
+
+    # AC_OFF is the mapping teardown state. It is terminal even when a stale
+    # phase string remains from the last active snapshot.
+    status_name = str(graphics_data.get("status_name") or "").strip().upper()
+    return status_name == "AC_OFF"
 
 @dataclass
 class LapValidityData:
@@ -119,6 +143,7 @@ class SharedSessionData:
     lap_timing: Dict[int, LapTimingData] = field(default_factory=dict)
     latest_lap_completion: Optional[LapCompletionData] = None
     lap_completions: list[LapCompletionData] = field(default_factory=list)
+    consumed_lap_completion_times: Set[float] = field(default_factory=set)
     fuel_data: FuelData = field(default_factory=FuelData)
     player_identification: PlayerIdentificationData = field(
         default_factory=PlayerIdentificationData
@@ -201,20 +226,52 @@ class SharedSessionManager:
             return [
                 completion
                 for completion in self._session_data.lap_completions
-                if completion.observed_at > observed_at
+                if (
+                    completion.observed_at > observed_at
+                    and completion.observed_at
+                    not in self._session_data.consumed_lap_completion_times
+                )
             ]
 
-    def get_lap_completion_by_time(self, lap_time_ms: int) -> Optional[LapCompletionData]:
-        """Return the newest retained completion matching an exact lap time."""
+    def get_lap_completion_by_time(
+        self,
+        lap_time_ms: int,
+        *,
+        consume: bool = False,
+    ) -> Optional[LapCompletionData]:
+        """Return the nearest unconsumed completion within the small tolerance.
+
+        Matching is nearest-time first and observation-order stable for ties.
+        A caller that has used the completion to reconcile a log lap can pass
+        ``consume=True`` so another delayed log record cannot use it again.
+        """
         with self._lock:
-            return next(
-                (
-                    completion
-                    for completion in reversed(self._session_data.lap_completions)
-                    if completion.lap_time_ms == lap_time_ms
-                ),
-                None,
+            candidates = [
+                completion
+                for completion in self._session_data.lap_completions
+                if (
+                    completion.observed_at
+                    not in self._session_data.consumed_lap_completion_times
+                    and abs(completion.lap_time_ms - lap_time_ms)
+                    <= LAP_TIME_RECONCILIATION_TOLERANCE_MS
+                )
+            ]
+            if not candidates:
+                return None
+            completion = min(
+                candidates,
+                key=lambda item: (abs(item.lap_time_ms - lap_time_ms), item.observed_at),
             )
+            if consume:
+                self._session_data.consumed_lap_completion_times.add(
+                    completion.observed_at
+                )
+            return completion
+
+    def consume_lap_completion(self, completion: LapCompletionData) -> None:
+        """Mark one SHM completion as used by a parser reconciliation."""
+        with self._lock:
+            self._session_data.consumed_lap_completion_times.add(completion.observed_at)
 
     def get_fuel_data(self) -> FuelData:
         with self._lock:
@@ -299,8 +356,22 @@ class SharedSessionManager:
         with self._lock:
             times = [
                 t.completed_lap_time
-                for t in self._session_data.lap_timing.values()
-                if t.completed_lap_time is not None
+                for lap_num, t in self._session_data.lap_timing.items()
+                if (
+                    isinstance(t.completed_lap_time, (int, float))
+                    and not isinstance(t.completed_lap_time, bool)
+                    and t.completed_lap_time > 0
+                    # A graphics time can arrive before the log parser has
+                    # finalized the lap's verdict.  Missing/SHM-only
+                    # validity is unknown, not valid, and must not become a
+                    # session best prematurely.
+                    and (
+                        validity := self._session_data.lap_validity.get(lap_num)
+                    ) is not None
+                    and validity.source == "logs"
+                    and validity.is_valid is True
+                    and validity.lap_state == "VALID"
+                )
             ]
             return min(times) if times else None
 
@@ -333,6 +404,35 @@ class SharedSessionManager:
                 lap_num: v.is_valid
                 for lap_num, v in self._session_data.lap_validity.items()
             }
+
+    def renumber_lap(self, old_number: int, new_number: int) -> None:
+        """Move shared per-lap records after authoritative log renumbering.
+
+        A lap may be emitted from graphics SHM before the delayed log
+        ``Relevant onSplit`` line supplies the game's absolute number.  Keep
+        all keyed shared records aligned with the corrected ``LapData``.  If a
+        destination entry already exists, retain it and drop the provisional
+        source entry; the subsequent log update will merge the authoritative
+        fields into that destination.
+        """
+        if old_number == new_number:
+            return
+
+        with self._lock:
+            for mapping in (
+                self._session_data.lap_validity,
+                self._session_data.lap_timing,
+                self._session_data.sector_splits,
+                self._session_data.sector_times,
+            ):
+                source = mapping.pop(old_number, None)
+                if source is None:
+                    continue
+                if new_number in mapping:
+                    continue
+                mapping[new_number] = source
+                if hasattr(source, "lap_number"):
+                    source.lap_number = new_number
 
     # New shared object updates
     def update_lap_validity_from_graphics_shm(self, lap_num: int, is_invalid: bool) -> None:
@@ -601,6 +701,16 @@ class SharedSessionManager:
         # the physical lap counter because that counter can be reused after a
         # pit stop.
         with self._lock:
+            # Publish phase before evaluating timing transitions. The same
+            # snapshot must decide both whether a completion is physical and
+            # whether the active validity latch remains meaningful.
+            incoming_phase = graphics_data.get("session_phase")
+            if incoming_phase is not None:
+                self._session_data.session_phase = incoming_phase
+            terminal_state = _is_terminal_graphics_state(
+                graphics_data,
+                self._session_data.session_phase,
+            )
             previous_completed = self._session_data.total_laps
             previous_lap_time_ms = int(self._session_data.current_lap_time_ms or 0)
             lap_timer_reset = (
@@ -616,12 +726,17 @@ class SharedSessionManager:
                 previous_completed is not None
                 and completed_laps > int(previous_completed)
             )
-            if (completed_timer_reset or counter_advanced) and last_laptime_ms > 0:
+            if (
+                not terminal_state
+                and (completed_timer_reset or counter_advanced)
+                and last_laptime_ms > 0
+            ):
                 now_mono = time.monotonic()
                 latest = self._session_data.latest_lap_completion
                 duplicate_transition = (
                     latest is not None
-                    and latest.lap_time_ms == last_laptime_ms
+                    and abs(latest.lap_time_ms - last_laptime_ms)
+                    <= LAP_TIME_RECONCILIATION_TOLERANCE_MS
                     and now_mono - latest.observed_at < 10.0
                 )
                 if not duplicate_transition:
@@ -647,20 +762,23 @@ class SharedSessionManager:
             # outlap boundary where ACE deliberately leaves last_laptime_ms at
             # zero.  Do not let an invalid outlap latch contaminate the first
             # timed lap merely because there is no completion to publish.
-            if lap_timer_reset or counter_advanced:
+            if terminal_state:
+                self._session_data.active_lap_is_valid = None
+            elif lap_timer_reset or counter_advanced:
                 self._session_data.active_lap_is_valid = None
 
-            if current_lap_time_ms <= 0:
-                self._session_data.active_lap_is_valid = None
-            elif is_valid_lap is not None:
-                sampled_validity = bool(is_valid_lap)
-                if self._session_data.active_lap_is_valid is None:
-                    self._session_data.active_lap_is_valid = sampled_validity
-                elif not sampled_validity:
-                    # Once ACE invalidates an active lap, keep that verdict
-                    # until its timer resets. The finish-line frame may
-                    # already carry the next lap's valid=True value.
-                    self._session_data.active_lap_is_valid = False
+            if not terminal_state:
+                if current_lap_time_ms <= 0:
+                    self._session_data.active_lap_is_valid = None
+                elif is_valid_lap is not None:
+                    sampled_validity = bool(is_valid_lap)
+                    if self._session_data.active_lap_is_valid is None:
+                        self._session_data.active_lap_is_valid = sampled_validity
+                    elif not sampled_validity:
+                        # Once ACE invalidates an active lap, keep that verdict
+                        # until its timer resets. The finish-line frame may
+                        # already carry the next lap's valid=True value.
+                        self._session_data.active_lap_is_valid = False
         if shm_current_lap > 0:
             current_lap = shm_current_lap
         else:
@@ -702,7 +820,11 @@ class SharedSessionManager:
                 graphics_data["last_laptime_ms"] = 0
             self.update_lap_timing_from_graphics_shm(
                 current_lap,
-                graphics_data,
+                (
+                    {**graphics_data, "last_laptime_ms": 0}
+                    if terminal_state
+                    else graphics_data
+                ),
                 completed_lap_num=completed_laps if completed_laps > 0 else None,
             )
 
@@ -720,7 +842,9 @@ class SharedSessionManager:
             # why it must NOT be checked first (False ≠ None).
             lap_time_ms = current_lap_time_ms
 
-            if is_valid_lap is not None:
+            if terminal_state:
+                is_invalid = None
+            elif is_valid_lap is not None:
                 # is_valid_lap is the authoritative flag on AC Evo 0.8.0.1.
                 # Only apply it when timing is active (lap_time_ms > 0).
                 # When lap_time_ms == 0, timing is inactive (session end,
@@ -744,7 +868,8 @@ class SharedSessionManager:
         with self._lock:
             self._session_data.total_laps = graphics_data.get("total_lap_count")
             self._session_data.current_lap = graphics_data.get("session_current_lap")
-            self._session_data.session_phase = graphics_data.get("session_phase")
+            if "session_phase" in graphics_data:
+                self._session_data.session_phase = graphics_data.get("session_phase")
             self._session_data.session_time_left_ms = graphics_data.get("session_time_left_ms")
             self._session_data.current_pos = graphics_data.get("current_pos")
             self._session_data.total_drivers = graphics_data.get("total_drivers")

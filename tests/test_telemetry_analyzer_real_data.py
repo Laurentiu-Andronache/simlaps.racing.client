@@ -1,8 +1,8 @@
 """
-Integration tests for telemetry analyzer using real telemetry dump data.
+Integration tests for telemetry analyzer using synthetic telemetry fixture data.
 
-Tests track building, lap detection, and analysis with actual
-ACE telemetry captures from ``tests/fixtures/sample_telemetry.jsonl``.
+Tests track building, lap detection, and analysis with deterministic
+synthetic ACE telemetry frames from ``tests/fixtures/sample_telemetry.jsonl``.
 
 Helper-function tests (``_safe_4``, ``_sanitize_slip``) and basic
 ``get_physics`` coverage are consolidated in
@@ -45,10 +45,10 @@ def load_frames(count: int = 100) -> list[FrameData]:
 
 
 class TestBuildTrack:
-    """Test track building from real telemetry data."""
+    """Test track building from synthetic telemetry data."""
 
-    def test_build_track_with_real_data(self):
-        """Test that build_track works with real telemetry frames."""
+    def test_build_track_with_synthetic_data(self):
+        """Test that build_track works with synthetic telemetry frames."""
         frames = load_frames(50)
         
         track = build_track(frames, hz=10.0)
@@ -107,9 +107,9 @@ class TestBuildTrack:
 
 
 class TestDetectLaps:
-    """Test lap detection from real telemetry data."""
+    """Test lap detection from synthetic telemetry data."""
 
-    def test_detect_laps_with_real_data(self):
+    def test_detect_laps_with_synthetic_data(self):
         """detect_laps returns a boundary list (empty for physics-only frames)."""
         frames = load_frames(100)
         track = build_track(frames, hz=10.0)
@@ -134,7 +134,7 @@ class TestDetectLaps:
 
 
 class TestRealDataStructure:
-    """Test real telemetry data structure."""
+    """Test synthetic telemetry data structure."""
 
     def test_frames_have_physics(self):
         """Loaded frames carry a non-None physics dict."""

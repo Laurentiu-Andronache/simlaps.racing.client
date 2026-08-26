@@ -1,8 +1,7 @@
 """Regression tests for ``decode_static_evo``.
 
-Validates the AC Evo ``SPageFileStaticEvo`` decoder against a real captured
-static SHM frame (Brands Hatch Indy practice session). The fixture is the
-hex-encoded 2048-byte buffer dumped by the live capture path.
+Validates the AC Evo ``SPageFileStaticEvo`` decoder against a deterministic
+synthetic SHM frame. The fixture is a hex-encoded 2048-byte protocol buffer.
 """
 
 from __future__ import annotations
@@ -23,7 +22,7 @@ FIXTURE = Path(__file__).parent / "fixtures" / "ac_evo_static_frame.txt"
 
 @pytest.fixture(scope="module")
 def static_bytes() -> bytes:
-    """Captured static SHM bytes (Brands Hatch Indy practice)."""
+    """Synthetic static SHM bytes covering the documented offsets."""
     hex_str = FIXTURE.read_text(encoding="utf-8").strip()
     return bytes.fromhex(hex_str)
 
@@ -56,7 +55,7 @@ class TestStaticEvoFields:
     def test_versions_present(self, static_bytes):
         result = decode_static_evo(static_bytes)
         assert result["sm_version"] == "1.0"
-        assert result["ac_evo_version"] == "0.6.2"
+        assert result["ac_evo_version"] == "0.1"
         # legacy alias
         assert result["ac_version"] == result["ac_evo_version"]
 
@@ -72,22 +71,21 @@ class TestStaticEvoFields:
 
     def test_geography(self, static_bytes):
         result = decode_static_evo(static_bytes)
-        assert result["nation"] == "GBR"
-        # Brands Hatch geographic hints are not always populated; the
-        # decode must still surface the float fields without raising.
+        assert result["nation"] == "SYN"
+        # Synthetic geographic hints are zero but must still decode as floats.
         assert isinstance(result["longitude"], float)
         assert isinstance(result["latitude"], float)
 
     def test_track_identity(self, static_bytes):
         result = decode_static_evo(static_bytes)
-        assert result["track"] == "Brands Hatch"
-        assert result["track_configuration"] == "Indy"
+        assert result["track"] == "Synthetic Track"
+        assert result["track_configuration"] == "Main"
 
-    def test_track_length_brands_hatch_indy(self, static_bytes):
-        """Brands Hatch Indy is 1.944 km in real life; SHM reports 1944 m."""
+    def test_track_length_decodes_from_protocol_offset(self, static_bytes):
+        """The synthetic SHM frame reports a 5 km track."""
         result = decode_static_evo(static_bytes)
-        assert result["track_length_m"] == pytest.approx(1944.0, abs=1.0)
-        assert result["track_length_km"] == pytest.approx(1.944, abs=0.001)
+        assert result["track_length_m"] == pytest.approx(5000.0, abs=1.0)
+        assert result["track_length_km"] == pytest.approx(5.0, abs=0.001)
         # legacy ACC alias
         assert result["track_spline_length"] == result["track_length_m"]
 
@@ -96,7 +94,7 @@ class TestStaticEvoFields:
         assert isinstance(result["is_static_weather"], bool)
         assert isinstance(result["is_timed_race"], bool)
         assert isinstance(result["is_online"], bool)
-        # Practice on a single track config -> not online, not timed
+        # Synthetic practice session -> not online, not timed
         assert result["is_timed_race"] is False
         assert result["is_online"] is False
 
@@ -131,4 +129,4 @@ class TestStaticEvoSanityGates:
         assert result["track_length_m"] == 0.0
         assert result["track_length_km"] == 0.0
         # Other fields still decoded cleanly.
-        assert result["track"] == "Brands Hatch"
+        assert result["track"] == "Synthetic Track"

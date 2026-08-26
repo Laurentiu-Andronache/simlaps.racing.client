@@ -7,7 +7,7 @@ Targets the big uncovered chunk (lines 992-1092).
 import pytest
 
 from src.core.log_parser import LogParser
-from src.models import LapData, SessionData, LapState
+from src.models import LapData, SessionData, LapState, SharedSessionManager
 
 
 class TestHandleLapCompleteBasic:
@@ -45,6 +45,61 @@ class TestHandleLapCompleteBasic:
         # Lap from different car
         result = parser._handle_lap_complete("New lap carId=other_car time=1:30.000")
         assert result is None
+
+
+@pytest.mark.asyncio
+async def test_authoritative_lap_number_renumbers_stint_and_shared_state():
+    """A provisional parser lap must move atomically to game's lap number."""
+    manager = SharedSessionManager()
+    parser = LogParser(session_manager=manager)
+    parser.current_session = SessionData(
+        track="spa",
+        car="porsche",
+        player_id="76561198321627695",
+        session_type="RACE",
+    )
+    parser.context.player_id = "76561198321627695"
+    parser.context.car_uuid = "abc123-def456"
+    parser.context.tyre.set_all("S")
+    parser._ip.fuel_used = 2.5
+
+    # Graphics can have already published the provisional parser number
+    # while the delayed log validity broadcast is still in flight.
+    manager.update_lap_timing_from_graphics_shm(
+        1, {"last_laptime_ms": 125000}
+    )
+    manager.update_lap_validity_from_graphics_shm(1, is_invalid=False)
+    manager.update_sector_splits_from_logs(
+        1, {"sector1_ms": 42000, "sector2_ms": 45000, "sector3_ms": 38000}
+    )
+
+    parser._process_line(
+        "[2026-04-26 00:10:41.450] [gameplay] [info] "
+        "New lap carId abc123-def456: 02:05.000"
+    )
+    assert parser._pending_lap is not None
+    assert parser.current_session.stints[0].lap_numbers == [1]
+
+    completed = parser._process_line(
+        "[2026-04-26 00:10:41.462] [network] [info] "
+        "Relevant onSplit for Combo 6@2: laptime 125000, valid true, "
+        "flags 2, lap 4 (prev 3)"
+    )
+    assert completed is not None
+    await parser._emit_lap(parser.current_session, completed)
+
+    assert completed.lap_number == 4
+    assert parser.current_session.stints[0].lap_numbers == [4]
+    assert parser.current_session.stints[0].fuel_used_total == 2.5
+    assert parser.current_session.to_dict()["laps"][0]["lap_number"] == 4
+    assert parser.current_session.to_dict()["stints"][0]["lap_numbers"] == [4]
+    assert manager.get_lap_timing_data(1) is None
+    assert manager.get_lap_validity_data(1) is None
+    assert manager.get_sector_split_data(1) is None
+    assert manager.get_lap_timing_data(4) is not None
+    assert manager.get_lap_validity_data(4) is not None
+    assert manager.get_sector_split_data(4) is not None
+    assert manager.get_all_lap_times() == {4: 125000.0}
 
 
 class TestHandleLapCompleteWithData:
@@ -736,3 +791,64 @@ class TestHandleLapCompleteStint:
         
         # Outlaps shouldn't update stint
         assert True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("delta", [-1, 1])
+async def test_delayed_log_enrichment_rounding_keeps_one_invalid_lap_card(delta):
+    """A rounded log finish enriches, rather than duplicates, SHM output."""
+    manager = SharedSessionManager()
+    parser = LogParser(session_manager=manager)
+    session = SessionData(track="spa", car="porsche", car_uuid="abc123")
+    parser.current_session = session
+    parser.context.car_uuid = "abc123"
+    parser.context.tyre.set_all("S")
+    shm_lap = LapData(
+        lap_number=1,
+        physics_lap_number=1,
+        lap_time_ms=100000,
+        lap_time_str="01:40.000",
+        lap_state=LapState.INVALID_GAME,
+        lap_type=LapState.INVALID_GAME.value,
+        is_valid=False,
+        validity_source="shm_graphics",
+    )
+    session.laps.append(shm_lap)
+    parser._shm_emitted_laps.append(shm_lap)
+    parser._ip.physics_lap_num = 1
+
+    updates = []
+
+    async def on_update(_session, lap):
+        updates.append(lap)
+
+    parser.on_lap_update = on_update
+    log_ms = 100000 + delta
+    minutes, remainder = divmod(log_ms, 60000)
+    seconds, milliseconds = divmod(remainder, 1000)
+    assert parser._handle_lap_complete(
+        f"[2026-08-26 12:00:00.000] [gameplay] [info] New lap carId abc123: "
+        f"{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
+    ) is None
+    assert parser._reconciled_lap is shm_lap
+
+    await parser._emit_lap_update(session, shm_lap)
+
+    assert updates == [shm_lap]
+    assert len(session.laps) == 1
+    assert shm_lap.is_valid is False
+    assert shm_lap.lap_state == LapState.INVALID_GAME
+
+
+@pytest.mark.parametrize(
+    "delta, expected", [(1, True), (-1, True), (3, False), (-3, False)]
+)
+def test_lap_time_match_rejects_just_outside_tolerance(delta, expected):
+    """The named tolerance accepts rounding only, never a distinct time."""
+    lap = LapData(
+        lap_number=1,
+        physics_lap_number=1,
+        lap_time_ms=100000,
+        lap_time_str="01:40.000",
+    )
+    assert (LogParser._nearest_lap_match([lap], 100000 + delta) is not None) is expected
