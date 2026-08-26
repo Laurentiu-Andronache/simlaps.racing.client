@@ -21,6 +21,9 @@ import argparse
 from pathlib import Path
 
 
+REPO_ROOT = Path(__file__).resolve().parent
+
+
 def get_venv_executable(name: str) -> str:
     """Get the path to an executable in the current venv."""
     # Check if we're in a venv
@@ -41,51 +44,144 @@ def get_venv_executable(name: str) -> str:
 
 
 # Import version from source
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
+sys.path.insert(0, str(REPO_ROOT / "src"))
 from version import VERSION
 
 # Configuration
 APP_NAME = "SimLapsClient"
 APP_VERSION = VERSION
-ENTRY_POINT = "src/main.py"  # Correct path to main script
-ICON_PATH = "assets/icon.ico"
-DIST_DIR = "dist"
-BUILD_DIR = "build"
-OBFUSCATED_DIR = "obfuscated"
-SECURITY_FILE = "src/core/security.py"
+# Build paths are deliberately rooted at this file's repository.  The build
+# script is commonly invoked from IDEs and release shells whose CWD is not the
+# repository, and relative artifact paths in that case are unsafe.
+ENTRY_POINT = REPO_ROOT / "src" / "main.py"
+ICON_PATH = REPO_ROOT / "assets" / "icon.ico"
+DIST_DIR = REPO_ROOT / "dist"
+BUILD_DIR = REPO_ROOT / "build"
+OBFUSCATED_DIR = REPO_ROOT / "obfuscated"
+SECURITY_FILE = REPO_ROOT / "src" / "core" / "security.py"
+
+
+def _validate_cleanup_target(path: Path, allowed_root: Path) -> Path:
+    """Validate a cleanup target before touching it.
+
+    A symlink is safe to unlink, but never safe to recurse into.  For regular
+    paths, both the lexical path and its resolved destination must remain
+    below the intended repository tree.
+    """
+    candidate = Path(path)
+    root = Path(allowed_root).resolve()
+    lexical = Path(os.path.abspath(os.fspath(candidate)))
+    try:
+        lexical.relative_to(root)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"Refusing to clean path outside {root}: {candidate}"
+        ) from exc
+
+    if candidate.is_symlink():
+        return candidate
+
+    try:
+        candidate.resolve(strict=False).relative_to(root)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"Refusing to clean redirected path outside {root}: {candidate}"
+        ) from exc
+    return candidate
+
+
+def _remove_path(path: Path, allowed_root: Path) -> None:
+    """Remove one validated file, symlink, or directory without following links."""
+    target = _validate_cleanup_target(path, allowed_root)
+    if target.is_symlink() or target.is_file():
+        target.unlink()
+    elif target.is_dir():
+        shutil.rmtree(target)
+
+
+def _is_virtual_environment(path: Path) -> bool:
+    """Return whether *path* looks like a Python virtual environment."""
+    return (
+        (path / "pyvenv.cfg").is_file()
+        or (path / "Scripts" / "python.exe").is_file()
+        or (path / "bin" / "python").is_file()
+    )
+
+
+def _clean_cached_files() -> None:
+    """Remove project bytecode without traversing environments or artifacts."""
+    skipped_names = {
+        ".git",
+        ".pyarmor",
+        ".venv",
+        "build",
+        "dist",
+        "env",
+        "env.bak",
+        "obfuscated",
+        "venv",
+        "venv-sim-laps-client",
+        "venv.bak",
+    }
+    for current_root, dir_names, file_names in os.walk(
+        REPO_ROOT, topdown=True, followlinks=False
+    ):
+        current = Path(current_root)
+        retained_dirs = []
+        for name in dir_names:
+            child = current / name
+            relative_child = child.relative_to(REPO_ROOT)
+            if (
+                name in skipped_names
+                or relative_child == Path("tests") / "output"
+            ):
+                continue
+            if child.is_symlink() or _is_virtual_environment(child):
+                continue
+            retained_dirs.append(name)
+        dir_names[:] = retained_dirs
+
+        for name in file_names:
+            if not name.endswith(".pyc"):
+                continue
+            target = current / name
+            if target.is_symlink():
+                continue
+            _remove_path(target, REPO_ROOT)
+
+        for name in list(dir_names):
+            if name != "__pycache__":
+                continue
+            target = current / name
+            _remove_path(target, REPO_ROOT)
+            dir_names.remove(name)
 
 
 def clean():
     """Remove build artifacts."""
     print("Cleaning build artifacts...")
-    
-    dirs_to_clean = [BUILD_DIR, "__pycache__", ".pyarmor"]
-    
-    for dir_name in dirs_to_clean:
-        if os.path.exists(dir_name):
-            print(f"  Removing {dir_name}/")
-            shutil.rmtree(dir_name)
-    
-    # Clean dist/
-    if os.path.exists(DIST_DIR):
-        for item in os.listdir(DIST_DIR):
-            item_path = os.path.join(DIST_DIR, item)
-            # Preserve old secret file if exists, just in case
-            if item != "SERVER_SECRET.txt":
-                if os.path.isfile(item_path):
-                    os.remove(item_path)
-                    print(f"  Removing {item_path}")
-                elif os.path.isdir(item_path):
-                    shutil.rmtree(item_path)
-                    print(f"  Removing {item_path}/")
-    
-    # Remove .pyc files
-    for pyc in Path(".").rglob("*.pyc"):
-        pyc.unlink()
-    
-    # Remove __pycache__ directories
-    for pycache in Path(".").rglob("__pycache__"):
-        shutil.rmtree(pycache)
+
+    # These are the only top-level directories the build owns.  Validate each
+    # before removing it so a redirected symlink or modified constant cannot
+    # turn cleanup into deletion outside the repository.
+    for artifact_dir in (BUILD_DIR, OBFUSCATED_DIR, REPO_ROOT / ".pyarmor"):
+        if artifact_dir.exists() or artifact_dir.is_symlink():
+            _remove_path(artifact_dir, REPO_ROOT)
+            print(f"  Removing {artifact_dir}/")
+
+    # Clean dist/ while preserving the server secret generated by older builds.
+    if DIST_DIR.exists() or DIST_DIR.is_symlink():
+        if DIST_DIR.is_symlink():
+            _remove_path(DIST_DIR, REPO_ROOT)
+        else:
+            _validate_cleanup_target(DIST_DIR, REPO_ROOT)
+            for item in DIST_DIR.iterdir():
+                if item.name == "SERVER_SECRET.txt":
+                    continue
+                _remove_path(item, DIST_DIR)
+                print(f"  Removing {item}{'/' if item.is_dir() else ''}")
+
+    _clean_cached_files()
     
     print("Clean complete!")
 
@@ -109,7 +205,7 @@ def check_dependencies():
                 # Invoke via python -m for reliability.
                 result = subprocess.run(
                     [sys.executable, "-m", "pyarmor.cli", "--version"],
-                    capture_output=True, text=True,
+                    capture_output=True, text=True, cwd=REPO_ROOT,
                 )
                 if result.returncode != 0:
                     missing.append(package)
@@ -145,11 +241,11 @@ def obfuscate_source():
         "--output", OBFUSCATED_DIR,
         "--obf-code", "0",  # Basic obfuscation (free tier)
         "--obf-module", "0",  # Basic module obfuscation (free tier)
-        *files_to_obfuscate,
+        *(REPO_ROOT / path for path in files_to_obfuscate),
     ]
     
     print(f"  Running: pyarmor gen --output {OBFUSCATED_DIR} ...")
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, cwd=REPO_ROOT)
     
     if result.returncode != 0:
         print(f"  PyArmor error: {result.stderr}")
@@ -165,18 +261,20 @@ def obfuscate_source():
                 sys.executable, "-m", "pyarmor.cli",
                 "gen",
                 "--output", OBFUSCATED_DIR,
-                *files_to_obfuscate,
+                *(REPO_ROOT / path for path in files_to_obfuscate),
             ]
             
             print(f"  Running: pyarmor gen --output {OBFUSCATED_DIR} ...")
-            result = subprocess.run(simple_cmd, capture_output=True, text=True)
+            result = subprocess.run(
+                simple_cmd, capture_output=True, text=True, cwd=REPO_ROOT
+            )
             
             if result.returncode != 0:
                 print(f"  Simple PyArmor also failed: {result.stderr}")
                 return False
     
     # Verify obfuscated output
-    if os.path.exists(OBFUSCATED_DIR):
+    if OBFUSCATED_DIR.exists():
         print(f"  Obfuscation complete: {OBFUSCATED_DIR}/")
         return True
     else:
@@ -191,7 +289,7 @@ def build_executable():
     pyinstaller_exe = get_venv_executable("pyinstaller")
     
     # Use obfuscated source if available
-    src_dir = "."  # Always use root since main.py is at root
+    src_dir = REPO_ROOT
     entry = ENTRY_POINT
     
     print(f"  Using source: {src_dir}")
@@ -208,27 +306,28 @@ def build_executable():
     
     # Add icon if exists
     if os.path.exists(ICON_PATH):
-        cmd.extend(["--icon", ICON_PATH])
+        cmd.extend(["--icon", str(ICON_PATH)])
         # Include icon.ico as data file for window icon at runtime
         cmd.extend(["--add-data", f"{ICON_PATH};assets"])
     
     # Also include icon.png for ft.Image in the UI
-    icon_png_path = "assets/icon.png"
-    if os.path.exists(icon_png_path):
+    icon_png_path = REPO_ROOT / "assets" / "icon.png"
+    if icon_png_path.exists():
         cmd.extend(["--add-data", f"{icon_png_path};assets"])
 
     # Saved telemetry reports are self-contained and load these pinned chart
     # libraries from the frozen application's extraction directory.
-    analyzer_vendor_path = "src/core/analyzer/vendor"
-    if os.path.isdir(analyzer_vendor_path):
+    analyzer_vendor_path = REPO_ROOT / "src" / "core" / "analyzer" / "vendor"
+    if analyzer_vendor_path.is_dir():
         cmd.extend([
             "--add-data",
             f"{analyzer_vendor_path};src/core/analyzer/vendor",
         ])
     
     # Include .env file for runtime secret loading
-    if os.path.exists(".env"):
-        cmd.extend(["--add-data", ".env;."])
+    env_path = REPO_ROOT / ".env"
+    if env_path.exists():
+        cmd.extend(["--add-data", f"{env_path};."])
         print("  Including .env file in build")
     else:
         print("  WARNING: .env file not found - build may fail at runtime")
@@ -290,17 +389,22 @@ def build_executable():
     ])
     
     # Add the source directory to path so imports work
-    cmd.extend(["--paths", src_dir])
+    cmd.extend([
+        "--distpath", str(DIST_DIR),
+        "--workpath", str(BUILD_DIR),
+        "--specpath", str(REPO_ROOT),
+        "--paths", str(src_dir),
+    ])
     
     # Add obfuscated src directory to path if available
-    if os.path.exists(OBFUSCATED_DIR):
-        cmd.extend(["--paths", os.path.join(OBFUSCATED_DIR)])
+    if OBFUSCATED_DIR.exists():
+        cmd.extend(["--paths", str(OBFUSCATED_DIR)])
     
     # Add entry point
-    cmd.append(entry)
+    cmd.append(str(entry))
     
     print(f"  Running: {' '.join(cmd[:10])}...")
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, cwd=REPO_ROOT)
     
     if result.returncode != 0:
         print(f"  PyInstaller error: {result.stderr}")
@@ -308,8 +412,8 @@ def build_executable():
         return False
     
     # Verify output
-    exe_path = os.path.join(DIST_DIR, f"{APP_NAME}.exe")
-    if os.path.exists(exe_path):
+    exe_path = DIST_DIR / f"{APP_NAME}.exe"
+    if exe_path.exists():
         size_mb = os.path.getsize(exe_path) / (1024 * 1024)
         print(f"  Build complete: {exe_path} ({size_mb:.1f} MB)")
         return True
@@ -320,13 +424,15 @@ def build_executable():
 
 def create_spec_file():
     """Create a PyInstaller spec file for more control."""
+    entry_point = repr(str(ENTRY_POINT))
+    icon_path = repr(str(ICON_PATH)) if ICON_PATH.exists() else "None"
     spec_content = f'''# -*- mode: python ; coding: utf-8 -*-
 
 block_cipher = None
 
 a = Analysis(
-    ['src/main.py'],
-    pathex=[],
+    [{entry_point}],
+    pathex=[{str(REPO_ROOT)!r}],
     binaries=[],
     datas=[],
     hiddenimports=[
@@ -374,12 +480,12 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon='assets/icon.ico' if os.path.exists('assets/icon.ico') else None,
+    icon={icon_path},
 )
 '''
     
-    spec_path = f"{APP_NAME}.spec"
-    with open(spec_path, "w") as f:
+    spec_path = REPO_ROOT / f"{APP_NAME}.spec"
+    with open(spec_path, "w", encoding="utf-8") as f:
         f.write(spec_content)
     
     print(f"Created {spec_path}")
@@ -411,7 +517,7 @@ def main():
         return 1
     
     # Check that .env file exists
-    if not os.path.exists(".env"):
+    if not (REPO_ROOT / ".env").exists():
         print("\nERROR: .env file not found!")
         print("Please create .env from .env.example:")
         print("  copy .env.example .env")
