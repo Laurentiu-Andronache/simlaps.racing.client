@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """
-Build Script for SimLaps Telemetry Client
+Build Script for SimLaps Telemetry Client.
 
-Creates an obfuscated, packaged Windows executable with embedded secret.
+Creates a packaged Windows executable and optionally processes the selected
+modules with PyArmor.  PyArmor is a packaging aid, not a protection boundary
+for secrets bundled in an executable.
 
 Usage:
     python build.py              # Build with PyArmor obfuscation
@@ -18,7 +20,10 @@ import shutil
 import secrets
 import subprocess
 import argparse
+from importlib.machinery import PathFinder
 from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent
 
 
 def get_venv_executable(name: str) -> str:
@@ -53,13 +58,17 @@ DIST_DIR = "dist"
 BUILD_DIR = "build"
 OBFUSCATED_DIR = "obfuscated"
 SECURITY_FILE = "src/core/security.py"
+OBFUSCATED_MODULES = (
+    "src/core/security.py",
+    "src/core/api_client.py",
+)
 
 
 def clean():
     """Remove build artifacts."""
     print("Cleaning build artifacts...")
     
-    dirs_to_clean = [BUILD_DIR, "__pycache__", ".pyarmor"]
+    dirs_to_clean = [BUILD_DIR, OBFUSCATED_DIR, "__pycache__", ".pyarmor"]
     
     for dir_name in dirs_to_clean:
         if os.path.exists(dir_name):
@@ -130,14 +139,16 @@ def check_dependencies():
 def obfuscate_source():
     """Obfuscate source code with PyArmor."""
     print("Obfuscating source code with PyArmor...")
+
+    # Never allow a previous run to make a failed or partial generation look
+    # successful.  The output is intentionally isolated from the source tree.
+    _clear_obfuscated_output()
     
-    # Only obfuscate sensitive files to stay within trial limits
-    files_to_obfuscate = [
-        "src/core/security.py",
-        "src/core/api_client.py",
-    ]
+    # Process only the selected modules to stay within trial limits.
+    files_to_obfuscate = list(OBFUSCATED_MODULES)
     
-    # PyArmor obfuscation command (using free features only)
+    # PyArmor command (using free features only). A licensed Windows run is
+    # still an external smoke test; these checks validate its output contract.
     # Invoke via python -m pyarmor.cli for venv-path resilience
     cmd = [
         sys.executable, "-m", "pyarmor.cli",
@@ -149,50 +160,126 @@ def obfuscate_source():
     ]
     
     print(f"  Running: pyarmor gen --output {OBFUSCATED_DIR} ...")
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+    except OSError as exc:
+        print(f"  PyArmor could not be started: {exc}")
+        _clear_obfuscated_output()
+        return False
     
     if result.returncode != 0:
         print(f"  PyArmor error: {result.stderr}")
         print(f"  stdout: {result.stdout}")
         
-        # Check if it's a license issue
-        if "out of license" in result.stderr or "trial" in result.stdout.lower():
-            print("  WARNING: PyArmor trial limitation detected")
-            print("  Falling back to basic obfuscation...")
-            
-            # Try with minimal arguments
-            simple_cmd = [
-                sys.executable, "-m", "pyarmor.cli",
-                "gen",
-                "--output", OBFUSCATED_DIR,
-                *files_to_obfuscate,
-            ]
-            
-            print(f"  Running: pyarmor gen --output {OBFUSCATED_DIR} ...")
-            result = subprocess.run(simple_cmd, capture_output=True, text=True)
-            
-            if result.returncode != 0:
-                print(f"  Simple PyArmor also failed: {result.stderr}")
-                return False
-    
-    # Verify obfuscated output
-    if os.path.exists(OBFUSCATED_DIR):
-        print(f"  Obfuscation complete: {OBFUSCATED_DIR}/")
-        return True
-    else:
-        print("  Obfuscation failed: output directory not found")
+        _clear_obfuscated_output()
         return False
 
+    if not _validate_obfuscated_output():
+        print("  Obfuscation failed: expected package layout was not generated")
+        _clear_obfuscated_output()
+        return False
 
-def build_executable():
+    print(f"  Obfuscation complete: {OBFUSCATED_DIR}/src/core/")
+    return True
+
+
+def _clear_obfuscated_output() -> None:
+    """Remove the isolated PyArmor output directory, if present."""
+    output = Path(OBFUSCATED_DIR)
+    if output.is_symlink() or output.is_file():
+        output.unlink()
+    elif output.is_dir():
+        shutil.rmtree(output)
+
+
+def _validate_obfuscated_output() -> bool:
+    """Validate that PyArmor generated the exact importable module paths.
+
+    PyArmor can emit a flat tree when individual files are passed to ``gen``.
+    The build accepts that form only after explicitly staging both generated
+    replacements into the package-preserving ``src/core`` tree.  Any other
+    top-level layout is rejected so PyInstaller cannot silently package the
+    plain source modules instead.
+    """
+    output = Path(OBFUSCATED_DIR)
+    if not output.is_dir():
+        return False
+
+    expected = [output / relative for relative in OBFUSCATED_MODULES]
+    if not all(path.is_file() for path in expected):
+        flat = [output / Path(relative).name for relative in OBFUSCATED_MODULES]
+        if not all(path.is_file() for path in flat):
+            return False
+        package_dir = output / "src" / "core"
+        package_dir.mkdir(parents=True, exist_ok=True)
+        for source, destination in zip(flat, expected):
+            shutil.move(str(source), str(destination))
+
+    return all(
+        (output / relative).is_file()
+        and (output / relative).stat().st_size > 0
+        for relative in OBFUSCATED_MODULES
+    )
+
+
+def _validate_runtime_package(package_root: Path) -> bool:
+    """Ensure the staged package resolves each replacement by its real name."""
+    src_root = package_root / "src"
+    core_root = src_root / "core"
+    src_spec = PathFinder.find_spec("src", [str(package_root)])
+    core_spec = PathFinder.find_spec("src.core", [str(src_root)])
+    if not src_spec or not core_spec:
+        return False
+    for relative in OBFUSCATED_MODULES:
+        module_name = ".".join(Path(relative).with_suffix("").parts)
+        spec = PathFinder.find_spec(module_name, [str(core_root)])
+        expected = (package_root / relative).resolve()
+        if not spec or not spec.origin or Path(spec.origin).resolve() != expected:
+            return False
+    return True
+
+
+def _stage_obfuscated_source() -> str:
+    """Create a complete package tree with validated replacements staged in."""
+    output = Path(OBFUSCATED_DIR)
+    package_root = output / "src"
+    generated = {
+        relative: output / relative for relative in OBFUSCATED_MODULES
+    }
+    generated_bytes = {
+        relative: source.read_bytes() for relative, source in generated.items()
+    }
+    shutil.copytree(PROJECT_ROOT / "src", package_root, dirs_exist_ok=True)
+    for relative, contents in generated_bytes.items():
+        destination = package_root / Path(relative).relative_to("src")
+        destination.write_bytes(contents)
+    if not _validate_runtime_package(output):
+        raise RuntimeError("staged obfuscated modules do not resolve from src.core")
+    return str(output)
+
+
+def build_executable(use_obfuscated: bool = False):
     """Build the executable with PyInstaller."""
     print("Building executable with PyInstaller...")
     
     pyinstaller_exe = get_venv_executable("pyinstaller")
     
-    # Use obfuscated source if available
-    src_dir = "."  # Always use root since main.py is at root
-    entry = ENTRY_POINT
+    # Select the source tree explicitly.  Do not infer this from whether a
+    # stale ``obfuscated/`` directory happens to exist.
+    if use_obfuscated:
+        if not _validate_obfuscated_output():
+            print("  Build refused: obfuscated output is missing or invalid")
+            return False
+        try:
+            src_dir = _stage_obfuscated_source()
+        except (OSError, RuntimeError) as exc:
+            print(f"  Build refused: {exc}")
+            return False
+        entry = os.path.join(src_dir, ENTRY_POINT)
+    else:
+        src_dir = "."
+        entry = ENTRY_POINT
+        _clear_obfuscated_output()
     
     print(f"  Using source: {src_dir}")
     
@@ -291,10 +378,6 @@ def build_executable():
     
     # Add the source directory to path so imports work
     cmd.extend(["--paths", src_dir])
-    
-    # Add obfuscated src directory to path if available
-    if os.path.exists(OBFUSCATED_DIR):
-        cmd.extend(["--paths", os.path.join(OBFUSCATED_DIR)])
     
     # Add entry point
     cmd.append(entry)
@@ -429,10 +512,14 @@ def main():
             print("\nOBFUSCATION FAILED!")
             return 1
     else:
+        # ``clean`` normally removes this directory, but keep this invariant
+        # local to the mode switch so callers/tests cannot accidentally reuse
+        # stale generated code.
+        _clear_obfuscated_output()
         print("Skipping obfuscation (building from source)")
 
     # Build executable
-    if not build_executable():
+    if not build_executable(use_obfuscated=not args.no_obfuscate):
         print("\nBuild FAILED!")
         return 1
     
