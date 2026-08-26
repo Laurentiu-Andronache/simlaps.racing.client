@@ -10,6 +10,7 @@ from typing import Optional, Callable
 
 from ...utils.config import AppConfig, DEFAULT_SERVER_URL
 from ...utils.structured_logger import Component, log_exception
+from ...core.discord_notifier import DiscordNotifier
 from ..components.feedback import show_snackbar
 from ..components.mount_safe import mounted_page, safe_update
 
@@ -368,7 +369,7 @@ class SettingsPage(ft.Container):
                 self._discord_test_status.color = "#ff6b6b"
         else:
             # Fallback to basic URL validation
-            if webhook_url.startswith("https://discord.com/api/webhooks/"):
+            if DiscordNotifier.validate_webhook_url(webhook_url):
                 self._discord_test_status.value = "URL valid"
                 self._discord_test_status.color = "#51cf66"
             else:
