@@ -5,11 +5,13 @@ Simplified: No authentication required. Uses signed payloads and
 detects user from game logs automatically.
 """
 
-import flet as ft
+import asyncio
 import os
 import sys
 from typing import Optional
 from enum import Enum
+
+import flet as ft
 
 from .pages.home import HomePage
 from .pages.settings import SettingsPage
@@ -35,7 +37,14 @@ from src.core.pb_cache import PBCache
 from src.core.telemetry_capture import TelemetryCapture
 from src.core.track_catalog import TRACK_CATALOG
 from src.core.analyzer import TelemetryAnalyzer
-from src.utils.structured_logger import log_debug, log_info, log_warning, log_exception, Component
+from src.utils.structured_logger import (
+    log_debug,
+    log_error,
+    log_exception,
+    log_info,
+    log_warning,
+    Component,
+)
 from src.utils.config import AppConfig, ConfigManager
 
 
@@ -648,6 +657,21 @@ class SimLapsApp:
 
 async def main(page: ft.Page):
     """Application entry point for Flet."""
+    # Flet owns the event loop used by this callback. Install the handler on
+    # that running loop so exceptions from application background tasks are
+    # routed to the structured logger.
+    loop = asyncio.get_running_loop()
+
+    def handle_asyncio_exception(loop, context):
+        msg = context.get("message", "Unhandled exception in asyncio task")
+        exception = context.get("exception")
+        if exception:
+            log_exception(Component.APP, msg, exception)
+        else:
+            log_error(Component.APP, msg)
+
+    loop.set_exception_handler(handle_asyncio_exception)
+
     # Start log capture early
     from .components.debug_logs import start_log_capture
     start_log_capture()
