@@ -334,6 +334,35 @@ class SharedSessionManager:
                 for lap_num, v in self._session_data.lap_validity.items()
             }
 
+    def renumber_lap(self, old_number: int, new_number: int) -> None:
+        """Move shared per-lap records after authoritative log renumbering.
+
+        A lap may be emitted from graphics SHM before the delayed log
+        ``Relevant onSplit`` line supplies the game's absolute number.  Keep
+        all keyed shared records aligned with the corrected ``LapData``.  If a
+        destination entry already exists, retain it and drop the provisional
+        source entry; the subsequent log update will merge the authoritative
+        fields into that destination.
+        """
+        if old_number == new_number:
+            return
+
+        with self._lock:
+            for mapping in (
+                self._session_data.lap_validity,
+                self._session_data.lap_timing,
+                self._session_data.sector_splits,
+                self._session_data.sector_times,
+            ):
+                source = mapping.pop(old_number, None)
+                if source is None:
+                    continue
+                if new_number in mapping:
+                    continue
+                mapping[new_number] = source
+                if hasattr(source, "lap_number"):
+                    source.lap_number = new_number
+
     # New shared object updates
     def update_lap_validity_from_graphics_shm(self, lap_num: int, is_invalid: bool) -> None:
         with self._lock:

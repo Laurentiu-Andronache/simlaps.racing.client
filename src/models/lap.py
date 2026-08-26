@@ -87,6 +87,31 @@ class StintData:
         if fuel_used is not None and fuel_used > 0:
             self._fuel_total = (self._fuel_total or 0.0) + fuel_used
 
+    def renumber_lap(self, old_number: int, new_number: int) -> bool:
+        """Replace a provisional lap number without changing fuel totals.
+
+        Lap numbers are membership indexes, while ``_fuel_total`` is an
+        aggregate of the laps that have already been enrolled.  Renumbering
+        must therefore only move the membership entry.  If the destination is
+        already present, discard the old membership entry rather than leaving
+        a duplicate number in the stint.
+        """
+        if old_number == new_number or old_number not in self.lap_numbers:
+            return False
+
+        destination_present = new_number in self.lap_numbers
+        if destination_present:
+            self.lap_numbers = [
+                number for number in self.lap_numbers if number != old_number
+            ]
+        else:
+            self.lap_numbers = [
+                new_number if number == old_number else number
+                for number in self.lap_numbers
+            ]
+            self.lap_numbers.sort()
+        return True
+
     def to_dict(self) -> dict:
         return {
             "stint_number": self.stint_number,
@@ -185,6 +210,23 @@ class SessionData:
     def best_lap(self) -> Optional[LapData]:
         valid = self.valid_laps
         return min(valid, key=lambda l: l.lap_time_ms) if valid else None
+
+    def renumber_lap(self, lap: LapData, new_number: int) -> bool:
+        """Apply an authoritative number to a lap and its stint membership.
+
+        ``LapData`` instances are shared with UI callbacks and the parser's
+        pending/SHM reconciliation queues, so mutate the instance in place.
+        Stint membership is updated in the same model operation and handles a
+        destination collision by keeping one membership entry.
+        """
+        old_number = lap.lap_number
+        if old_number == new_number:
+            return False
+
+        lap.lap_number = new_number
+        for stint in self.stints:
+            stint.renumber_lap(old_number, new_number)
+        return True
 
     def to_dict(self) -> dict:
         return {
