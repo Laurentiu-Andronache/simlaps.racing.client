@@ -1,18 +1,16 @@
-"""Tests for ``decode_graphics_evo`` against a real captured frame.
+"""Tests for ``decode_graphics_evo`` against a synthetic protocol frame.
 
 Fixture
 -------
-``tests/fixtures/ac_evo_graphics_frame.txt`` contains the full hex of the
-graphics SHM region for one frame from the user's lap on Spa-Francorchamps
-in a Dallara EXP. The companion ``ac_evo_graphics_frame_physics.json``
-records the physics decoder's view of the same frame so we can
-cross-validate that graphics fields agree with physics where they should.
+``tests/fixtures/ac_evo_graphics_frame.txt`` contains a deterministic
+synthetic graphics SHM region. The companion JSON records the physics
+decoder's view of the same frame so we can cross-validate fields that
+should agree between the two sources.
 
-The original physics dead-reckoning ``normalized_car_position`` for this
-frame was ``0.0`` (broken — the car is clearly mid-lap at 154 km/h in 5th
-gear). The graphics ``npos`` field is the authoritative source the AI
-prompt's coaching depends on, so this fixture is the regression backstop
-for the graphics decoder.
+The synthetic physics dead-reckoning ``normalized_car_position`` is ``0.0``
+while graphics ``npos`` is non-zero. The graphics field is the authoritative
+source the AI prompt's coaching depends on, so this fixture is the regression
+backstop for the graphics decoder.
 """
 from __future__ import annotations
 
@@ -115,15 +113,12 @@ class TestDecodeGraphicsEvoFieldValues:
         assert result["normalized_car_position"] == result["npos"]
         assert result["normalized_position_source"] == "graphics_npos"
 
-    def test_npos_disagrees_with_broken_physics_dead_reckoning(self, graphics_bytes, physics):
-        """Documents *why* the graphics decoder matters: in this captured
-        frame the car is at 154 km/h in 5th gear, but physics
-        dead-reckoning collapsed to ``0.0``. Graphics ``npos`` carries
-        the real value."""
+    def test_npos_is_authoritative_over_physics_dead_reckoning(self, graphics_bytes, physics):
+        """Graphics progress remains available when physics has no position."""
         result = decode_graphics_evo(graphics_bytes)
 
-        assert physics["normalized_car_position"] == 0.0  # broken physics
-        assert result["npos"] > 0.001  # real progress
+        assert physics["normalized_car_position"] == 0.0  # no physics position
+        assert result["npos"] > 0.001  # authoritative graphics progress
 
     def test_gear_matches_physics(self, graphics_bytes, physics):
         result = decode_graphics_evo(graphics_bytes)
@@ -150,18 +145,15 @@ class TestDecodeGraphicsEvoFieldValues:
         assert abs(result["g_forces_y"] - acc_g["y"]) < 0.5
         assert abs(result["g_forces_z"] - acc_g["z"]) < 0.5
 
-    def test_known_strings_present(self, graphics_bytes):
-        """``driver_name`` and ``car_model`` were validated against the
-        user's session ('Glebulon' / 'Dallara EXP'). Anchoring the test
-        to substrings avoids brittleness if the surname trims differently
-        across runs."""
+    def test_synthetic_identity_strings_present(self, graphics_bytes):
+        """The decoder preserves identity fields at their documented offsets."""
         result = decode_graphics_evo(graphics_bytes)
 
-        assert "Glebulon" in result["driver_name"]
-        assert "Dallara" in result["car_model"]
+        assert result["driver_name"] == "Synthetic Driver"
+        assert result["car_model"] == "Synthetic Car"
 
     def test_car_location_is_on_track(self, graphics_bytes):
-        """ACEVO_TRACK = 4. Captured frame is mid-lap at 154 km/h."""
+        """ACEVO_TRACK = 4 and the synthetic car is not in the pits."""
         result = decode_graphics_evo(graphics_bytes)
 
         assert result["car_location"] == 4
