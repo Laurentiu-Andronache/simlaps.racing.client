@@ -1,8 +1,9 @@
 """
-Tests for telemetry decoder using real telemetry dump data.
+Tests for telemetry decoder using synthetic telemetry fixture data.
 
-Tests decoding of raw physics data from actual ACE telemetry captures.
-Graphics and static data are not decoded as they don't match known formats.
+Tests decoding of raw physics data from deterministic synthetic ACE telemetry frames.
+The synthetic fixture includes graphics and static buffers so dispatch paths
+are covered alongside the physics decoder.
 """
 
 import json
@@ -38,13 +39,14 @@ def raw_bytes(frame: dict, key: str) -> bytes:
 
 
 class TestPhysicsDecoding:
-    """Test physics data decoding from real telemetry."""
+    """Test physics data decoding from synthetic telemetry."""
 
     def test_physics_raw_data_exists(self):
-        """Test that physics_raw field exists in sample data."""
+        """The physics buffer reaches the production decoder."""
         frame = load_sample_frame()
-        assert 'physics_raw' in frame
-        assert len(frame['physics_raw']) > 0
+        result = decode_physics(raw_bytes(frame, 'physics_raw'))
+        assert result['_decoder'] == 'ac_structure'
+        assert result['speed_kmh'] == 0.0
 
     def test_decode_physics_returns_dict(self):
         """Test that decode_physics returns a dictionary."""
@@ -90,15 +92,16 @@ class TestPhysicsDecoding:
 
 
 class TestGraphicsDecoding:
-    """Test graphics data decoding from real telemetry."""
+    """Test graphics data decoding from synthetic telemetry."""
 
     def test_graphics_raw_data_exists(self):
-        frame = load_frame_by_number(1000)
-        assert 'graphics_raw' in frame
-        assert len(frame['graphics_raw']) > 0
+        frame = load_frame_by_number(0)
+        result = decode_graphics(raw_bytes(frame, 'graphics_raw'))
+        assert result['_decoder'] == 'ac_evo_graphics'
+        assert result['has_authoritative_progress'] is True
 
     def test_decode_graphics_known_frame(self):
-        frame = load_frame_by_number(1000)
+        frame = load_frame_by_number(0)
         graphics_raw = raw_bytes(frame, 'graphics_raw')
 
         result = decode_graphics(graphics_raw)
@@ -113,22 +116,23 @@ class TestGraphicsDecoding:
 
 
 class TestStaticDecoding:
-    """Test static data decoding from real telemetry."""
+    """Test static data decoding from synthetic telemetry."""
 
     def test_static_raw_data_exists(self):
-        frame = load_frame_by_number(1000)
-        assert 'static_raw' in frame
-        assert len(frame['static_raw']) > 0
+        frame = load_frame_by_number(0)
+        result = decode_static(raw_bytes(frame, 'static_raw'))
+        assert result['_decoder'] == 'ac_evo_static'
+        assert result['track'] == 'Synthetic Track'
 
     def test_decode_static_known_frame(self):
         """``decode_static`` now routes to the AC Evo decoder by default.
 
         With ``decode_static_evo`` in place, a populated static frame
-        decodes to a real ``ac_evo_static`` payload containing at least
+        decodes to a populated ``ac_evo_static`` payload containing at least
         the track identity fields that consumers (analyzer, AI prompt,
         HTML report) will rely on.
         """
-        frame = load_frame_by_number(1000)
+        frame = load_frame_by_number(0)
         static_raw = raw_bytes(frame, 'static_raw')
 
         result = decode_static(static_raw)
@@ -145,7 +149,7 @@ class TestStaticDecoding:
 
 
 class TestFrameStructure:
-    """Test overall frame structure from real telemetry."""
+    """Test overall frame structure from synthetic telemetry."""
 
     def test_frame_has_required_fields(self):
         """Test that frame has all required fields."""

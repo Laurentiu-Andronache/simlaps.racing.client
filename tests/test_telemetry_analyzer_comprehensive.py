@@ -886,8 +886,8 @@ class TestAnalyzeGripUtilization:
 class TestAnalysisModeGate:
     """Quality gate that decides full-coaching vs diagnostic output.
 
-    Regression test for the evening of 2026-04-25: live AC Evo captures
-    currently have 0% authoritative graphics progress (the decoder isn't
+    Regression test for captures with 0% authoritative graphics progress
+    (the decoder isn't
     written yet) but 100% plausible physics coverage. Prior to this gate
     relaxation the analyzer suppressed the AI prompt in this state, so the
     user saw an empty coaching file despite three clean laps on track.
@@ -1057,13 +1057,13 @@ class TestTelemetryAnalyzer:
     """Test TelemetryAnalyzer class."""
 
     @pytest.mark.asyncio
-    async def test_analyze_with_real_data(self):
-        """Test TelemetryAnalyzer.analyze with real telemetry data."""
+    async def test_analyze_with_synthetic_data(self):
+        """Test TelemetryAnalyzer.analyze with synthetic telemetry data."""
         from src.core.telemetry_analyzer import TelemetryAnalyzer
         import json
         from src.core.telemetry_decoder import decode_physics, physics_to_dict
         
-        # Load some real frames
+        # Load deterministic synthetic frames
         frames = []
         with open('tests/fixtures/sample_telemetry.jsonl', 'r') as f:
             for i, line in enumerate(f):
