@@ -581,6 +581,20 @@ class LogParser:
             return
         self._session_manager.update_session_metadata_from_logs(session)
 
+    def _apply_authoritative_lap_number(
+        self, lap: LapData, new_number: int
+    ) -> None:
+        """Keep parser models and shared indexes aligned after renumbering."""
+        old_number = lap.lap_number
+        if old_number == new_number:
+            return
+
+        if self.current_session is not None:
+            self.current_session.renumber_lap(lap, new_number)
+        else:
+            lap.lap_number = new_number
+        self._session_manager.renumber_lap(old_number, new_number)
+
     async def _emit_game_status(self, is_running: bool, trigger: str = "unknown") -> None:
         """Emit game status change, logging if duplicate or state change."""
         if self._last_emitted_game_status == is_running:
@@ -1574,8 +1588,9 @@ class LogParser:
         else:
             game_valid = valid_text == "true"
         # The Relevant onSplit message carries the authoritative game lap number.
-        # Correct any physics-derived lap_number (which can be off-by-one) here.
-        pending.lap_number = game_lap_number
+        # Correct any physics-derived lap_number (which can be off-by-one) here,
+        # including stint membership and records already published from SHM.
+        self._apply_authoritative_lap_number(pending, game_lap_number)
         prev_state = pending.lap_state
 
         if prev_state == LapState.OUTLAP:
