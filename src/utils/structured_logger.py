@@ -111,10 +111,18 @@ class StructuredLogger:
         # Add traceback to debug logs
         if self._debug_enabled:
             from ..ui.components.debug_logs import add_debug_log
-            tb_lines = traceback.format_exc().split('\n')
+            tb_lines = traceback.format_exception(
+                type(exception),
+                exception,
+                exception.__traceback__,
+            )
             for line in tb_lines:
-                if line.strip():
-                    add_debug_log(f"[{time.strftime('%H:%M:%S')}] [{component.value}] [TRACEBACK] {line}")
+                for rendered_line in line.rstrip().splitlines():
+                    if rendered_line.strip():
+                        add_debug_log(
+                            f"[{time.strftime('%H:%M:%S')}] "
+                            f"[{component.value}] [TRACEBACK] {rendered_line}"
+                        )
 
 
 # Global logger instance

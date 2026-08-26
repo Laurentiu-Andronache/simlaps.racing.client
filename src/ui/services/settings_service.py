@@ -95,11 +95,10 @@ class SettingsService:
                 )
 
         # Persist only after all required imports and constructors succeeded.
-        app._config = config
         if app._config_manager.set(config) is False:
-            app._config = previous
             raise OSError("Could not save application settings")
 
+        app._config = config
         was_running = bool(current_parser and current_parser.is_running)
         if log_path_changed and was_running:
             app.stop_monitoring()

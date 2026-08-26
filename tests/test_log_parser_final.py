@@ -6,9 +6,7 @@ Targeting specific uncovered branches and edge cases.
 
 import pytest
 import asyncio
-import os
 from unittest.mock import patch
-os.environ["APP_SECRET"] = "0000000000000000000000000000000000000000000000000000000000000000"
 
 from src.core.log_parser import LogParser
 from src.models import SessionData, LapState, LapData

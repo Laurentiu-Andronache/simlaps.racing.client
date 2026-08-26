@@ -90,6 +90,93 @@ def _nearest_lap_marker_by_time(markers: List, timing_lap_time: Any):
     return min(candidates, key=lambda candidate: (candidate[0], candidate[1]))[2]
 
 
+def _clean_completed_lap_track(
+    lap_track: List[Dict[str, Any]],
+    completed_lap_time_ms: Any,
+    *,
+    hz: float,
+) -> tuple[List[Dict[str, Any]], int, int]:
+    """Remove non-driving samples and a stale prefix from a completed lap.
+
+    ACE's live current-lap timer can continue through ``BackToPit`` and a
+    subsequent pit exit even though the next reported completed-lap time only
+    covers the final on-track portion.  The finish-line boundary is still
+    authoritative; when the monotonic timer span is materially longer than
+    that completed time, retain the matching suffix.  Ordinary rounding and
+    normal pit-lane starts remain below the deliberately generous tolerance.
+    """
+    if not lap_track:
+        return [], 0, 0
+
+    active_track = [
+        point for point in lap_track if point.get("status_name") != "AC_PAUSE"
+    ]
+    paused_removed = len(lap_track) - len(active_track)
+
+    def finalize(points: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        if not paused_removed or not points:
+            return points
+        first_frame = points[0]["frame"]
+        compressed = []
+        for offset, point in enumerate(points):
+            sample = dict(point)
+            sample["source_frame"] = point["frame"]
+            sample["frame"] = first_frame + offset
+            compressed.append(sample)
+        return compressed
+
+    if len(active_track) < 20:
+        return finalize(active_track), 0, paused_removed
+
+    completed_time = _optional_float(completed_lap_time_ms)
+    if completed_time is None or completed_time <= 0:
+        return finalize(active_track), 0, paused_removed
+
+    timed_points: List[tuple[int, float]] = []
+    for index, point in enumerate(active_track):
+        timer = _optional_float(point.get("lap_time_ms"))
+        if timer is not None and timer >= 0:
+            timed_points.append((index, timer))
+    if len(timed_points) < 2:
+        return finalize(active_track), 0, paused_removed
+
+    sampling_tolerance_ms = max(1.0, 2_000.0 / max(hz, 1.0))
+    if any(
+        current_timer + sampling_tolerance_ms < previous_timer
+        for (_, previous_timer), (_, current_timer) in zip(
+            timed_points,
+            timed_points[1:],
+        )
+    ):
+        return finalize(active_track), 0, paused_removed
+
+    timer_start = timed_points[0][1]
+    timer_end = timed_points[-1][1]
+    timer_span = timer_end - timer_start
+    trim_tolerance_ms = max(
+        _LAP_SEGMENT_MIN_TRIM_MS,
+        completed_time * 0.05,
+        sampling_tolerance_ms * 2.0,
+    )
+    if timer_span <= completed_time + trim_tolerance_ms:
+        return finalize(active_track), 0, paused_removed
+
+    target_timer = timer_end - completed_time
+    trim_index = next(
+        (
+            index
+            for index, timer in timed_points
+            if timer >= target_timer
+        ),
+        0,
+    )
+    candidate = active_track[trim_index:]
+    if trim_index <= 0 or len(candidate) < 20:
+        return finalize(active_track), 0, paused_removed
+
+    return finalize(candidate), trim_index, paused_removed
+
+
 def _read_static_track_config(frames: List[FrameData]) -> tuple[Optional[str], Optional[str]]:
     """Extract authoritative track/config names from the static SHM region.
 

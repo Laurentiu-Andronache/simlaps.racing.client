@@ -6,8 +6,6 @@ Targeting error handling, exception paths, and edge conditions.
 
 import pytest
 import asyncio
-import os
-os.environ["APP_SECRET"] = "0000000000000000000000000000000000000000000000000000000000000000"
 
 from src.core.log_parser import LogParser
 from src.models import SessionData, InProgressLap, LapState

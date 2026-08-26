@@ -6,8 +6,6 @@ This targets the biggest uncovered chunk (lines 1262-1382).
 
 import pytest
 import asyncio
-import os
-os.environ["APP_SECRET"] = "0000000000000000000000000000000000000000000000000000000000000000"
 
 from src.core.log_parser import LogParser
 from src.models import LapState, SessionData, SharedSessionManager
@@ -15,6 +13,51 @@ from src.models import LapState, SessionData, SharedSessionManager
 
 class TestFollowCore:
     """Test core follow() functionality."""
+
+    @pytest.mark.asyncio
+    async def test_stop_during_large_historical_pass_exits_before_live_callbacks(
+        self, tmp_path
+    ):
+        """Stopping at a cooperative yield must not cross the live boundary."""
+        car_id = "4d27cc23-ee6c-e0de-9c38-10448288bcbb"
+        historical_lap = (
+            "[2026-05-20 00:01:03.439] [gameplay] [info] "
+            f"New lap carId {car_id}: 02:23.706\n"
+            "[2026-05-20 00:01:03.500] [network] [info] "
+            "Relevant onSplit for Combo 6@2: laptime 143706, valid true, "
+            "flags 2, lap 1 (prev 0)\n"
+        )
+        log_file = tmp_path / "large-historical.log"
+        log_file.write_text(historical_lap + ("unrelated log line\n" * 600))
+        statuses = []
+        laps = []
+
+        async def on_status(status):
+            statuses.append(status)
+
+        async def on_lap(session, lap):
+            laps.append(lap)
+
+        parser = LogParser(
+            log_path=str(log_file),
+            on_status_change=on_status,
+            on_lap_complete=on_lap,
+        )
+        parser.context.car_uuid = car_id
+        parser.context.player_car_uuids.add(car_id)
+        parser.current_session = SessionData(track="spa", car="porsche")
+
+        async def stop_at_checkpoint():
+            await asyncio.sleep(0)
+            parser.stop()
+
+        stop_task = asyncio.create_task(stop_at_checkpoint())
+        await asyncio.wait_for(parser.follow(poll_interval=0.01), timeout=1.0)
+        await stop_task
+
+        assert laps == []
+        assert all("Monitoring for new laps" not in status for status in statuses)
+        assert all("Ready" not in status for status in statuses)
 
     @pytest.mark.asyncio
     async def test_follow_exits_when_stop_is_called(self, tmp_path):
