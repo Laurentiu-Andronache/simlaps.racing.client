@@ -49,6 +49,12 @@ class APIClient:
     DEFAULT_SERVER_URL = "https://simlaps.racing"
     SUBMIT_ENDPOINT = "/api/submit"
     TIMEOUT = 30.0
+    # Responses are small API messages, not data downloads.  Keep parsing and
+    # displaying remote error fields bounded so an error page or an accidental
+    # huge payload never reaches the UI/logs.
+    MAX_RESPONSE_BYTES = 64 * 1024
+    MAX_ERROR_MESSAGE_LENGTH = 512
+    INVALID_RESPONSE_MESSAGE = "Invalid response from server"
 
     def __init__(
         self,
@@ -100,16 +106,9 @@ class APIClient:
         submit_invalid: bool = False,
     ) -> SubmissionResult:
         """Submit a completed lap to the server."""
-        log_debug(
-            Component.API,
-            "submit_lap called",
-            lap_time=lap.lap_time_str,
-            lap_time_ms=lap.lap_time_ms,
-            is_valid=lap.is_valid,
-            submit_invalid=submit_invalid,
-        )
 
-        # Offline mode must remain first: no game detection, signing, or HTTP.
+        # Offline mode must remain the first operation: no object inspection,
+        # game detection, signing, client creation, or HTTP is allowed.
         if not is_secret_configured():
             log_info(
                 Component.API,
@@ -119,6 +118,15 @@ class APIClient:
                 status=SubmissionStatus.NO_SECRET,
                 message="APP_SECRET not configured — running in offline mode",
             )
+
+        log_debug(
+            Component.API,
+            "submit_lap called",
+            lap_time=lap.lap_time_str,
+            lap_time_ms=lap.lap_time_ms,
+            is_valid=lap.is_valid,
+            submit_invalid=submit_invalid,
+        )
 
         # The parser's completed-lap verdict is authoritative. Graphics SHM
         # cannot distinguish contact from track cuts and must not override it.
@@ -389,28 +397,37 @@ class APIClient:
         )
 
         if response.status_code == 201:
-            data = response.json()
-            log_info(Component.API, "SUCCESS", lap_id=data.get("id"))
+            data = self._safe_response_json(response)
+            if (
+                not isinstance(data, dict)
+                or not isinstance(data.get("id"), str)
+                or not data["id"]
+            ):
+                log_warning(Component.API, "Invalid 201 response shape")
+                return SubmissionResult(
+                    status=SubmissionStatus.ERROR,
+                    message=self.INVALID_RESPONSE_MESSAGE,
+                )
+            log_info(Component.API, "SUCCESS", lap_id=data["id"])
             return SubmissionResult(
                 status=SubmissionStatus.SUCCESS,
                 message="Lap submitted successfully",
-                lap_id=data.get("id"),
+                lap_id=data["id"],
             )
         if response.status_code == 401:
-            error_data = response.json() if response.content else {}
             log_warning(
                 Component.API,
                 "401 signature error",
-                error_data=error_data,
             )
             return SubmissionResult(
                 status=SubmissionStatus.SIGNATURE_ERROR,
                 message="Signature verification failed - please update the app",
             )
         if response.status_code == 409:
-            error_data = response.json()
-            error_msg = error_data.get("error", "Conflict")
-            if "nonce" in error_msg.lower() or "replay" in error_msg.lower():
+            error_msg = self._response_error(response, "Conflict")
+            if error_msg and (
+                "nonce" in error_msg.lower() or "replay" in error_msg.lower()
+            ):
                 return SubmissionResult(
                     status=SubmissionStatus.REPLAY_REJECTED,
                     message="Replay attack detected - submission rejected",
@@ -425,12 +442,12 @@ class APIClient:
                 message="Too many submissions - please wait",
             )
         if response.status_code == 422:
-            error_data = response.json()
-            error_msg = error_data.get("error", "Plausibility check failed")
+            error_data = self._safe_response_json(response)
+            error_msg = self._error_from_json(error_data, "Plausibility check failed")
             log_debug(
                 Component.API,
                 "422 plausibility error",
-                error_data=error_data,
+                error_message=error_msg,
                 payload_sent=signed_payload,
             )
             return SubmissionResult(
@@ -438,40 +455,29 @@ class APIClient:
                 message=f"Lap rejected: {error_msg}",
             )
         if response.status_code == 400:
-            error_data = response.json()
-            error_msg = error_data.get("error", "Validation error")
+            error_data = self._safe_response_json(response)
+            error_msg = self._error_from_json(error_data, "Validation error")
             log_debug(
                 Component.API,
                 "400 validation error",
-                error_data=error_data,
+                error_message=error_msg,
                 payload_sent=signed_payload,
             )
-            if isinstance(error_msg, list):
-                error_msg = "; ".join(str(error) for error in error_msg)
             return SubmissionResult(
                 status=SubmissionStatus.ERROR,
                 message=f"Validation error: {error_msg}",
             )
         if 400 <= response.status_code < 500:
-            try:
-                error_data = response.json()
-            except (ValueError, KeyError, TypeError):
-                error_data = {"error": response.text}
+            error_data = self._safe_response_json(response)
+            error_msg = self._error_from_json(error_data, "Client error")
             log_debug(
                 Component.API,
                 "4XX client error",
                 status_code=response.status_code,
-                error_data=error_data,
+                error_message=error_msg,
                 payload_sent=signed_payload,
                 headers=dict(response.headers),
             )
-            error_msg = (
-                error_data.get("error", "Client error")
-                if isinstance(error_data, dict)
-                else str(error_data)
-            )
-            if isinstance(error_msg, list):
-                error_msg = "; ".join(str(error) for error in error_msg)
             return SubmissionResult(
                 status=SubmissionStatus.ERROR,
                 message=f"Client error {response.status_code}: {error_msg}",
@@ -480,6 +486,49 @@ class APIClient:
             status=SubmissionStatus.ERROR,
             message=f"Server error: {response.status_code}",
         )
+
+    @classmethod
+    def _safe_response_json(cls, response: httpx.Response) -> Any:
+        """Decode a response body once, returning ``None`` for unsafe input."""
+        try:
+            body = response.content
+            if (
+                isinstance(body, (bytes, bytearray))
+                and len(body) > cls.MAX_RESPONSE_BYTES
+            ):
+                return None
+            return response.json()
+        except Exception:
+            # JSON decoders and response doubles can raise different exception
+            # types.  None is deliberately the only public fallback.
+            return None
+
+    @classmethod
+    def _error_from_json(cls, data: Any, default: str) -> str:
+        """Extract a bounded, expected error field without stringifying bodies."""
+        if not isinstance(data, dict):
+            return default
+        error = data.get("error")
+        if isinstance(error, str):
+            error = error.strip()
+            if error and len(error) <= cls.MAX_ERROR_MESSAGE_LENGTH:
+                return error
+            return default
+        if isinstance(error, list):
+            if not error or not all(isinstance(item, str) for item in error):
+                return default
+            items = [item.strip() for item in error]
+            if any(not item for item in items):
+                return default
+            combined = "; ".join(items)
+            if len(combined) <= cls.MAX_ERROR_MESSAGE_LENGTH:
+                return combined
+        return default
+
+    @classmethod
+    def _response_error(cls, response: httpx.Response, default: str) -> str:
+        """Decode a standard error object and provide a stable fallback."""
+        return cls._error_from_json(cls._safe_response_json(response), default)
 
     def _normalize_track_id(self, track_name: str) -> str:
         """
@@ -529,6 +578,11 @@ class APIClient:
             response = await client.get(f"{self.server_url}/api/tracks")
             if response.status_code != 200 and not (300 <= response.status_code < 400):
                 return False, f"Server returned status {response.status_code}"
+            if response.status_code == 200:
+                tracks = self._safe_response_json(response)
+                if not isinstance(tracks, list):
+                    log_warning(Component.API, "Invalid tracks response shape")
+                    return False, self.INVALID_RESPONSE_MESSAGE
             
             # Now test the secret
             secret_ok, secret_msg = await self.test_secret()
@@ -589,16 +643,20 @@ class APIClient:
             )
             
             if response.status_code == 200:
-                data = response.json()
-                if data.get('valid'):
+                data = self._safe_response_json(response)
+                if not isinstance(data, dict) or not isinstance(
+                    data.get("valid"), bool
+                ):
+                    log_warning(Component.API, "Invalid test-secret response shape")
+                    return False, self.INVALID_RESPONSE_MESSAGE
+                if data["valid"]:
                     return True, "Secret verified"
-                else:
-                    return False, data.get('error', 'Unknown error')
+                return False, self._error_from_json(data, "Unknown error")
             elif response.status_code == 401:
                 return False, "secret mismatch - rebuild client with correct secret"
             elif response.status_code == 500:
-                data = response.json()
-                return False, data.get('error', 'Server error')
+                data = self._safe_response_json(response)
+                return False, self._error_from_json(data, "Server error")
             else:
                 return False, f"Unexpected status {response.status_code}"
                 
@@ -618,8 +676,14 @@ class APIClient:
             response = await client.get(f"{self.server_url}/api/version")
             
             if response.status_code == 200:
-                data = response.json()
+                data = self._safe_response_json(response)
+                if not isinstance(data, dict):
+                    log_warning(Component.API, "Invalid version response shape")
+                    return {"available": False}
                 latest_version = data.get("latestClientVersion")
+                if not isinstance(latest_version, str):
+                    return {"available": False}
+                latest_version = latest_version.strip()
                 
                 if latest_version:
                     # Parse versions
@@ -642,7 +706,11 @@ class APIClient:
                             return {
                                 "available": True,
                                 "version": latest_version,
-                                "min_version": data.get("minClientVersion"),
+                                "min_version": (
+                                    data.get("minClientVersion").strip()
+                                    if isinstance(data.get("minClientVersion"), str)
+                                    else None
+                                ),
                             }
                     except (ValueError, IndexError):
                         pass
