@@ -523,7 +523,7 @@ class TelemetryAnalyzer:
                 "plausible_frame_ratio": lap_plausible_ratio,
                 "uses_canonical_progress": uses_canonical_progress,
             })
-            fuel_str = f"  fuel {fuel_used:.3f}L" if fuel_used is not None else ""
+            fuel_str = f"{fuel_used:.3f}L" if fuel_used is not None else ""
             log_debug(
                 Component.ANALYZER,
                 "Lap summary",

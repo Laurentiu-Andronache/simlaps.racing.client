@@ -1274,6 +1274,50 @@ class TestTelemetryAnalyzer:
         assert summary["laps"] == 2
 
     @pytest.mark.asyncio
+    async def test_analyze_logs_fuel_as_a_single_structured_value(self, tmp_path):
+        """The structured logger owns the ``fuel=`` label."""
+        from src.core.telemetry_analyzer import TelemetryAnalyzer
+
+        frames = [
+            create_mock_frame(
+                frame_num,
+                speed=100.0,
+                position=(frame_num % 60) / 60,
+            )
+            for frame_num in range(80)
+        ]
+        for frame_num, frame in enumerate(frames):
+            frame.physics["fuel"] = 10.0 - frame_num * 0.01
+
+        analyzer = TelemetryAnalyzer(output_dir=str(tmp_path))
+        with (
+            patch.object(
+                analyzer,
+                "_generate_html",
+                new=AsyncMock(return_value="report.html"),
+            ),
+            patch.object(
+                analyzer,
+                "_generate_ai_prompt",
+                new=AsyncMock(return_value="prompt.txt"),
+            ),
+            patch("src.core.telemetry_analyzer.log_debug") as log_debug_spy,
+        ):
+            await analyzer.analyze(
+                frames,
+                hz=10.0,
+                game_lap_boundaries=[(60, 60_000, 1, "VALID")],
+                output_prefix="fuel_log",
+            )
+
+        lap_summary = next(
+            call
+            for call in log_debug_spy.call_args_list
+            if len(call.args) >= 2 and call.args[1] == "Lap summary"
+        )
+        assert lap_summary.kwargs["fuel"] == "0.590L"
+
+    @pytest.mark.asyncio
     async def test_analyze_all_invalid_session_has_no_best_or_persisted_pb(self, tmp_path):
         """An all-invalid session remains diagnostic and must not create PB history."""
         from src.core.telemetry_analyzer import TelemetryAnalyzer

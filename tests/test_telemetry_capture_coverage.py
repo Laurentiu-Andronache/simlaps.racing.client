@@ -195,6 +195,45 @@ class TestExportToJsonl:
         finally:
             os.unlink(path)
 
+    @patch("src.core.telemetry_capture.RegionReader")
+    def test_export_metadata_includes_region_found_after_late_reconnect(
+        self,
+        mock_reader_cls,
+        tmp_path,
+    ):
+        capture = TelemetryCapture(hz=10.0)
+        capture._region_paths = {
+            "graphics": "Local\\acevo_pmf_graphics",
+            "static": "Local\\acevo_pmf_static",
+        }
+        capture._refresh_capture_metadata()
+        first_connection_time = capture._metadata.captured_at
+
+        readers = {
+            "graphics": MagicMock(),
+            "static": MagicMock(),
+        }
+        physics_reader = MagicMock()
+        physics_reader.open.return_value = True
+        physics_reader._path_used = "Local\\acevo_pmf_physics"
+        mock_reader_cls.return_value = physics_reader
+
+        capture._reconnect_missing(readers)
+        capture._readers = readers
+        capture._close_readers()
+
+        output_path = tmp_path / "capture.jsonl"
+        assert capture.export_to_jsonl(str(output_path)) is True
+        metadata = json.loads(output_path.read_text(encoding="utf-8").splitlines()[0])
+
+        assert metadata["_regions_found"] == ["physics", "graphics", "static"]
+        assert metadata["capture_metadata"]["regions_found"] == [
+            "physics",
+            "graphics",
+            "static",
+        ]
+        assert metadata["capture_metadata"]["captured_at"] == first_connection_time
+
     def test_export_failure(self):
         capture = TelemetryCapture(hz=10.0)
         capture._frames = [FrameData(timestamp="2024-01-01T00:00:00Z", frame_number=0, physics={})]
@@ -363,6 +402,36 @@ class TestStartCapture:
         assert capture._output_prefix is not None
 
     @pytest.mark.asyncio
+    async def test_start_resets_regions_seen_in_previous_session(self):
+        capture = TelemetryCapture(hz=10.0)
+        capture._region_paths = {"physics": "Local\\acevo_pmf_physics"}
+        capture._refresh_capture_metadata()
+        observed_region_paths = None
+        graphics_reader = MagicMock()
+
+        def connect_second_session():
+            nonlocal observed_region_paths
+            observed_region_paths = capture._region_paths.copy()
+            capture._region_paths["graphics"] = "Local\\acevo_pmf_graphics"
+            capture._refresh_capture_metadata()
+            return {"graphics": graphics_reader}
+
+        with patch.object(
+            capture,
+            "_connect_regions",
+            side_effect=connect_second_session,
+        ):
+            result = await capture.start_capture()
+
+        assert result is True
+        assert observed_region_paths == {}
+        assert capture._region_paths == {
+            "graphics": "Local\\acevo_pmf_graphics",
+        }
+        assert capture._metadata.regions_found == ["graphics"]
+        await capture.stop_capture("manual")
+
+    @pytest.mark.asyncio
     async def test_start_with_debug_logs_opens_diag_file(self):
         capture = TelemetryCapture(hz=10.0, debug_logs=True)
         capture._running = False
@@ -509,6 +578,51 @@ class TestValidityOnlyCaptureLoop:
 
         assert seen == [0, 1, 2]
         assert capture.get_frames() == []
+
+    @pytest.mark.asyncio
+    async def test_progress_distinguishes_lifetime_samples_from_retained_frames(self):
+        capture = TelemetryCapture(hz=10.0, record_frames=True)
+        capture._recording_awaiting_boundary = True
+        capture._running = True
+        capture._readers = {"physics": MagicMock(size=4)}
+
+        def sample(frame_number):
+            capture._last_sample_had_data = True
+            if frame_number == 150:
+                capture._recording_awaiting_boundary = False
+            if frame_number == 299:
+                capture._running = False
+            return FrameData(
+                timestamp="2026-01-01T00:00:00Z",
+                frame_number=frame_number,
+                physics={"speed_kmh": 10.0},
+            )
+
+        with (
+            patch.object(capture, "_reconnect_missing"),
+            patch.object(capture, "_capture_frame", side_effect=sample),
+            patch(
+                "src.core.telemetry_capture.is_game_running",
+                return_value=GameProcessStatus.RUNNING,
+            ),
+            patch(
+                "src.core.telemetry_capture.asyncio.sleep",
+                new=AsyncMock(),
+            ),
+            patch("src.core.telemetry_capture.log_info") as log_info_spy,
+        ):
+            await capture._capture_loop()
+
+        progress_calls = [
+            call
+            for call in log_info_spy.call_args_list
+            if len(call.args) >= 2 and call.args[1] == "Capture progress"
+        ]
+        assert len(progress_calls) == 1
+        assert progress_calls[0].kwargs == {
+            "samples": 300,
+            "retained_frames": 150,
+        }
 
     @pytest.mark.parametrize(
         ("record_frames", "awaiting_boundary"),
