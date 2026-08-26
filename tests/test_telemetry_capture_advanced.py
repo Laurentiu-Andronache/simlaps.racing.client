@@ -5,6 +5,7 @@ Tests capture loop, session management, and error recovery.
 """
 
 import pytest
+import os
 from unittest.mock import Mock, MagicMock, patch, AsyncMock
 from src.core.telemetry_capture import (
     TelemetryCapture,
@@ -233,6 +234,60 @@ class TestFrameBuffering:
         capture._frames.clear()
         
         assert len(capture._frames) == 0
+
+    def test_long_recording_spools_ordered_frames_and_keeps_resident_bound(self):
+        """Older frames move to disk without changing analyzer indexes."""
+        capture = TelemetryCapture(hz=10.0, resident_frame_limit=3)
+        try:
+            for frame_number in range(10):
+                assert capture._retain_frame(
+                    FrameData(
+                        timestamp=f"2026-01-01T00:00:{frame_number:02d}Z",
+                        frame_number=frame_number,
+                        physics={"speed_kmh": frame_number},
+                    )
+                )
+
+            assert len(capture._frames) == 3
+            assert capture.get_frame_count() == 10
+            assert capture._spool_path is not None
+            assert [frame.frame_number for frame in capture.get_frames()] == list(range(10))
+
+            capture.record_lap_boundary(90_000, 1)
+            assert capture.get_lap_boundaries()[-1].frame_index == 9
+        finally:
+            capture.clear()
+
+    @pytest.mark.asyncio
+    async def test_stop_materializes_spool_and_removes_temporary_file(self):
+        capture = TelemetryCapture(hz=10.0, resident_frame_limit=2)
+        capture._running = True
+        for frame_number in range(5):
+            capture._retain_frame(
+                FrameData("2026-01-01T00:00:00Z", frame_number, {"speed_kmh": 10})
+            )
+        spool_path = capture._spool_path
+        assert spool_path is not None
+
+        frames = await capture.stop_capture("manual")
+
+        assert [frame.frame_number for frame in frames] == list(range(5))
+        assert not os.path.exists(spool_path)
+        assert capture._spool_path is None
+        assert capture.get_frame_count() == 0
+
+    def test_spool_ceiling_stops_without_dropping_frame(self):
+        capture = TelemetryCapture(hz=10.0, resident_frame_limit=2)
+        capture.MAX_SPOOL_BYTES = 1
+        for frame_number in range(3):
+            capture._retain_frame(
+                FrameData("2026-01-01T00:00:00Z", frame_number, {"speed_kmh": 10})
+            )
+
+        assert capture._retention_limit_reached is True
+        assert capture.is_capturing() is False
+        assert [frame.frame_number for frame in capture.get_frames()] == [0, 1, 2]
+        capture.clear()
 
 
 class TestOutputGeneration:
