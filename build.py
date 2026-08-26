@@ -221,8 +221,9 @@ def build_command() -> list[str]:
     """Return the PyInstaller command for a secret-free client artifact.
 
     Secrets are deliberately not part of the artifact plan.  An authorized
-    operator may provision ``APP_SECRET`` in the process environment of the
-    installed client, but a build must never read or package a local ``.env``.
+    operator may provision ``APP_SECRET`` in the process environment or an
+    external runtime ``.env`` beside the installed client, but a build must
+    never read, copy, or package a local ``.env``.
     """
     pyinstaller_exe = get_venv_executable("pyinstaller")
     plan = build_artifact_plan()
@@ -457,7 +458,7 @@ def main():
     print(f"\nExecutable: {DIST_DIR}/{APP_NAME}.exe")
     if not args.no_obfuscate:
         print("Source code obfuscated with PyArmor")
-    print("No credentials were bundled. APP_SECRET is read only from the installed client's environment.")
+    print("No credentials were bundled. APP_SECRET is loaded only at runtime from the process environment or an external .env beside the installed client.")
     
     return 0
 
