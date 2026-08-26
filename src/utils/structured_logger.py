@@ -70,16 +70,20 @@ class StructuredLogger:
         """Log a structured message."""
         formatted = self._format_message(component, level, message, **kwargs)
         
-        # Always send to debug logs viewer
-        if self._debug_enabled:
-            from ..ui.components.debug_logs import add_debug_log
-            add_debug_log(formatted)
-        
-        # Also print to console for critical levels
+        # Send the event through one capture path.  Console output bypasses
+        # the stdout/stderr wrappers, which already capture ordinary writes.
+        from ..ui.components.debug_logs import emit_structured_log
+
+        console_stream = None
         if level in [LogLevel.ERROR, LogLevel.CRITICAL]:
-            print(formatted, file=sys.stderr)
+            console_stream = sys.stderr
         elif level in [LogLevel.WARNING]:
-            print(formatted, file=sys.stdout)
+            console_stream = sys.stdout
+        emit_structured_log(
+            formatted,
+            console_stream,
+            capture=self._debug_enabled,
+        )
     
     def debug(self, component: Component, message: str, **kwargs):
         """Log a debug message."""
@@ -121,7 +125,8 @@ class StructuredLogger:
                     if rendered_line.strip():
                         add_debug_log(
                             f"[{time.strftime('%H:%M:%S')}] "
-                            f"[{component.value}] [TRACEBACK] {rendered_line}"
+                            f"[{component.value}] [TRACEBACK] {rendered_line}",
+                            already_timestamped=True,
                         )
 
 
