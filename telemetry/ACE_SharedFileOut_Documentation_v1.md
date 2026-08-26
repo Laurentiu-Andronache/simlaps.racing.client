@@ -13,6 +13,21 @@
 - \[2026-03-31\] **\!\!\!** display\_current\_page\_index is now an array of 16 items (it was 9 before)  
 - \[2026-03-31\] the example solution has been updated
 
+## **Client capture note**
+
+The decoder sizes in the client are minimum known protocol windows, not proof
+that a newer ACE mapping ends at that offset. Normal capture reads only those
+fixed windows. When telemetry debug logs are explicitly enabled, the client
+maps each named mapping read-only to its end, measures contiguous committed
+readable pages with `VirtualQuery`, and captures at most 64 KiB per mapping.
+Debug metadata records the configured minimum, discovered size, and selected
+read size. If discovery fails or reports less than the known minimum, capture
+falls back to the fixed window.
+
+ACE 0.9 added new assist and session behavior, but additional bytes remain
+undocumented until controlled captures establish stable offsets and types. Do
+not assign field names from one observed value or feature correlation alone.
+
 # **Enumerations**
 
 ## **ACEVO\_STATUS**
