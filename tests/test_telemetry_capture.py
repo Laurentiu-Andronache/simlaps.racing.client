@@ -201,6 +201,7 @@ class TestTelemetryCapture:
         """Decoded SHM frame data is forwarded into the shared session manager."""
         mock_decode_physics.return_value = {"speed_kmh": 255.0}
         mock_decode_graphics.return_value = {
+            "status_name": "AC_LIVE",
             "session_current_lap": 4,
             "current_lap_time_ms": 70000,
             "last_laptime_ms": 121111,

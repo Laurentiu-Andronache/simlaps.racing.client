@@ -16,6 +16,29 @@ import uuid
 
 from .lap import LapData, SessionData
 
+
+_TERMINAL_SESSION_PHASES = frozenset({
+    "ended",
+    "disqualified",
+    "teardown",
+})
+
+
+def _is_terminal_graphics_state(
+    graphics_data: Dict[str, Any],
+    current_phase: Optional[str],
+) -> bool:
+    """Return whether a graphics snapshot is a terminal/teardown state."""
+    phase = graphics_data.get("session_phase", current_phase)
+    normalized_phase = str(phase or "").strip().casefold()
+    if normalized_phase in _TERMINAL_SESSION_PHASES:
+        return True
+
+    # AC_OFF is the mapping teardown state. It is terminal even when a stale
+    # phase string remains from the last active snapshot.
+    status_name = str(graphics_data.get("status_name") or "").strip().upper()
+    return status_name == "AC_OFF"
+
 @dataclass
 class LapValidityData:
     """Lap validity information for lap posting."""
@@ -601,6 +624,16 @@ class SharedSessionManager:
         # the physical lap counter because that counter can be reused after a
         # pit stop.
         with self._lock:
+            # Publish phase before evaluating timing transitions. The same
+            # snapshot must decide both whether a completion is physical and
+            # whether the active validity latch remains meaningful.
+            incoming_phase = graphics_data.get("session_phase")
+            if incoming_phase is not None:
+                self._session_data.session_phase = incoming_phase
+            terminal_state = _is_terminal_graphics_state(
+                graphics_data,
+                self._session_data.session_phase,
+            )
             previous_completed = self._session_data.total_laps
             previous_lap_time_ms = int(self._session_data.current_lap_time_ms or 0)
             lap_timer_reset = (
@@ -616,7 +649,11 @@ class SharedSessionManager:
                 previous_completed is not None
                 and completed_laps > int(previous_completed)
             )
-            if (completed_timer_reset or counter_advanced) and last_laptime_ms > 0:
+            if (
+                not terminal_state
+                and (completed_timer_reset or counter_advanced)
+                and last_laptime_ms > 0
+            ):
                 now_mono = time.monotonic()
                 latest = self._session_data.latest_lap_completion
                 duplicate_transition = (
@@ -647,20 +684,23 @@ class SharedSessionManager:
             # outlap boundary where ACE deliberately leaves last_laptime_ms at
             # zero.  Do not let an invalid outlap latch contaminate the first
             # timed lap merely because there is no completion to publish.
-            if lap_timer_reset or counter_advanced:
+            if terminal_state:
+                self._session_data.active_lap_is_valid = None
+            elif lap_timer_reset or counter_advanced:
                 self._session_data.active_lap_is_valid = None
 
-            if current_lap_time_ms <= 0:
-                self._session_data.active_lap_is_valid = None
-            elif is_valid_lap is not None:
-                sampled_validity = bool(is_valid_lap)
-                if self._session_data.active_lap_is_valid is None:
-                    self._session_data.active_lap_is_valid = sampled_validity
-                elif not sampled_validity:
-                    # Once ACE invalidates an active lap, keep that verdict
-                    # until its timer resets. The finish-line frame may
-                    # already carry the next lap's valid=True value.
-                    self._session_data.active_lap_is_valid = False
+            if not terminal_state:
+                if current_lap_time_ms <= 0:
+                    self._session_data.active_lap_is_valid = None
+                elif is_valid_lap is not None:
+                    sampled_validity = bool(is_valid_lap)
+                    if self._session_data.active_lap_is_valid is None:
+                        self._session_data.active_lap_is_valid = sampled_validity
+                    elif not sampled_validity:
+                        # Once ACE invalidates an active lap, keep that verdict
+                        # until its timer resets. The finish-line frame may
+                        # already carry the next lap's valid=True value.
+                        self._session_data.active_lap_is_valid = False
         if shm_current_lap > 0:
             current_lap = shm_current_lap
         else:
@@ -702,7 +742,11 @@ class SharedSessionManager:
                 graphics_data["last_laptime_ms"] = 0
             self.update_lap_timing_from_graphics_shm(
                 current_lap,
-                graphics_data,
+                (
+                    {**graphics_data, "last_laptime_ms": 0}
+                    if terminal_state
+                    else graphics_data
+                ),
                 completed_lap_num=completed_laps if completed_laps > 0 else None,
             )
 
@@ -720,7 +764,9 @@ class SharedSessionManager:
             # why it must NOT be checked first (False ≠ None).
             lap_time_ms = current_lap_time_ms
 
-            if is_valid_lap is not None:
+            if terminal_state:
+                is_invalid = None
+            elif is_valid_lap is not None:
                 # is_valid_lap is the authoritative flag on AC Evo 0.8.0.1.
                 # Only apply it when timing is active (lap_time_ms > 0).
                 # When lap_time_ms == 0, timing is inactive (session end,
@@ -744,7 +790,8 @@ class SharedSessionManager:
         with self._lock:
             self._session_data.total_laps = graphics_data.get("total_lap_count")
             self._session_data.current_lap = graphics_data.get("session_current_lap")
-            self._session_data.session_phase = graphics_data.get("session_phase")
+            if "session_phase" in graphics_data:
+                self._session_data.session_phase = graphics_data.get("session_phase")
             self._session_data.session_time_left_ms = graphics_data.get("session_time_left_ms")
             self._session_data.current_pos = graphics_data.get("current_pos")
             self._session_data.total_drivers = graphics_data.get("total_drivers")
