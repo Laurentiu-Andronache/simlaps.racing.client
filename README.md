@@ -124,6 +124,10 @@ python build.py --no-obfuscate
 python build.py --clean
 ```
 
+The build validates the PyArmor package layout before invoking PyInstaller.
+The licensed Windows PyArmor run remains an external smoke test, and PyArmor
+does not protect secrets bundled in an executable.
+
 The executable will be created at `dist/SimLapsClient.exe`.
 
 ### Build Output
