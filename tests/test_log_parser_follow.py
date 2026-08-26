@@ -624,6 +624,238 @@ class TestFollowLiveTailing:
     """Test live tailing behavior."""
 
     @pytest.mark.asyncio
+    async def test_rotation_discards_pending_and_unmatched_shm_lap(self, tmp_path):
+        """A rotated input stream cannot reconcile or emit the old stream's lap."""
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        old_file = log_dir / "old.txt"
+        car_id = "4d27cc23-ee6c-e0de-9c38-10448288bcbb"
+        old_file.write_text(
+            "[2026-08-26 10:00:00.000] [network] [info] "
+            "76561198321627695 connected on car ktm_xbow_gt4, with new carId "
+            f"{car_id}\n"
+            "[2026-08-26 10:00:01.000] [gameplay] [info] Game Started! "
+            "GameModeType_PRACTICE | Old Track | ktm_xbow_gt4 | "
+            "GameModeSelectionWeatherType_Clear\n"
+        )
+        manager = SharedSessionManager()
+        emitted = []
+        lap_seen = asyncio.Event()
+
+        async def on_lap(session, lap):
+            emitted.append((session, lap))
+            lap_seen.set()
+
+        parser = LogParser(
+            log_path=str(log_dir),
+            on_lap_complete=on_lap,
+            session_manager=manager,
+        )
+        parser.PENDING_VALIDITY_GRACE_SECONDS = 5.0
+        follow_task = asyncio.create_task(parser.follow(poll_interval=0.005))
+        await asyncio.sleep(0.04)
+
+        # This old-stream log completion remains pending, while an unmatched
+        # SHM completion is retained in the shared manager.
+        with open(old_file, "a", encoding="utf-8") as handle:
+            handle.write(
+                f"[2026-08-26 10:01:00.000] [gameplay] [info] "
+                f"New lap carId {car_id}: 01:20.000\n"
+            )
+        manager.update_from_graphics_shm(
+            {
+                "total_lap_count": 0,
+                "current_lap_time_ms": 80_000,
+                "last_laptime_ms": 0,
+                "is_valid_lap": True,
+            }
+        )
+        manager.update_from_graphics_shm(
+            {
+                "total_lap_count": 1,
+                "current_lap_time_ms": 20,
+                "last_laptime_ms": 79_900,
+                "is_valid_lap": True,
+            }
+        )
+
+        new_file = log_dir / "new.txt"
+        await asyncio.sleep(0.02)
+        new_file.write_text(
+            "[2026-08-26 11:00:00.000] [network] [info] "
+            "76561198321627695 connected on car ktm_xbow_gt4, with new carId "
+            f"{car_id}\n"
+            "[2026-08-26 11:00:01.000] [gameplay] [info] Game Started! "
+            "GameModeType_PRACTICE | New Track | ktm_xbow_gt4 | "
+            "GameModeSelectionWeatherType_Clear\n"
+        )
+        await asyncio.sleep(0.08)
+        with open(new_file, "a", encoding="utf-8") as handle:
+            handle.write(
+                f"[2026-08-26 11:01:00.000] [gameplay] [info] "
+                f"New lap carId {car_id}: 01:21.000\n"
+                f"[2026-08-26 11:01:00.010] [network] [info] "
+                "Relevant onSplit for Combo 1@1: laptime 81000, valid true, "
+                "flags 2, lap 1 (prev 0)\n"
+            )
+
+        try:
+            await asyncio.wait_for(lap_seen.wait(), timeout=1.0)
+        finally:
+            parser.stop()
+            await asyncio.wait_for(follow_task, timeout=1.0)
+
+        assert [lap.lap_time_ms for _, lap in emitted] == [81_000]
+        assert emitted[0][0].track == "New Track"
+        assert parser._pending_lap is None
+        assert parser._shm_emitted_laps == []
+
+    @pytest.mark.asyncio
+    async def test_truncation_clears_penalty_latch_before_new_session(self, tmp_path):
+        """A penalty from the truncated stream cannot invalidate new-session lap 1."""
+        log_file = tmp_path / "session.log"
+        car_id = "4d27cc23-ee6c-e0de-9c38-10448288bcbb"
+        prefix = (
+            "[2026-08-26 12:00:00.000] [network] [info] "
+            "76561198321627695 connected on car ktm_xbow_gt4, with new carId "
+            f"{car_id}\n"
+            "[2026-08-26 12:00:01.000] [gameplay] [info] Game Started! "
+            "GameModeType_PRACTICE | Old Track | ktm_xbow_gt4 | "
+            "GameModeSelectionWeatherType_Clear\n"
+        )
+        log_file.write_text(prefix)
+        emitted = []
+        lap_seen = asyncio.Event()
+
+        async def on_lap(session, lap):
+            emitted.append((session, lap))
+            lap_seen.set()
+
+        parser = LogParser(log_path=str(log_file), on_lap_complete=on_lap)
+        parser.PENDING_VALIDITY_GRACE_SECONDS = 5.0
+        follow_task = asyncio.create_task(parser.follow(poll_interval=0.005))
+        await asyncio.sleep(0.04)
+        with open(log_file, "a", encoding="utf-8") as handle:
+            handle.write(
+                f"[2026-08-26 12:01:00.000] [gameplay] [info] "
+                f"Penalty Type PenaltyType_Warning has no tranformation\n"
+                f"[2026-08-26 12:01:01.000] [gameplay] [info] "
+                f"New lap carId {car_id}: 01:20.000\n"
+            )
+
+        # Replace the file with a fresh session before the old pending lap's
+        # grace period expires.
+        await asyncio.sleep(0.02)
+        new_prefix = prefix.replace("12:00", "13:00").replace("Old Track", "New Track")
+        log_file.write_text(new_prefix)
+        await asyncio.sleep(0.08)
+        with open(log_file, "a", encoding="utf-8") as handle:
+            handle.write(
+                f"[2026-08-26 13:01:00.000] [gameplay] [info] "
+                f"New lap carId {car_id}: 01:21.000\n"
+                f"[2026-08-26 13:01:00.010] [network] [info] "
+                "Relevant onSplit for Combo 1@1: laptime 81000, valid true, "
+                "flags 2, lap 1 (prev 0)\n"
+            )
+
+        try:
+            await asyncio.wait_for(lap_seen.wait(), timeout=1.0)
+        finally:
+            parser.stop()
+            await asyncio.wait_for(follow_task, timeout=1.0)
+
+        assert [lap.lap_time_ms for _, lap in emitted] == [81_000]
+        assert emitted[0][1].is_valid is True
+        assert emitted[0][1].lap_state == LapState.VALID
+        assert parser._last_penalty_added_ts is None
+
+    @pytest.mark.asyncio
+    async def test_altered_game_started_drops_old_pending_and_shm_state(self, tmp_path):
+        """An unrecognized start marker still closes the old parser epoch."""
+        log_file = tmp_path / "session.log"
+        car_id = "4d27cc23-ee6c-e0de-9c38-10448288bcbb"
+        log_file.write_text(
+            "[2026-08-26 14:00:00.000] [network] [info] "
+            "76561198321627695 connected on car ktm_xbow_gt4, with new carId "
+            f"{car_id}\n"
+            "[2026-08-26 14:00:01.000] [gameplay] [info] Game Started! "
+            "GameModeType_PRACTICE | Old Track | ktm_xbow_gt4 | "
+            "GameModeSelectionWeatherType_Clear\n"
+        )
+        manager = SharedSessionManager()
+        emitted = []
+        lap_seen = asyncio.Event()
+
+        async def on_lap(session, lap):
+            emitted.append((session, lap))
+            lap_seen.set()
+
+        parser = LogParser(
+            log_path=str(log_file),
+            on_lap_complete=on_lap,
+            session_manager=manager,
+        )
+        parser.PENDING_VALIDITY_GRACE_SECONDS = 5.0
+        follow_task = asyncio.create_task(parser.follow(poll_interval=0.005))
+        await asyncio.sleep(0.04)
+        with open(log_file, "a", encoding="utf-8") as handle:
+            handle.write(
+                f"[2026-08-26 14:01:00.000] [gameplay] [info] "
+                f"New lap carId {car_id}: 01:20.000\n"
+            )
+        manager.update_from_graphics_shm(
+            {
+                "total_lap_count": 0,
+                "current_lap_time_ms": 80_000,
+                "last_laptime_ms": 0,
+                "is_valid_lap": True,
+            }
+        )
+        manager.update_from_graphics_shm(
+            {
+                "total_lap_count": 1,
+                "current_lap_time_ms": 20,
+                "last_laptime_ms": 79_900,
+                "is_valid_lap": True,
+            }
+        )
+        await asyncio.sleep(0.03)
+        with open(log_file, "a", encoding="utf-8") as handle:
+            # This marker contains a mode token but uses the altered weather
+            # field spelling, so the strict Game Started parser cannot match.
+            handle.write(
+                "[2026-08-26 14:02:00.000] [gameplay] [info] Game Started! "
+                "GameModeType_PRACTICE | Altered Track | ktm_xbow_gt4 | "
+                "WeatherType_Sunny\n"
+                # Must not reconcile with the old pending lap after the
+                # malformed boundary, because no session is active yet.
+                f"[2026-08-26 14:02:01.000] [gameplay] [info] "
+                f"New lap carId {car_id}: 01:20.000\n"
+                f"[2026-08-26 14:02:01.010] [network] [info] "
+                "Relevant onSplit for Combo 1@1: laptime 80000, valid true, "
+                "flags 2, lap 1 (prev 0)\n"
+                "[2026-08-26 14:03:00.000] [gameplay] [info] Game Started! "
+                "GameModeType_PRACTICE | New Track | ktm_xbow_gt4 | "
+                "GameModeSelectionWeatherType_Clear\n"
+                f"[2026-08-26 14:03:01.000] [gameplay] [info] "
+                f"New lap carId {car_id}: 01:21.000\n"
+                f"[2026-08-26 14:03:01.010] [network] [info] "
+                "Relevant onSplit for Combo 1@1: laptime 81000, valid true, "
+                "flags 2, lap 1 (prev 0)\n"
+            )
+
+        try:
+            await asyncio.wait_for(lap_seen.wait(), timeout=1.0)
+        finally:
+            parser.stop()
+            await asyncio.wait_for(follow_task, timeout=1.0)
+
+        assert [lap.lap_time_ms for _, lap in emitted] == [81_000]
+        assert emitted[0][0].track == "New Track"
+        assert parser._pending_lap is None
+        assert parser._shm_emitted_laps == []
+
+    @pytest.mark.asyncio
     async def test_follow_waits_for_new_lines(self, tmp_path):
         """Test follow waits for and processes new lines."""
         log_file = tmp_path / "test.log"
