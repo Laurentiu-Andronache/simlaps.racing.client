@@ -4,8 +4,12 @@ Comprehensive tests for telemetry decoder.
 Tests all decoder functions including fallback decoders and data conversion utilities.
 """
 
-import pytest
+import json
 import struct
+from pathlib import Path
+
+import pytest
+
 from src.core.telemetry_decoder import (
     decode_physics,
     decode_physics_ac,
@@ -23,31 +27,44 @@ from src.core.telemetry_decoder import (
 )
 
 
-GRAPHICS_FLAG_FIELDS = (
-    (42, "is_rpm_limiter_on"),
-    (43, "is_change_up_rpm"),
-    (44, "is_change_down_rpm"),
-    (45, "tc_active"),
-    (46, "abs_active"),
-    (47, "esc_active"),
-    (48, "launch_active"),
-    (49, "is_ignition_on"),
-    (50, "is_engine_running"),
-    (51, "kers_is_charging"),
-    (52, "is_wrong_way"),
-    (53, "is_drs_available"),
-    (54, "battery_is_charging"),
-    (55, "is_max_kj_per_lap_reached"),
-    (56, "is_max_charge_kj_per_lap_reached"),
+GRAPHICS_FLAGS_FIXTURE = json.loads(
+    (Path(__file__).parent / "fixtures" / "ace_090_graphics_flags.json").read_text(
+        encoding="utf-8"
+    )
+)
+GRAPHICS_FLAG_FIELDS = tuple(
+    (flag["offset"], flag["field"])
+    for flag in GRAPHICS_FLAGS_FIXTURE["flags"]
 )
 
 
-def _valid_graphics_buffer() -> bytearray:
-    data = bytearray(4096)
-    struct.pack_into("<f", data, 1244, 0.5)
-    struct.pack_into("<I", data, 2392, 1)
-    struct.pack_into("<I", data, 2412, 6)
+def _valid_graphics_buffer(*, include_observed_flags: bool = False) -> bytearray:
+    data = bytearray(GRAPHICS_FLAGS_FIXTURE["buffer_size"])
+    pack_formats = {"float32": "<f", "uint32": "<I"}
+    for field in GRAPHICS_FLAGS_FIXTURE["decoder_prerequisites"]:
+        struct.pack_into(
+            pack_formats[field["type"]],
+            data,
+            field["offset"],
+            field["value"],
+        )
+    if include_observed_flags:
+        observed_fields = set(GRAPHICS_FLAGS_FIXTURE["observed_live_true_fields"])
+        for flag in GRAPHICS_FLAGS_FIXTURE["flags"]:
+            data[flag["offset"]] = int(flag["field"] in observed_fields)
     return data
+
+
+def test_ace_090_fixture_covers_each_documented_graphics_flag() -> None:
+    assert [flag["offset"] for flag in GRAPHICS_FLAGS_FIXTURE["flags"]] == list(
+        range(42, 57)
+    )
+    assert set(GRAPHICS_FLAGS_FIXTURE["observed_live_true_fields"]) == {
+        "is_rpm_limiter_on",
+        "is_change_down_rpm",
+        "abs_active",
+        "is_ignition_on",
+    }
 
 
 @pytest.mark.parametrize(("offset", "field_name"), GRAPHICS_FLAG_FIELDS)
@@ -65,17 +82,19 @@ def test_graphics_decoder_exposes_each_documented_flag(offset, field_name) -> No
 
 
 def test_graphics_decoder_exposes_flags_observed_in_ace_090() -> None:
-    data = _valid_graphics_buffer()
-    for offset in (42, 44, 46, 49):
-        data[offset] = 1
+    data = _valid_graphics_buffer(include_observed_flags=True)
+    observed_fields = set(GRAPHICS_FLAGS_FIXTURE["observed_live_true_fields"])
 
     result = decode_graphics_evo(bytes(data))
 
     assert result is not None
-    assert result["is_rpm_limiter_on"] is True
-    assert result["is_change_down_rpm"] is True
-    assert result["abs_active"] is True
-    assert result["is_ignition_on"] is True
+    assert {
+        flag["field"]: result[flag["field"]]
+        for flag in GRAPHICS_FLAGS_FIXTURE["flags"]
+    } == {
+        flag["field"]: flag["field"] in observed_fields
+        for flag in GRAPHICS_FLAGS_FIXTURE["flags"]
+    }
 
 
 def test_lightweight_graphics_peek_includes_completed_lap_time() -> None:
