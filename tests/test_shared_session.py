@@ -130,6 +130,86 @@ def test_graphics_lap_counter_transition_snapshots_completed_lap() -> None:
     assert manager.get_lap_time(2) is None
 
 
+def test_graphics_terminal_transition_does_not_publish_shutdown_completion() -> None:
+    """Ended timing/counter snapshots are teardown, not finish-line events."""
+    manager = SharedSessionManager()
+    manager.update_from_graphics_shm(
+        {
+            "total_lap_count": 0,
+            "current_lap_time_ms": 75000,
+            "last_laptime_ms": 0,
+            "is_valid_lap": False,
+            "session_phase": "Session",
+        }
+    )
+
+    manager.update_from_graphics_shm(
+        {
+            "total_lap_count": 1,
+            "current_lap_time_ms": 50,
+            "last_laptime_ms": 75684,
+            "is_valid_lap": True,
+            "session_phase": "Ended",
+        }
+    )
+
+    assert manager.get_latest_lap_completion() is None
+    assert manager.get_lap_completions_after(0.0) == []
+    assert manager._session_data.active_lap_is_valid is None
+    assert manager.get_lap_timing_data(2).last_lap_time_ms == 0
+
+
+def test_graphics_active_transition_still_publishes_completion() -> None:
+    """A matching transition in an active session remains a live completion."""
+    manager = SharedSessionManager()
+    manager.update_from_graphics_shm(
+        {
+            "total_lap_count": 0,
+            "current_lap_time_ms": 75000,
+            "last_laptime_ms": 0,
+            "is_valid_lap": True,
+            "session_phase": "Session",
+        }
+    )
+    manager.update_from_graphics_shm(
+        {
+            "total_lap_count": 1,
+            "current_lap_time_ms": 50,
+            "last_laptime_ms": 75684,
+            "is_valid_lap": True,
+            "session_phase": "Session",
+        }
+    )
+
+    completion = manager.get_latest_lap_completion()
+    assert completion is not None
+    assert completion.lap_time_ms == 75684
+
+
+def test_graphics_disqualified_and_teardown_states_suppress_completion() -> None:
+    for phase in ("Disqualified", "Teardown"):
+        manager = SharedSessionManager()
+        manager.update_from_graphics_shm(
+            {
+                "total_lap_count": 0,
+                "current_lap_time_ms": 75000,
+                "last_laptime_ms": 0,
+                "is_valid_lap": True,
+                "session_phase": "Session",
+            }
+        )
+        manager.update_from_graphics_shm(
+            {
+                "total_lap_count": 1,
+                "current_lap_time_ms": 50,
+                "last_laptime_ms": 75684,
+                "is_valid_lap": True,
+                "session_phase": phase,
+            }
+        )
+        assert manager.get_latest_lap_completion() is None
+
+
 def test_graphics_timer_reset_snapshots_invalid_lap_before_counter_advances() -> None:
     """ACE resets timing/validity before its completed-lap counter changes."""
     manager = SharedSessionManager()

@@ -1422,9 +1422,10 @@ def decode_static_fallback(data: bytes) -> Dict[str, Any]:
 
 
 # ── Lightweight SHM peek for live lap validation ──────────────────────────
-# Reads the live counter, last/current lap times, and validity flag from the
-# raw 4096-byte graphics buffer. Logs remain the richer source for sectors and
-# lifecycle context, but ACE can buffer them long after the finish line.
+# Reads the live status/phase, counter, last/current lap times, and validity
+# flag from the raw 4096-byte graphics buffer. Logs remain the richer source
+# for sectors and lifecycle context, but ACE can buffer them long after the
+# finish line.
 #
 # This is ~800× cheaper than the full decoder and runs on every capture
 # frame regardless of whether telemetry recording is enabled.
@@ -1436,6 +1437,8 @@ def decode_static_fallback(data: bytes) -> Dict[str, Any]:
 _PEEK_CURRENT_LAP_TIME = 188
 _PEEK_TOTAL_LAP_COUNT = 2384
 _PEEK_LAST_LAPTIME = 2396
+_PEEK_STATUS = 4
+_PEEK_SESSION_PHASE = 2476
 _PEEK_IS_VALID_LAP    = 3121
 
 # Minimum buffer size needed for the peek.
@@ -1454,9 +1457,13 @@ def peek_graphics_validity(data: bytes) -> Optional[Dict[str, Any]]:
         return None
 
     try:
+        status = struct.unpack_from("<i", data, _PEEK_STATUS)[0]
         current_lap_time_ms = struct.unpack_from("<i", data, _PEEK_CURRENT_LAP_TIME)[0]
         total_lap_count = struct.unpack_from("<i", data, _PEEK_TOTAL_LAP_COUNT)[0]
         last_laptime_ms = struct.unpack_from("<i", data, _PEEK_LAST_LAPTIME)[0]
+        session_phase = data[_PEEK_SESSION_PHASE:_PEEK_SESSION_PHASE + 33].split(b"\x00", 1)[0].decode(
+            "utf-8", "ignore"
+        )
         is_valid_lap = bool(data[_PEEK_IS_VALID_LAP])
     except (struct.error, IndexError):
         return None
@@ -1465,6 +1472,9 @@ def peek_graphics_validity(data: bytes) -> Optional[Dict[str, Any]]:
         return None
 
     return {
+        "status": status,
+        "status_name": _enum_name(AC_STATUS, status),
+        "session_phase": session_phase,
         "total_lap_count": total_lap_count,
         "completed_laps": total_lap_count,
         "is_valid_lap": is_valid_lap,
