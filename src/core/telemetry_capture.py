@@ -396,6 +396,25 @@ class TelemetryCapture:
         """Get number of captured frames."""
         return len(self._frames)
 
+    def _refresh_capture_metadata(self) -> None:
+        """Record every shared-memory region seen in the current session."""
+        regions_found = [key for key in REGIONS if key in self._region_paths]
+        if not regions_found:
+            return
+
+        captured_at = (
+            self._metadata.captured_at
+            if self._metadata is not None
+            else datetime.now(timezone.utc).isoformat()
+        )
+        self._metadata = CaptureMetadata(
+            captured_at=captured_at,
+            hz=self._hz,
+            regions_found=regions_found,
+            region_names={key: REGIONS[key][0] for key in regions_found},
+            region_sizes={key: REGIONS[key][1] for key in regions_found},
+        )
+
     def record_lap_boundary(
         self,
         lap_time_ms: Optional[float] = None,
@@ -543,13 +562,16 @@ class TelemetryCapture:
 
     def _build_compat_meta_record(self) -> Dict[str, Any]:
         """Build JSONL metadata matching the standalone capture format."""
+        regions_found = [key for key in REGIONS if key in self._region_paths]
+        if not regions_found and self._metadata is not None:
+            regions_found = list(self._metadata.regions_found)
         return {
             "_record_type": "meta",
             "_captured_at": (self._session_start_time or datetime.now(timezone.utc)).isoformat(),
             "_output_prefix": self._output_prefix,
             "_hz": self._hz,
             "_regions_known": list(REGIONS.keys()),
-            "_regions_found": list(self._readers.keys()) if self._readers else (list(self._metadata.regions_found) if self._metadata else []),
+            "_regions_found": regions_found,
             "_region_names": {key: REGIONS[key][0] for key in REGIONS},
             "_region_paths": self._region_paths.copy(),
             "_region_sizes": {key: size for key, (_, size) in REGIONS.items()},
@@ -648,10 +670,12 @@ class TelemetryCapture:
                 log_debug(Component.TELEMETRY, "Connected to region", key=key, region=region_name)
             else:
                 log_debug(Component.TELEMETRY, "Region not found", key=key, region=region_name)
+        self._refresh_capture_metadata()
         return readers
 
     def _reconnect_missing(self, readers: Dict[str, RegionReader]):
         """Try to reconnect to missing regions."""
+        connected = False
         for key, (region_name, size) in REGIONS.items():
             if key in readers:
                 continue
@@ -659,7 +683,10 @@ class TelemetryCapture:
             if reader.open():
                 readers[key] = reader
                 self._region_paths[key] = reader._path_used or ""
+                connected = True
                 log_debug(Component.TELEMETRY, "Reconnected to region", key=key, region=region_name)
+        if connected:
+            self._refresh_capture_metadata()
 
     def _capture_frame(self, frame_num: int) -> FrameData:
         """Capture a single frame from shared memory."""
@@ -777,6 +804,12 @@ class TelemetryCapture:
         else:
             self._diag_file = None
         
+        # Region discovery is cumulative only within one capture. Reset it
+        # before connecting so a mapping seen in a prior session cannot leak
+        # into this session's exported metadata.
+        self._metadata = None
+        self._region_paths = {}
+
         # Try to connect to regions, but don't fail if game hasn't started yet
         # The capture loop will continuously retry
         self._readers = self._connect_regions()
@@ -791,7 +824,6 @@ class TelemetryCapture:
         self._lap_boundaries = []
         self._recording_awaiting_boundary = self._record_frames
         self._awaiting_lap_time_ms = None
-        self._metadata = None
         self._session_start_time = datetime.now(timezone.utc)
         self._output_prefix = self._make_output_prefix()
         self._last_valid_frame_time = None
@@ -847,9 +879,6 @@ class TelemetryCapture:
         next_reconnect = time.perf_counter()
         first_connection_logged = False
 
-        # Metadata will be created once we have our first connection
-        metadata_created = False
-
         try:
             while self._running:
                 now_mono = time.perf_counter()
@@ -862,17 +891,6 @@ class TelemetryCapture:
                     if self._readers and not first_connection_logged:
                         log_info(Component.TELEMETRY, "Connected to game", regions=len(self._readers))
                         first_connection_logged = True
-
-                        # Create metadata now that we have a connection
-                        if not metadata_created:
-                            self._metadata = CaptureMetadata(
-                                captured_at=datetime.now(timezone.utc).isoformat(),
-                                hz=self._hz,
-                                regions_found=list(self._readers.keys()),
-                                region_names={k: REGIONS[k][0] for k in self._readers},
-                                region_sizes={k: v.size for k, v in self._readers.items()},
-                            )
-                            metadata_created = True
 
                     next_reconnect = now_mono + 0.5  # Retry every 500ms
 
@@ -969,7 +987,12 @@ class TelemetryCapture:
                         log_info(Component.TELEMETRY, f"First frame captured - {mode_label}")
                 if frame_num % int(self._hz * 5) == 0 and frame_num > 0:
                     if frame_num % int(self._hz * 30) == 0:  # Log every 30 seconds at 10Hz
-                        log_info(Component.TELEMETRY, "Capture progress", frames=frame_num)
+                        log_info(
+                            Component.TELEMETRY,
+                            "Capture progress",
+                            samples=frame_num,
+                            retained_frames=self.get_frame_count(),
+                        )
 
                 next_deadline += self._interval
                 sleep_for = next_deadline - time.perf_counter()
