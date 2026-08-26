@@ -103,41 +103,25 @@ class PBCache:
                     return False
 
                 data = response.json()
-                personal_bests = data.get("personalBests", [])
+                # Validate into a replacement cache first.  A malformed row is a
+                # malformed response, rather than a row that can safely be skipped:
+                # this keeps a failed preload from replacing another user's state
+                # with a partial result.
+                replacement_cache = self._parse_preload_response(data)
 
-                # Clear existing cache and populate with new data
-                self._cache.clear()
-
-                for pb in personal_bests:
-                    track_id = pb.get("trackId", "")
-                    car_id = pb.get("carId", "")
-                    best_time = pb.get("bestTime", 0)
-                    set_at = pb.get("setAt")
-
-                    if not track_id or not car_id or best_time <= 0:
-                        continue
-
-                    key = self._normalize_key(track_id, car_id)
-
-                    # Parse timestamp if available
-                    updated_at = None
-                    if set_at:
-                        try:
-                            if set_at.endswith("Z"):
-                                set_at = f"{set_at[:-1]}+00:00"
-                            updated_at = datetime.fromisoformat(set_at)
-                        except (TypeError, ValueError):
-                            pass
-
-                    self._cache[key] = PersonalBest(
-                        best_time_ms=best_time,
-                        updated_at=updated_at
-                    )
-
+                # There are no awaits between these assignments, so a successful
+                # preload swaps all related state together from the event loop's
+                # perspective.  Failed preloads never mutate any of it.
+                self._cache = replacement_cache
                 self._steam_id = steam_id
                 self._loaded = True
 
-                log_info(Component.PB_CACHE, "Preloaded personal bests", count=len(self._cache), steam_id=steam_id)
+                log_info(
+                    Component.PB_CACHE,
+                    "Preloaded personal bests",
+                    count=len(replacement_cache),
+                    steam_id=steam_id,
+                )
                 return True
                 
         except httpx.TimeoutException:
@@ -146,9 +130,73 @@ class PBCache:
         except httpx.RequestError as e:
             log_warning(Component.PB_CACHE, "PB preload request failed", error=str(e))
             return False
+        except ValueError as e:
+            log_warning(Component.PB_CACHE, "Invalid PB preload response", error=str(e))
+            return False
         except Exception as e:
             log_error(Component.PB_CACHE, "Unexpected error during PB preload", error=str(e))
             return False
+
+    def _parse_preload_response(self, data: Any) -> Dict[Tuple[str, str], PersonalBest]:
+        """Validate and parse an API response without changing the live cache.
+
+        The API payload is intentionally strict: every row must be a complete,
+        well-typed PB entry.  This prevents silently accepting a partial response
+        and makes malformed-row handling consistent with malformed top-level data.
+        ``bestTime`` must be a positive ``int``; booleans and floating-point
+        values (including NaN and infinity) are rejected.
+        """
+        if not isinstance(data, dict):
+            raise ValueError("response must be an object")
+
+        personal_bests = data.get("personalBests")
+        if not isinstance(personal_bests, list):
+            raise ValueError("personalBests must be a list")
+
+        replacement_cache: Dict[Tuple[str, str], PersonalBest] = {}
+        for index, pb in enumerate(personal_bests):
+            if not isinstance(pb, dict):
+                raise ValueError(f"personalBests[{index}] must be an object")
+
+            track_id = pb.get("trackId")
+            car_id = pb.get("carId")
+            best_time = pb.get("bestTime")
+            if not isinstance(track_id, str) or not track_id.strip():
+                raise ValueError(
+                    f"personalBests[{index}].trackId must be a non-empty string"
+                )
+            if not isinstance(car_id, str) or not car_id.strip():
+                raise ValueError(
+                    f"personalBests[{index}].carId must be a non-empty string"
+                )
+            # An int is finite by definition.  Checking the exact type also
+            # rejects bool (a subclass of int), floats, NaN, and infinity.
+            if type(best_time) is not int or best_time <= 0:
+                raise ValueError(
+                    f"personalBests[{index}].bestTime must be a positive integer"
+                )
+
+            set_at = pb.get("setAt")
+            updated_at = None
+            if set_at is not None:
+                if not isinstance(set_at, str) or not set_at:
+                    raise ValueError(
+                        f"personalBests[{index}].setAt must be an ISO timestamp or null"
+                    )
+                try:
+                    updated_at = datetime.fromisoformat(set_at.replace("Z", "+00:00"))
+                except (TypeError, ValueError) as e:
+                    raise ValueError(
+                        f"personalBests[{index}].setAt is not a valid ISO timestamp"
+                    ) from e
+
+            key = self._normalize_key(track_id, car_id)
+            replacement_cache[key] = PersonalBest(
+                best_time_ms=best_time,
+                updated_at=updated_at,
+            )
+
+        return replacement_cache
     
     def check_and_update_pb(self, track_id: str, car_id: str, lap_time_ms: int) -> bool:
         """
