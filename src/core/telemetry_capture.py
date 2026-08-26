@@ -700,7 +700,9 @@ class TelemetryCapture:
             # decoder.  This ensures lap counting + validity data flows even
             # when telemetry recording is off.
             if key == "graphics":
-                graphics_peek = peek_graphics_validity(raw)
+                peeked = peek_graphics_validity(raw)
+                if peeked is not None:
+                    graphics_peek = peeked
 
             try:
                 if key == "physics":
@@ -729,15 +731,26 @@ class TelemetryCapture:
 
         graphics_data = frame.get("graphics") or {}
         if isinstance(graphics_data, dict) and not graphics_data.get("error"):
-            # The peek and full decoder read the same graphics snapshot. Merge
-            # the peek as a fallback, but publish only once after the full
-            # decode so a transient peek cannot queue a completion before the
-            # authoritative session phase is available.
+            # The lightweight peek reads stable lap timing/validity offsets
+            # even when the richer decoder rejects a buffer whose layout has
+            # changed. Publish one combined update so a fallback payload
+            # cannot overwrite those fields with absent/default values. Keep
+            # peek values authoritative when the full decoder is the fallback;
+            # otherwise only fill fields absent from a genuine full-decoder
+            # payload. All other decoded graphics fields still come from the
+            # full decoder.
             if graphics_peek is not None:
-                graphics_data = {**graphics_peek, **graphics_data}
+                if graphics_data.get("_decoder") == "fallback":
+                    graphics_data = {**graphics_data, **graphics_peek}
+                else:
+                    graphics_data = {
+                        **graphics_peek,
+                        **graphics_data,
+                    }
             self._session_manager.update_from_graphics_shm(graphics_data)
         elif graphics_peek is not None:
-            # A failed full decode must not disable the validity-only path.
+            # Preserve the validity-only path if the full decoder raises
+            # rather than returning its normal fallback payload.
             self._session_manager.update_from_graphics_shm(graphics_peek)
 
         static_data = frame.get("static") or {}
