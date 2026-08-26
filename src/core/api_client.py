@@ -99,268 +99,269 @@ class APIClient:
         user_id: Optional[str] = None,
         submit_invalid: bool = False,
     ) -> SubmissionResult:
-        """
-        Submit a completed lap to the server.
-        
-        The payload is cryptographically signed for anti-cheat verification.
-        
-        Args:
-            session: Session data containing track, car info
-            lap: The completed lap data
-            user_id: Override user ID (Steam ID)
-            submit_invalid: If True, submit even if lap is invalid
-            
-        Returns:
-            SubmissionResult with status and details
-        """
-        log_debug(Component.API, "submit_lap called", lap_time=lap.lap_time_str, lap_time_ms=lap.lap_time_ms, is_valid=lap.is_valid, submit_invalid=submit_invalid)
+        """Submit a completed lap to the server."""
+        log_debug(
+            Component.API,
+            "submit_lap called",
+            lap_time=lap.lap_time_str,
+            lap_time_ms=lap.lap_time_ms,
+            is_valid=lap.is_valid,
+            submit_invalid=submit_invalid,
+        )
 
-        # Offline mode: do not attempt submission if no signing secret is configured.
+        # Offline mode must remain first: no game detection, signing, or HTTP.
         if not is_secret_configured():
-            log_info(Component.API, "Submission skipped: APP_SECRET not configured (offline mode)")
+            log_info(
+                Component.API,
+                "Submission skipped: APP_SECRET not configured (offline mode)",
+            )
             return SubmissionResult(
                 status=SubmissionStatus.NO_SECRET,
                 message="APP_SECRET not configured — running in offline mode",
             )
 
-        # The log parser's verdict is authoritative for completed laps (game's
-        # ``Relevant onSplit`` broadcast when available, structural
-        # classification otherwise). SHM is_valid_lap cannot distinguish
-        # contact from track cuts, and contact must never invalidate a lap,
-        # so it is never used to override a completed-lap verdict.
+        # The parser's completed-lap verdict is authoritative. Graphics SHM
+        # cannot distinguish contact from track cuts and must not override it.
         effective_is_valid = lap.is_valid
-        log_debug(Component.API, "Effective validity", effective_is_valid=effective_is_valid)
-        
-        # Anti-cheat: Verify game is running before submission (fail-closed)
+        log_debug(
+            Component.API,
+            "Effective validity",
+            effective_is_valid=effective_is_valid,
+        )
+
+        # Fail closed when process detection is unavailable or ACE is stopped.
         game_status = is_game_running()
         log_debug(Component.API, "Game running check", game_status=game_status)
         if game_status != GameProcessStatus.RUNNING:
-            log_warning(Component.API, "Rejected: Game not running or detection uncertain")
+            log_warning(
+                Component.API,
+                "Rejected: Game not running or detection uncertain",
+            )
             return SubmissionResult(
                 status=SubmissionStatus.GAME_NOT_RUNNING,
                 message="Game must be running to submit laps",
             )
 
-        # Don't submit invalid laps unless explicitly requested
+        final_user_id, shared_player, preflight_error = self._validate_submission_preflight(
+            session=session,
+            effective_is_valid=effective_is_valid,
+            user_id=user_id,
+            submit_invalid=submit_invalid,
+        )
+        if preflight_error is not None:
+            return preflight_error
+        assert final_user_id is not None
+        assert shared_player is not None
+
+        payload, payload_error = self._build_submission_payload(
+            session=session,
+            lap=lap,
+            final_user_id=final_user_id,
+            shared_player=shared_player,
+            effective_is_valid=effective_is_valid,
+        )
+        if payload_error is not None:
+            return payload_error
+        assert payload is not None
+
+        signed_payload = sign_payload(payload)
+        log_debug(
+            Component.API,
+            "Sending submission",
+            server_url=f"{self.server_url}{self.SUBMIT_ENDPOINT}",
+            payload_keys=list(signed_payload.keys()),
+        )
+
+        transport_result = await self._send_submission(signed_payload)
+        if isinstance(transport_result, SubmissionResult):
+            return transport_result
+        return self._map_submission_response(transport_result, signed_payload)
+
+    def _validate_submission_preflight(
+        self,
+        *,
+        session: SessionData,
+        effective_is_valid: bool,
+        user_id: Optional[str],
+        submit_invalid: bool,
+    ) -> tuple[Optional[str], Any, Optional[SubmissionResult]]:
+        """Validate submission policy and resolve the authoritative user."""
         if not effective_is_valid and not submit_invalid:
-            log_debug(Component.API, "Rejected: Invalid lap and submit_invalid=False")
-            return SubmissionResult(
+            log_debug(
+                Component.API,
+                "Rejected: Invalid lap and submit_invalid=False",
+            )
+            return None, None, SubmissionResult(
                 status=SubmissionStatus.INVALID_LAP,
                 message="Lap was invalidated (penalty or off-track)",
             )
 
-        # Validate we have a user ID
-        shared_player_identification = self._session_manager.get_player_identification()
-        final_user_id = user_id or session.player_id or shared_player_identification.steam_id
-        log_debug(Component.API, "User ID resolution", user_id=user_id, session_player_id=session.player_id, shared_steam_id=shared_player_identification.steam_id, final_user_id=final_user_id)
+        shared_player = self._session_manager.get_player_identification()
+        final_user_id = user_id or session.player_id or shared_player.steam_id
+        log_debug(
+            Component.API,
+            "User ID resolution",
+            user_id=user_id,
+            session_player_id=session.player_id,
+            shared_steam_id=shared_player.steam_id,
+            final_user_id=final_user_id,
+        )
         if not final_user_id:
             log_warning(Component.API, "Rejected: No user ID")
-            return SubmissionResult(
+            return None, shared_player, SubmissionResult(
                 status=SubmissionStatus.ERROR,
                 message="No Steam ID detected - please start a session in game",
             )
+        return final_user_id, shared_player, None
+
+    def _build_submission_payload(
+        self,
+        *,
+        session: SessionData,
+        lap: LapData,
+        final_user_id: str,
+        shared_player: Any,
+        effective_is_valid: bool,
+    ) -> tuple[Optional[Dict[str, Any]], Optional[SubmissionResult]]:
+        """Build the source-aware unsigned payload without changing precedence."""
         shared_lap_timing = self._session_manager.get_lap_timing_data(lap.lap_number)
         shared_sector_splits = self._session_manager.get_sector_split_data(lap.lap_number)
         shared_fuel_data = self._session_manager.get_fuel_data()
-
         session_metadata = self._session_manager.get_session_metadata_data()
-        effective_track = session.track if session.track and session.track != "Unknown" else session_metadata.track
-        effective_car = session.car if session.car and session.car != "Unknown" else (shared_player_identification.car_model or session.car)
+
+        effective_track = (
+            session.track
+            if session.track and session.track != "Unknown"
+            else session_metadata.track
+        )
+        effective_car = (
+            session.car
+            if session.car and session.car != "Unknown"
+            else (shared_player.car_model or session.car)
+        )
         effective_session_id = session.session_id or session_metadata.session_id
         effective_session_type = (
-            session.session_type if session.session_type and session.session_type != "Unknown" else session_metadata.session_type
+            session.session_type
+            if session.session_type and session.session_type != "Unknown"
+            else session_metadata.session_type
         )
         effective_game_version = (
-            session.game_version if session.game_version and session.game_version != "Unknown" else session_metadata.game_version
+            session.game_version
+            if session.game_version and session.game_version != "Unknown"
+            else session_metadata.game_version
         )
 
-        # Build submission payload
         track_id = self._normalize_track_id(effective_track)
-        log_debug(Component.API, "Track normalization", effective_track=effective_track, track_id=track_id, car=effective_car, lap_time_ms=lap.lap_time_ms, shared_lap_time_ms=getattr(shared_lap_timing, 'last_lap_time_ms', None))
+        log_debug(
+            Component.API,
+            "Track normalization",
+            effective_track=effective_track,
+            track_id=track_id,
+            car=effective_car,
+            lap_time_ms=lap.lap_time_ms,
+            shared_lap_time_ms=getattr(
+                shared_lap_timing,
+                "last_lap_time_ms",
+                None,
+            ),
+        )
 
-        # Ensure time is int and positive.
-        # The log-parser LapData is authoritative for this specific lap number.
-        # Shared SHM last_lap_time_ms is session-global: in the lap-N entry it
-        # holds lap N-1's time while lap N is in progress, so it must only be
-        # a fallback when the lap's own time is missing.
+        # The parser's lap time is authoritative. SHM is only a missing-time
+        # fallback because its session-global value can still describe lap N-1.
         final_time_candidate: Any = lap.lap_time_ms
         if (
-            (not isinstance(final_time_candidate, (int, float)) or int(final_time_candidate) <= 0)
+            (
+                not isinstance(final_time_candidate, (int, float))
+                or int(final_time_candidate) <= 0
+            )
             and shared_lap_timing is not None
         ):
             final_time_candidate = shared_lap_timing.last_lap_time_ms
 
         if not isinstance(final_time_candidate, (int, float)):
             log_debug(Component.API, "Rejected: Lap time unavailable")
-            return SubmissionResult(
+            return None, SubmissionResult(
                 status=SubmissionStatus.INVALID_LAP,
                 message="Invalid lap time (missing or non-numeric)",
             )
 
         final_time = int(final_time_candidate)
         if final_time <= 0:
-            log_debug(Component.API, "Rejected: Invalid lap time", final_time=final_time)
-            return SubmissionResult(
+            log_debug(
+                Component.API,
+                "Rejected: Invalid lap time",
+                final_time=final_time,
+            )
+            return None, SubmissionResult(
                 status=SubmissionStatus.INVALID_LAP,
                 message="Invalid lap time (<= 0)",
             )
 
-        payload = {
+        payload: Dict[str, Any] = {
             "userId": final_user_id,
             "trackId": track_id,
             "carId": effective_car,
             "time": final_time,
-            "sessionId": effective_session_id,  # Links laps from the same session
-            "sessionType": effective_session_type,  # practice, qualifying, race, etc.
+            "sessionId": effective_session_id,
+            "sessionType": effective_session_type,
             "gameVersion": effective_game_version,
             "tires": lap.tyre_compound,
-            "valid": effective_is_valid,  # False if lap had penalties/off-track
+            "valid": effective_is_valid,
         }
 
-        # Add sector times if available and positive (server rejects 0)
         sector_payload: Dict[str, Any] = {
             "sector1": lap.sector1_ms,
             "sector2": lap.sector2_ms,
             "sector3": lap.sector3_ms,
         }
         if shared_sector_splits is not None:
-            if not isinstance(sector_payload["sector1"], (int, float)) or int(sector_payload["sector1"]) <= 0:
-                sector_payload["sector1"] = shared_sector_splits.sector1_ms
-            if not isinstance(sector_payload["sector2"], (int, float)) or int(sector_payload["sector2"]) <= 0:
-                sector_payload["sector2"] = shared_sector_splits.sector2_ms
-            if not isinstance(sector_payload["sector3"], (int, float)) or int(sector_payload["sector3"]) <= 0:
-                sector_payload["sector3"] = shared_sector_splits.sector3_ms
+            for field_name in ("sector1", "sector2", "sector3"):
+                value = sector_payload[field_name]
+                if not isinstance(value, (int, float)) or int(value) <= 0:
+                    sector_payload[field_name] = getattr(
+                        shared_sector_splits,
+                        f"{field_name}_ms",
+                    )
 
-        if sector_payload["sector1"] is not None and int(sector_payload["sector1"]) > 0:
-            payload["sector1"] = int(sector_payload["sector1"])
-        if sector_payload["sector2"] is not None and int(sector_payload["sector2"]) > 0:
-            payload["sector2"] = int(sector_payload["sector2"])
-        if sector_payload["sector3"] is not None and int(sector_payload["sector3"]) > 0:
-            payload["sector3"] = int(sector_payload["sector3"])
+        for field_name, value in sector_payload.items():
+            if value is not None and int(value) > 0:
+                payload[field_name] = int(value)
 
-        # Add fuel if available and valid
-        # NOTE: fuel_consumption_rate is L/km (a rate), not L/lap — never use it as fuelUsed.
-        # SHM fuel_liter_per_lap is authoritative; logs are fallback
+        # SHM's per-lap fuel is authoritative; parsed log fuel is the fallback.
         fuel_used_value = shared_fuel_data.fuel_consumed_lap
         if fuel_used_value is None:
             fuel_used_value = lap.fuel_used
-
         if fuel_used_value is not None:
             try:
                 fuel_value = float(fuel_used_value)
-                if fuel_value >= 0:  # Ensure non-negative fuel values
+                if fuel_value >= 0:
                     payload["fuelUsed"] = fuel_value
             except (ValueError, TypeError):
-                # Skip invalid fuel values
                 pass
 
-        # Add setup notes (serialized session setup map) if available.
         if session.setup_notes:
             setup_notes = session.setup_notes.strip()
             if setup_notes:
                 payload["setupNotes"] = setup_notes
 
-        # Sign the payload (adds _timestamp, _nonce, _signature)
-        signed_payload = sign_payload(payload)
-        
-        log_debug(Component.API, "Sending submission", server_url=f"{self.server_url}{self.SUBMIT_ENDPOINT}", payload_keys=list(signed_payload.keys()))
+        return payload, None
 
+    async def _send_submission(
+        self,
+        signed_payload: Dict[str, Any],
+    ) -> httpx.Response | SubmissionResult:
+        """Perform HTTP transport and map transport-level exceptions."""
         try:
             client = await self._get_client()
-            response = await client.post(
+            return await client.post(
                 f"{self.server_url}{self.SUBMIT_ENDPOINT}",
                 json=signed_payload,
             )
-            
-            log_debug(Component.API, "Response status", status_code=response.status_code)
-
-            if response.status_code == 201:
-                data = response.json()
-                log_info(Component.API, "SUCCESS", lap_id=data.get('id'))
-                return SubmissionResult(
-                    status=SubmissionStatus.SUCCESS,
-                    message="Lap submitted successfully",
-                    lap_id=data.get("id"),
-                )
-            elif response.status_code == 401:
-                # Signature verification failed
-                error_data = response.json() if response.content else {}
-                log_warning(Component.API, "401 signature error", error_data=error_data)
-                return SubmissionResult(
-                    status=SubmissionStatus.SIGNATURE_ERROR,
-                    message="Signature verification failed - please update the app",
-                )
-            elif response.status_code == 409:
-                # Could be duplicate nonce (replay) or duplicate lap
-                error_data = response.json()
-                error_msg = error_data.get("error", "Conflict")
-                if "nonce" in error_msg.lower() or "replay" in error_msg.lower():
-                    return SubmissionResult(
-                        status=SubmissionStatus.REPLAY_REJECTED,
-                        message="Replay attack detected - submission rejected",
-                    )
-                return SubmissionResult(
-                    status=SubmissionStatus.ERROR,
-                    message="Duplicate lap already exists",
-                )
-            elif response.status_code == 429:
-                return SubmissionResult(
-                    status=SubmissionStatus.RATE_LIMITED,
-                    message="Too many submissions - please wait",
-                )
-            elif response.status_code == 422:
-                # Plausibility check failed - add comprehensive logging
-                error_data = response.json()
-                error_msg = error_data.get("error", "Plausibility check failed")
-                
-                log_debug(Component.API, "422 plausibility error", error_data=error_data, payload_sent=signed_payload)
-                
-                return SubmissionResult(
-                    status=SubmissionStatus.PLAUSIBILITY_FAILED,
-                    message=f"Lap rejected: {error_msg}",
-                )
-            elif response.status_code == 400:
-                # Validation error - add comprehensive logging
-                error_data = response.json()
-                error_msg = error_data.get("error", "Validation error")
-                
-                log_debug(Component.API, "400 validation error", error_data=error_data, payload_sent=signed_payload)
-                
-                if isinstance(error_msg, list):
-                    error_msg = "; ".join(str(e) for e in error_msg)
-                return SubmissionResult(
-                    status=SubmissionStatus.ERROR,
-                    message=f"Validation error: {error_msg}",
-                )
-            elif 400 <= response.status_code < 500:
-                # Generic 4xx error handling with comprehensive logging
-                error_data = {}
-                try:
-                    error_data = response.json()
-                except (ValueError, KeyError, TypeError):
-                    error_data = {"error": response.text}
-                
-                log_debug(Component.API, "4XX client error", status_code=response.status_code, error_data=error_data, payload_sent=signed_payload, headers=dict(response.headers))
-                
-                error_msg = error_data.get("error", "Client error") if isinstance(error_data, dict) else str(error_data)
-                if isinstance(error_msg, list):
-                    error_msg = "; ".join(str(e) for e in error_msg)
-                
-                return SubmissionResult(
-                    status=SubmissionStatus.ERROR,
-                    message=f"Client error {response.status_code}: {error_msg}",
-                )
-            else:
-                return SubmissionResult(
-                    status=SubmissionStatus.ERROR,
-                    message=f"Server error: {response.status_code}",
-                )
-
-        except httpx.NetworkError as e:
-            log_error(Component.API, "Network error", error=str(e))
+        except httpx.NetworkError as exc:
+            log_error(Component.API, "Network error", error=str(exc))
             return SubmissionResult(
                 status=SubmissionStatus.NETWORK_ERROR,
-                message=f"Network error: {str(e)}",
+                message=f"Network error: {str(exc)}",
             )
         except httpx.TimeoutException:
             log_error(Component.API, "Request timeout")
@@ -368,12 +369,117 @@ class APIClient:
                 status=SubmissionStatus.NETWORK_ERROR,
                 message="Request timed out",
             )
-        except (RuntimeError, OSError, ConnectionError) as e:
-            log_exception(Component.API, "API exception", e)
+        except (RuntimeError, OSError, ConnectionError) as exc:
+            log_exception(Component.API, "API exception", exc)
             return SubmissionResult(
                 status=SubmissionStatus.ERROR,
-                message=f"Unexpected error: {str(e)}",
+                message=f"Unexpected error: {str(exc)}",
             )
+
+    def _map_submission_response(
+        self,
+        response: httpx.Response,
+        signed_payload: Dict[str, Any],
+    ) -> SubmissionResult:
+        """Map an HTTP response to the stable public result contract."""
+        log_debug(
+            Component.API,
+            "Response status",
+            status_code=response.status_code,
+        )
+
+        if response.status_code == 201:
+            data = response.json()
+            log_info(Component.API, "SUCCESS", lap_id=data.get("id"))
+            return SubmissionResult(
+                status=SubmissionStatus.SUCCESS,
+                message="Lap submitted successfully",
+                lap_id=data.get("id"),
+            )
+        if response.status_code == 401:
+            error_data = response.json() if response.content else {}
+            log_warning(
+                Component.API,
+                "401 signature error",
+                error_data=error_data,
+            )
+            return SubmissionResult(
+                status=SubmissionStatus.SIGNATURE_ERROR,
+                message="Signature verification failed - please update the app",
+            )
+        if response.status_code == 409:
+            error_data = response.json()
+            error_msg = error_data.get("error", "Conflict")
+            if "nonce" in error_msg.lower() or "replay" in error_msg.lower():
+                return SubmissionResult(
+                    status=SubmissionStatus.REPLAY_REJECTED,
+                    message="Replay attack detected - submission rejected",
+                )
+            return SubmissionResult(
+                status=SubmissionStatus.ERROR,
+                message="Duplicate lap already exists",
+            )
+        if response.status_code == 429:
+            return SubmissionResult(
+                status=SubmissionStatus.RATE_LIMITED,
+                message="Too many submissions - please wait",
+            )
+        if response.status_code == 422:
+            error_data = response.json()
+            error_msg = error_data.get("error", "Plausibility check failed")
+            log_debug(
+                Component.API,
+                "422 plausibility error",
+                error_data=error_data,
+                payload_sent=signed_payload,
+            )
+            return SubmissionResult(
+                status=SubmissionStatus.PLAUSIBILITY_FAILED,
+                message=f"Lap rejected: {error_msg}",
+            )
+        if response.status_code == 400:
+            error_data = response.json()
+            error_msg = error_data.get("error", "Validation error")
+            log_debug(
+                Component.API,
+                "400 validation error",
+                error_data=error_data,
+                payload_sent=signed_payload,
+            )
+            if isinstance(error_msg, list):
+                error_msg = "; ".join(str(error) for error in error_msg)
+            return SubmissionResult(
+                status=SubmissionStatus.ERROR,
+                message=f"Validation error: {error_msg}",
+            )
+        if 400 <= response.status_code < 500:
+            try:
+                error_data = response.json()
+            except (ValueError, KeyError, TypeError):
+                error_data = {"error": response.text}
+            log_debug(
+                Component.API,
+                "4XX client error",
+                status_code=response.status_code,
+                error_data=error_data,
+                payload_sent=signed_payload,
+                headers=dict(response.headers),
+            )
+            error_msg = (
+                error_data.get("error", "Client error")
+                if isinstance(error_data, dict)
+                else str(error_data)
+            )
+            if isinstance(error_msg, list):
+                error_msg = "; ".join(str(error) for error in error_msg)
+            return SubmissionResult(
+                status=SubmissionStatus.ERROR,
+                message=f"Client error {response.status_code}: {error_msg}",
+            )
+        return SubmissionResult(
+            status=SubmissionStatus.ERROR,
+            message=f"Server error: {response.status_code}",
+        )
 
     def _normalize_track_id(self, track_name: str) -> str:
         """
