@@ -30,7 +30,7 @@ from src.core.log_parser import LogParser
 from src.models import SessionData, LapData, SharedSessionManager
 from src.core.api_client import APIClient
 from src.core.security import get_steam_user
-from src.core.discord_notifier import DiscordNotifier
+from src.core.discord_notifier import DiscordNotifier, create_discord_notifier
 from src.core.pb_cache import PBCache
 from src.core.telemetry_capture import TelemetryCapture
 from src.core.track_catalog import TRACK_CATALOG
@@ -561,7 +561,7 @@ class SimLapsApp:
             app=self,
             steam_id=steam_id,
             player_name=player_name,
-            create_discord_notifier=DiscordNotifier,
+            create_discord_notifier=create_discord_notifier,
         )
 
     async def _bootstrap_startup_user(self, steam_id: Optional[str], steam_name: Optional[str]) -> None:
@@ -570,7 +570,7 @@ class SimLapsApp:
             app=self,
             steam_id=steam_id,
             steam_name=steam_name,
-            create_discord_notifier=DiscordNotifier,
+            create_discord_notifier=create_discord_notifier,
         )
     
     async def _on_game_version(self, version: str):
@@ -606,7 +606,7 @@ class SimLapsApp:
         self._settings_service.apply(
             app=self,
             config=config,
-            create_discord_notifier=DiscordNotifier,
+            create_discord_notifier=create_discord_notifier,
             get_pb_cache_for_server=lambda url: PBCache(url),
             create_api_client=APIClient,
             create_log_parser=self._create_log_parser,
@@ -614,16 +614,34 @@ class SimLapsApp:
     
     async def _test_discord_webhook(self, webhook_url: str) -> tuple[bool, str]:
         """Test Discord webhook connection."""
-        if self._discord_notifier:
-            success = await self._discord_notifier.send_test_message()
-            if success:
-                show_snackbar(self.page, "Test message sent successfully!", "#51cf66")
-                return True, "Test message sent successfully"
-            else:
-                show_snackbar(self.page, "Failed to send test message", "#ff6b6b")
-                return False, "Failed to send test message"
-        else:
-            return False, "Discord notifier not initialized"
+        # Settings fields are intentionally transactional. Build a short-lived
+        # notifier from the value currently in the form rather than using the
+        # saved runtime notifier, which may point at an entirely different
+        # webhook (or not exist yet).
+        try:
+            notifier = create_discord_notifier(webhook_url)
+        except Exception:
+            # Keep malformed/custom factory failures generic too. In
+            # particular, never put a webhook token into an error string.
+            log_error(Component.DISCORD, "Discord webhook test failed")
+            return False, "Invalid Discord webhook URL"
+        if notifier is None:
+            return False, "Invalid Discord webhook URL"
+
+        try:
+            success = await notifier.send_test_message()
+        except Exception:
+            # Never surface exception text: HTTP errors can contain the full
+            # webhook URL and its token.
+            log_error(Component.DISCORD, "Discord webhook test failed")
+            success = False
+
+        if success:
+            show_snackbar(self.page, "Test message sent successfully!", "#51cf66")
+            return True, "Test message sent successfully"
+
+        show_snackbar(self.page, "Failed to send test message", "#ff6b6b")
+        return False, "Failed to send test message"
     
     def _show_pb_cache_viewer(self, e=None):
         """Show the PB cache viewer dialog."""
