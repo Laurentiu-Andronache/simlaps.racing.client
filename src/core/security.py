@@ -10,7 +10,10 @@ import hashlib
 import uuid
 import time
 import os
+import sys
 from typing import Optional
+
+from dotenv import load_dotenv
 
 from ..utils.structured_logger import log_debug, log_info, Component
 
@@ -30,11 +33,25 @@ except ImportError:
 
 
 # =============================================================================
-# APP SECRET - Load from the process environment only
+# APP SECRET - Load runtime dotenv without packaging it
 # =============================================================================
-# Do not load .env files here. In particular, release artifacts must not carry
-# a reusable client credential. Authorized submission environments can provide
-# APP_SECRET explicitly through their process environment.
+def _load_runtime_dotenv() -> None:
+    """Load the runtime configuration file without overriding the process env.
+
+    Source runs use python-dotenv's normal discovery. A frozen executable only
+    checks for a sidecar file beside the executable; the PyInstaller extraction
+    directory is intentionally never treated as a configuration source.
+    """
+    if getattr(sys, "frozen", False):
+        env_path = os.path.join(os.path.dirname(sys.executable), ".env")
+        if os.path.isfile(env_path):
+            load_dotenv(env_path, override=False)
+        return
+
+    load_dotenv(override=False)
+
+
+_load_runtime_dotenv()
 APP_SECRET = os.environ.get("APP_SECRET")
 
 # This value was shipped as the old .env.example placeholder. Treat it as
@@ -62,8 +79,8 @@ def get_app_secret() -> bytes:
     if not _has_usable_secret():
         raise RuntimeError(
             "APP_SECRET environment variable not set. "
-            "Provision it explicitly in the process environment for authorized "
-            "submission tests."
+            "Provision it through the process environment or a runtime .env "
+            "file for authorized submission tests."
         )
     return APP_SECRET.encode('utf-8')
 

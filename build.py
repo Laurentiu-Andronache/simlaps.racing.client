@@ -232,6 +232,13 @@ def build_artifact_plan() -> ArtifactPlan:
 
 
 def build_command(use_obfuscated: bool = False) -> list[str]:
+    """Return the PyInstaller command for a secret-free client artifact.
+
+    Secrets are deliberately not part of the artifact plan.  An authorized
+    operator may provision ``APP_SECRET`` in the process environment or an
+    external runtime ``.env`` beside the installed client, but a build must
+    never read, copy, or package a local ``.env``.
+    """
     plan = build_artifact_plan()
     if use_obfuscated:
         if not _validate_obfuscated_output():
@@ -348,7 +355,7 @@ def main() -> int:
     if not build_ok:
         print("\nBuild FAILED!")
         return 1
-    print("\nBUILD SUCCESSFUL!\nNo credentials were bundled. APP_SECRET is read only from the installed client's environment.")
+    print("No credentials were bundled. APP_SECRET is loaded only at runtime from the process environment or an external .env beside the installed client.")
     return 0
 
 

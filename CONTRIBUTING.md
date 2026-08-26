@@ -54,15 +54,20 @@ pip install -r requirements-dev.txt
 
 ### Run the app locally
 
-No `APP_SECRET` is required for local development or testing. If `APP_SECRET` is not set, the client runs in offline mode and will not attempt to submit laps to the server.
+No `APP_SECRET` is required for local development or testing. Source runs may
+load it from a local `.env` through `python-dotenv`, while an installed build
+checks only for an external `.env` beside its executable. If `APP_SECRET` is
+not configured, the client runs in offline mode and will not attempt to submit
+laps to the server.
 
 ```powershell
 venv-sim-laps-client\Scripts\python.exe -m src.main
 ```
 
 If a project maintainer explicitly authorizes a real submission test, provision
-the temporary `APP_SECRET` in that test process's environment. Do not copy a
-placeholder into a release environment, and never commit a real secret.
+the temporary `APP_SECRET` in the test process's environment or a local runtime
+`.env`. Do not copy a placeholder into a release environment, and never commit
+a real secret.
 
 ## Testing
 
@@ -115,7 +120,8 @@ python build.py
 ```
 
 This requires `pyinstaller` and `pyarmor`, but no `APP_SECRET`: release builds
-are intentionally secret-free and can run offline.
+are intentionally secret-free and can run offline. The build excludes `.env`;
+runtime dotenv loading is handled only when the client starts.
 
 ## License
 

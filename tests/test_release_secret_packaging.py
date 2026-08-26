@@ -4,10 +4,80 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+from dotenv import load_dotenv as real_load_dotenv
 
 import build
 from src.core import security
 from src.core.api_client import APIClient, SubmissionStatus
+
+
+def test_runtime_dotenv_source_mode_uses_discovery_without_override(monkeypatch) -> None:
+    calls = []
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    monkeypatch.setattr(
+        security,
+        "load_dotenv",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    security._load_runtime_dotenv()
+
+    assert calls == [((), {"override": False})]
+
+
+def test_runtime_dotenv_frozen_mode_uses_external_sidecar(tmp_path, monkeypatch) -> None:
+    executable = tmp_path / "SimLapsClient.exe"
+    env_path = tmp_path / ".env"
+    executable.touch()
+    env_path.write_text("APP_SECRET=file-value\n", encoding="utf-8")
+    calls = []
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(executable))
+    monkeypatch.setattr(
+        security,
+        "load_dotenv",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    security._load_runtime_dotenv()
+
+    assert calls == [((str(env_path),), {"override": False})]
+
+
+def test_runtime_dotenv_frozen_mode_never_uses_meipass(tmp_path, monkeypatch) -> None:
+    executable = tmp_path / "SimLapsClient.exe"
+    meipass = tmp_path / "_MEIPASS"
+    executable.touch()
+    meipass.mkdir()
+    (meipass / ".env").write_text("APP_SECRET=meipass-value\n", encoding="utf-8")
+    calls = []
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(executable))
+    monkeypatch.setattr(sys, "_MEIPASS", str(meipass), raising=False)
+    monkeypatch.setattr(
+        security,
+        "load_dotenv",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    security._load_runtime_dotenv()
+
+    assert calls == []
+
+
+def test_runtime_dotenv_does_not_override_process_environment(tmp_path, monkeypatch) -> None:
+    executable = tmp_path / "SimLapsClient.exe"
+    env_path = tmp_path / ".env"
+    executable.touch()
+    env_path.write_text("APP_SECRET=file-value\n", encoding="utf-8")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(executable))
+    monkeypatch.setenv("APP_SECRET", "process-value")
+    monkeypatch.setattr(security, "load_dotenv", real_load_dotenv)
+
+    security._load_runtime_dotenv()
+
+    assert security.os.environ["APP_SECRET"] == "process-value"
 
 
 def test_artifact_plan_excludes_credentials() -> None:

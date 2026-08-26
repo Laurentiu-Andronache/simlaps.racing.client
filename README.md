@@ -137,9 +137,10 @@ contains no `.env`, `APP_SECRET`, or `SERVER_SECRET.txt`.
 
 ### Server Configuration
 
-The client build does not generate or distribute server credentials. It only
-uses `APP_SECRET` when an authorized operator explicitly provisions it in the
-installed client's process environment.
+The client build does not generate or distribute server credentials. Source
+runs discover a local `.env`; a packaged client checks only for an external
+`.env` beside the executable. The build never bundles or copies that file, and
+the process environment takes precedence when `APP_SECRET` is provided.
 
 The current shared-secret HMAC protocol is not a safe production credential
 distribution design: anyone who receives a reusable client secret can reuse
