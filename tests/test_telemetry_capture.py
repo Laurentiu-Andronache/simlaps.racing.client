@@ -4,6 +4,8 @@ Comprehensive tests for telemetry capture with mock shared memory.
 Tests shared memory region reading, capture loop, error handling, and metadata.
 """
 
+import ctypes
+
 import pytest
 from unittest.mock import Mock, MagicMock, patch
 from src.core.telemetry_capture import (
@@ -12,6 +14,11 @@ from src.core.telemetry_capture import (
     REGIONS,
     FrameData,
     CaptureMetadata,
+    MAX_DEBUG_MAPPING_BYTES,
+    MEM_COMMIT,
+    PAGE_NOACCESS,
+    _MemoryBasicInformation,
+    _discover_readable_mapping_size,
 )
 from src.models import SharedSessionManager
 from datetime import datetime, timezone
@@ -30,6 +37,70 @@ class TestRegionReader:
         assert reader._view is None
         assert reader._path_used is None
 
+    def test_mapping_size_discovery_is_bounded_by_hard_limit(self):
+        """A large mapped allocation must never enlarge a debug read past 64 KiB."""
+        view = 0x100000
+        calls = []
+
+        def virtual_query(address, info_pointer, _info_size):
+            calls.append(address.value)
+            info = ctypes.cast(
+                info_pointer, ctypes.POINTER(_MemoryBasicInformation)
+            ).contents
+            info.BaseAddress = view
+            info.AllocationBase = view
+            info.RegionSize = MAX_DEBUG_MAPPING_BYTES * 2
+            info.State = MEM_COMMIT
+            info.Protect = 0x02  # PAGE_READONLY
+            return ctypes.sizeof(_MemoryBasicInformation)
+
+        assert _discover_readable_mapping_size(
+            view,
+            virtual_query=virtual_query,
+        ) == MAX_DEBUG_MAPPING_BYTES
+        assert calls == [view]
+
+    def test_mapping_size_discovery_never_allows_a_limit_above_safety_ceiling(self):
+        """The probe's 64 KiB ceiling cannot be bypassed by its argument."""
+        view = 0x180000
+
+        def virtual_query(address, info_pointer, _info_size):
+            info = ctypes.cast(
+                info_pointer, ctypes.POINTER(_MemoryBasicInformation)
+            ).contents
+            info.BaseAddress = address.value
+            info.AllocationBase = view
+            info.RegionSize = MAX_DEBUG_MAPPING_BYTES * 2
+            info.State = MEM_COMMIT
+            info.Protect = 0x02  # PAGE_READONLY
+            return ctypes.sizeof(_MemoryBasicInformation)
+
+        assert _discover_readable_mapping_size(
+            view,
+            hard_limit=MAX_DEBUG_MAPPING_BYTES * 2,
+            virtual_query=virtual_query,
+        ) == MAX_DEBUG_MAPPING_BYTES
+
+    def test_mapping_size_discovery_stops_at_unreadable_region(self):
+        """Discovery only includes contiguous committed readable pages."""
+        view = 0x200000
+
+        def virtual_query(address, info_pointer, _info_size):
+            info = ctypes.cast(
+                info_pointer, ctypes.POINTER(_MemoryBasicInformation)
+            ).contents
+            info.BaseAddress = address.value
+            info.AllocationBase = view
+            info.RegionSize = 4096
+            info.State = MEM_COMMIT
+            info.Protect = 0x02 if address.value == view else PAGE_NOACCESS
+            return ctypes.sizeof(_MemoryBasicInformation)
+
+        assert _discover_readable_mapping_size(
+            view,
+            virtual_query=virtual_query,
+        ) == 4096
+
     @patch('src.core.telemetry_capture.kernel32')
     def test_region_reader_open_success(self, mock_kernel32):
         """Test successful region reader open."""
@@ -44,6 +115,152 @@ class TestRegionReader:
         assert result is True
         assert reader._handle == mock_handle
         assert reader._view is not None
+
+    @patch('src.core.telemetry_capture.kernel32')
+    def test_debug_reader_maps_whole_section_and_uses_discovered_size(
+        self, mock_kernel32
+    ):
+        """Opt-in probing maps length zero and retains the bounded result."""
+        mock_kernel32.OpenFileMappingW.return_value = 123
+        mock_kernel32.MapViewOfFile.return_value = 0x300000
+        discover = Mock(return_value=8192)
+
+        reader = RegionReader(
+            "test_region",
+            1024,
+            probe_full_mapping=True,
+            size_discoverer=discover,
+        )
+
+        assert reader.open() is True
+        mock_kernel32.MapViewOfFile.assert_called_once_with(
+            123, 0x0004, 0, 0, 0
+        )
+        discover.assert_called_once_with(
+            0x300000,
+            hard_limit=MAX_DEBUG_MAPPING_BYTES,
+        )
+        assert reader.configured_size == 1024
+        assert reader.discovered_size == 8192
+        assert reader.size == 8192
+        with patch(
+            "src.core.telemetry_capture.ctypes.string_at",
+            return_value=b"\x00" * 8192,
+        ) as read:
+            assert len(reader.read_raw()) == 8192
+        read.assert_called_once_with(0x300000, 8192)
+
+    @patch('src.core.telemetry_capture.kernel32')
+    def test_debug_reader_falls_back_when_size_discovery_fails(
+        self, mock_kernel32
+    ):
+        """A failed probe reopens the established fixed-size read window."""
+        mock_kernel32.OpenFileMappingW.return_value = 123
+        mock_kernel32.MapViewOfFile.side_effect = [0x300000, 0x310000]
+        discover = Mock(return_value=None)
+
+        reader = RegionReader(
+            "test_region",
+            1024,
+            probe_full_mapping=True,
+            size_discoverer=discover,
+        )
+
+        assert reader.open() is True
+        requested_sizes = [
+            call.args[-1]
+            for call in mock_kernel32.MapViewOfFile.call_args_list
+        ]
+        assert requested_sizes == [0, 1024]
+        mock_kernel32.UnmapViewOfFile.assert_called_once_with(0x300000)
+        assert reader.discovered_size is None
+        assert reader.size == 1024
+
+    @patch('src.core.telemetry_capture.kernel32')
+    def test_debug_reader_rejects_discovery_below_decoder_minimum(
+        self, mock_kernel32
+    ):
+        """A short discovered view cannot replace the known decoder window."""
+        mock_kernel32.OpenFileMappingW.return_value = 123
+        mock_kernel32.MapViewOfFile.side_effect = [0x300000, 0x310000]
+
+        reader = RegionReader(
+            "test_region",
+            1024,
+            probe_full_mapping=True,
+            size_discoverer=Mock(return_value=512),
+        )
+
+        assert reader.open() is True
+        assert reader.discovered_size is None
+        assert reader.size == 1024
+        mock_kernel32.UnmapViewOfFile.assert_called_once_with(0x300000)
+
+    @patch('src.core.telemetry_capture.kernel32')
+    def test_debug_reader_clamps_untrusted_discovery_result(
+        self, mock_kernel32
+    ):
+        """The reader enforces its ceiling even with an injected bad probe."""
+        mock_kernel32.OpenFileMappingW.return_value = 123
+        mock_kernel32.MapViewOfFile.return_value = 0x300000
+
+        reader = RegionReader(
+            "test_region",
+            1024,
+            probe_full_mapping=True,
+            size_discoverer=Mock(return_value=MAX_DEBUG_MAPPING_BYTES * 2),
+        )
+
+        assert reader.open() is True
+        assert reader.discovered_size == MAX_DEBUG_MAPPING_BYTES
+        assert reader.size == MAX_DEBUG_MAPPING_BYTES
+
+    @patch('src.core.telemetry_capture.kernel32')
+    def test_debug_reader_falls_back_when_full_view_cannot_be_mapped(
+        self, mock_kernel32
+    ):
+        """A zero-length map failure must not break ordinary capture."""
+        mock_kernel32.OpenFileMappingW.return_value = 123
+        mock_kernel32.MapViewOfFile.side_effect = [0, 0x310000]
+        discover = Mock(side_effect=AssertionError("fixed fallback is not probed"))
+
+        reader = RegionReader(
+            "test_region",
+            1024,
+            probe_full_mapping=True,
+            size_discoverer=discover,
+        )
+
+        assert reader.open() is True
+        requested_sizes = [
+            call.args[-1]
+            for call in mock_kernel32.MapViewOfFile.call_args_list
+        ]
+        assert requested_sizes == [0, 1024]
+        discover.assert_not_called()
+        assert reader.discovered_size is None
+        assert reader.size == 1024
+
+    @patch('src.core.telemetry_capture.kernel32')
+    def test_normal_reader_keeps_fixed_mapping_without_probe(self, mock_kernel32):
+        """Normal capture preserves its fixed-size map and has no query overhead."""
+        mock_kernel32.OpenFileMappingW.return_value = 123
+        mock_kernel32.MapViewOfFile.return_value = 0x310000
+        discover = Mock(side_effect=AssertionError("normal capture must not probe"))
+
+        reader = RegionReader(
+            "test_region",
+            1024,
+            size_discoverer=discover,
+        )
+
+        assert reader.open() is True
+        mock_kernel32.MapViewOfFile.assert_called_once_with(
+            123, 0x0004, 0, 0, 1024
+        )
+        discover.assert_not_called()
+        assert reader.discovered_size is None
+        assert reader.size == 1024
 
     @patch('src.core.telemetry_capture.kernel32')
     def test_region_reader_open_failure(self, mock_kernel32):
@@ -520,6 +737,69 @@ class TestCaptureMetadata:
         assert isinstance(result, dict)
         assert result["captured_at"] == "2024-01-01T00:00:00Z"
         assert result["hz"] == 10.0
+
+    def test_debug_metadata_records_minimum_discovered_and_read_sizes(self):
+        """Late-connected probed regions remain visible in exported metadata."""
+        capture = TelemetryCapture(hz=10.0, debug_logs=True)
+        capture._metadata = CaptureMetadata(
+            captured_at="2024-01-01T00:00:00Z",
+            hz=10.0,
+            regions_found=[],
+            region_names={},
+            region_sizes={},
+        )
+        reader = MagicMock()
+        reader._path_used = r"Local\acevo_pmf_physics"
+        reader.size = 8192
+        reader.discovered_size = 8192
+
+        capture._remember_reader("physics", reader)
+
+        assert capture._metadata.regions_found == ["physics"]
+        assert capture._metadata.region_minimum_sizes == {"physics": 1024}
+        assert capture._metadata.region_discovered_sizes == {"physics": 8192}
+        assert capture._metadata.region_sizes == {"physics": 8192}
+        assert (
+            capture._metadata.mapping_probe_limit_bytes
+            == MAX_DEBUG_MAPPING_BYTES
+        )
+
+        compat = capture._build_compat_meta_record()
+        assert compat["_region_minimum_sizes"] == {"physics": 1024}
+        assert compat["_region_discovered_sizes"] == {"physics": 8192}
+        assert compat["_region_read_sizes"] == {"physics": 8192}
+        assert compat["_mapping_probe_limit_bytes"] == MAX_DEBUG_MAPPING_BYTES
+
+    def test_debug_metadata_records_fixed_fallback_without_claiming_discovery(self):
+        """Probe failure is explicit while the fixed minimum remains usable."""
+        capture = TelemetryCapture(hz=10.0, debug_logs=True)
+        reader = MagicMock()
+        reader._path_used = r"Local\acevo_pmf_graphics"
+        reader.size = 4096
+        reader.discovered_size = None
+
+        capture._remember_reader("graphics", reader)
+        compat = capture._build_compat_meta_record()
+
+        assert compat["_region_minimum_sizes"] == {"graphics": 4096}
+        assert compat["_region_read_sizes"] == {"graphics": 4096}
+        assert compat["_region_discovered_sizes"] == {"graphics": None}
+
+    def test_live_debug_toggle_reopens_readers_with_new_probe_mode(self, tmp_path):
+        """An active capture applies debug probe changes without a restart."""
+        capture = TelemetryCapture(hz=10.0, debug_logs=False)
+        capture._running = True
+        reader = MagicMock()
+        capture._readers = {"physics": reader}
+
+        with patch.object(capture, "_reconnect_missing") as reconnect:
+            capture.configure(output_dir=str(tmp_path), debug_logs=True)
+
+        reader.close.assert_called_once()
+        reconnect.assert_called_once_with(capture._readers)
+        assert capture._readers == {}
+        if capture._diag_file:
+            capture._diag_file.close()
 
 
 class TestRegionReaderEdgeCases:

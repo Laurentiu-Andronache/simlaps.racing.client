@@ -30,7 +30,38 @@ from typing import Any, Dict, List, Optional, Callable, NamedTuple, TextIO
 # handle defined on every platform so tests and callers can replace the
 # backend, while production non-Windows runs fail closed in RegionReader.open.
 FILE_MAP_READ = 0x0004
+MEM_COMMIT = 0x1000
+PAGE_GUARD = 0x100
+PAGE_NOACCESS = 0x01
+_READABLE_PAGE_PROTECTIONS = {
+    0x02,  # PAGE_READONLY
+    0x04,  # PAGE_READWRITE
+    0x08,  # PAGE_WRITECOPY
+    0x20,  # PAGE_EXECUTE_READ
+    0x40,  # PAGE_EXECUTE_READWRITE
+    0x80,  # PAGE_EXECUTE_WRITECOPY
+}
+# Debug captures may inspect bytes appended by a newer ACE protocol, but a
+# malformed or unexpectedly large mapping must not create unbounded reads or
+# multi-megabyte per-frame dumps.
+MAX_DEBUG_MAPPING_BYTES = 64 * 1024
 kernel32 = None
+
+
+class _MemoryBasicInformation(ctypes.Structure):
+    """Architecture-safe subset of Win32 MEMORY_BASIC_INFORMATION."""
+
+    _fields_ = [
+        ("BaseAddress", ctypes.c_void_p),
+        ("AllocationBase", ctypes.c_void_p),
+        ("AllocationProtect", ctypes.c_uint32),
+        ("PartitionId", ctypes.c_uint16),
+        ("RegionSize", ctypes.c_size_t),
+        ("State", ctypes.c_uint32),
+        ("Protect", ctypes.c_uint32),
+        ("Type", ctypes.c_uint32),
+    ]
+
 
 if sys.platform == "win32":
     from ctypes import wintypes
@@ -50,6 +81,12 @@ if sys.platform == "win32":
         ctypes.c_size_t,
     ]
     kernel32.MapViewOfFile.restype = ctypes.c_void_p
+    kernel32.VirtualQuery.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(_MemoryBasicInformation),
+        ctypes.c_size_t,
+    ]
+    kernel32.VirtualQuery.restype = ctypes.c_size_t
     kernel32.UnmapViewOfFile.argtypes = [ctypes.c_void_p]
     kernel32.UnmapViewOfFile.restype = wintypes.BOOL
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
@@ -92,6 +129,92 @@ SHM_PATH_CANDIDATE_TEMPLATES: list[str] = [
 ]
 
 
+def _address_value(pointer: Any) -> Optional[int]:
+    """Return an integer address for a Win32 pointer-like value."""
+    if isinstance(pointer, bool):
+        return None
+    if isinstance(pointer, int):
+        return pointer if pointer > 0 else None
+    value = getattr(pointer, "value", None)
+    return value if isinstance(value, int) and value > 0 else None
+
+
+def _discover_readable_mapping_size(
+    view: Any,
+    *,
+    hard_limit: int = MAX_DEBUG_MAPPING_BYTES,
+    virtual_query: Optional[Callable[..., int]] = None,
+) -> Optional[int]:
+    """Discover the contiguous readable allocation behind a mapped view.
+
+    ``MapViewOfFile(..., 0)`` maps from the requested offset to the end of the
+    section, but Win32 does not return that length. Walk committed, readable
+    ``VirtualQuery`` regions belonging to the same allocation and stop at the
+    first gap/protection change or the caller's hard ceiling.
+    """
+    if (
+        isinstance(hard_limit, bool)
+        or not isinstance(hard_limit, int)
+        or hard_limit <= 0
+    ):
+        return None
+    # Keep the safety ceiling intrinsic to the probe even if a future caller
+    # supplies a larger diagnostic limit.
+    limit = min(hard_limit, MAX_DEBUG_MAPPING_BYTES)
+    start = _address_value(view)
+    if start is None:
+        return None
+    query = virtual_query or (
+        getattr(kernel32, "VirtualQuery", None) if kernel32 is not None else None
+    )
+    if query is None:
+        return None
+
+    cursor = start
+    allocation_base: Optional[int] = None
+    readable_size = 0
+    while readable_size < limit:
+        info = _MemoryBasicInformation()
+        try:
+            result = query(
+                ctypes.c_void_p(cursor),
+                ctypes.byref(info),
+                ctypes.sizeof(info),
+            )
+        except (OSError, TypeError, ValueError):
+            break
+        if not result:
+            break
+
+        region_base = _address_value(info.BaseAddress)
+        current_allocation = _address_value(info.AllocationBase)
+        region_size = int(info.RegionSize or 0)
+        if region_base is None or current_allocation is None or region_size <= 0:
+            break
+        if allocation_base is None:
+            allocation_base = current_allocation
+        if current_allocation != allocation_base:
+            break
+        if info.State != MEM_COMMIT:
+            break
+        if info.Protect & (PAGE_GUARD | PAGE_NOACCESS):
+            break
+        if (info.Protect & 0xFF) not in _READABLE_PAGE_PROTECTIONS:
+            break
+
+        region_end = region_base + region_size
+        if region_base > cursor or region_end <= cursor:
+            break
+        available = region_end - cursor
+        accepted = min(available, limit - readable_size)
+        readable_size += accepted
+        cursor += accepted
+        if accepted < available:
+            break
+
+    return readable_size or None
+
+
 @dataclass
 class FrameData:
     """Single telemetry frame data.
@@ -123,6 +246,9 @@ class CaptureMetadata:
     regions_found: List[str]
     region_names: Dict[str, str]
     region_sizes: Dict[str, int]
+    region_minimum_sizes: Dict[str, int] = field(default_factory=dict)
+    region_discovered_sizes: Dict[str, Optional[int]] = field(default_factory=dict)
+    mapping_probe_limit_bytes: Optional[int] = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -140,9 +266,21 @@ class LapBoundary(NamedTuple):
 class RegionReader:
     """Reads a single shared memory region."""
 
-    def __init__(self, name: str, size: int, diag_file: Optional[TextIO] = None):
+    def __init__(
+        self,
+        name: str,
+        size: int,
+        diag_file: Optional[TextIO] = None,
+        *,
+        probe_full_mapping: bool = False,
+        size_discoverer: Optional[Callable[..., Optional[int]]] = None,
+    ):
         self.name = name
+        self.configured_size = size
         self.size = size
+        self.discovered_size: Optional[int] = None
+        self._probe_full_mapping = probe_full_mapping
+        self._size_discoverer = size_discoverer or _discover_readable_mapping_size
         self._handle = None
         self._view = None
         self._path_used: Optional[str] = None
@@ -164,6 +302,11 @@ class RegionReader:
         if kernel32 is None:
             return False
 
+        # A reader may be reopened after a failed capture or a settings
+        # transition. Do not carry a prior probe result into that attempt.
+        self.size = self.configured_size
+        self.discovered_size = None
+
         # Build candidate paths from the module-level templates.
         # See SHM_PATH_CANDIDATE_TEMPLATES for the path resolution strategy.
         candidates = [tmpl.format(name=self.name) for tmpl in SHM_PATH_CANDIDATE_TEMPLATES]
@@ -178,13 +321,73 @@ class RegionReader:
                 # Open existing file mapping for read-only access
                 handle = kernel32.OpenFileMappingW(FILE_MAP_READ, False, path)
                 if handle and handle != 0:
-                    # Map view of file
-                    view = kernel32.MapViewOfFile(handle, FILE_MAP_READ, 0, 0, self.size)
+                    # Normal capture maps only the known decoder window. The
+                    # opt-in debug probe maps to the end of the section, then
+                    # bounds the readable length before any bytes are copied.
+                    requested_size = (
+                        0 if self._probe_full_mapping else self.configured_size
+                    )
+                    view = kernel32.MapViewOfFile(
+                        handle, FILE_MAP_READ, 0, 0, requested_size
+                    )
+                    full_view_mapped = bool(view and self._probe_full_mapping)
+                    if not view and self._probe_full_mapping:
+                        view = kernel32.MapViewOfFile(
+                            handle,
+                            FILE_MAP_READ,
+                            0,
+                            0,
+                            self.configured_size,
+                        )
+                    if view and full_view_mapped:
+                        try:
+                            discovered = self._size_discoverer(
+                                view,
+                                hard_limit=MAX_DEBUG_MAPPING_BYTES,
+                            )
+                        except Exception:
+                            discovered = None
+                        if (
+                            not isinstance(discovered, int)
+                            or isinstance(discovered, bool)
+                            or discovered < self.configured_size
+                        ):
+                            # Discovery is diagnostic only. Fall back to the
+                            # established fixed read window instead of making
+                            # debug mode less reliable than normal capture.
+                            try:
+                                kernel32.UnmapViewOfFile(view)
+                            except OSError:
+                                pass
+                            view = kernel32.MapViewOfFile(
+                                handle,
+                                FILE_MAP_READ,
+                                0,
+                                0,
+                                self.configured_size,
+                            )
+                            self.discovered_size = None
+                            self.size = self.configured_size
+                        else:
+                            self.discovered_size = min(
+                                discovered, MAX_DEBUG_MAPPING_BYTES
+                            )
+                            self.size = self.discovered_size
                     if view and view != 0:
                         self._handle = handle
                         self._view = view
                         self._path_used = path
-                        self._log(f"[TELEMETRY] SUCCESS: Opened {self.name} at path: {path}")
+                        if self._probe_full_mapping:
+                            self._log(
+                                f"[TELEMETRY] SUCCESS: Opened {self.name} at path: {path} "
+                                f"(configured minimum: {self.configured_size}, "
+                                f"read size: {self.size}, "
+                                f"discovered: {self.discovered_size})"
+                            )
+                        else:
+                            self._log(
+                                f"[TELEMETRY] SUCCESS: Opened {self.name} at path: {path}"
+                            )
                         return True
                     else:
                         # Get detailed error for MapViewOfFile
@@ -286,6 +489,8 @@ class TelemetryCapture:
         self._metadata: Optional[CaptureMetadata] = None
         self._session_start_time: Optional[datetime] = None
         self._region_paths: Dict[str, str] = {}
+        self._region_read_sizes: Dict[str, int] = {}
+        self._region_discovered_sizes: Dict[str, Optional[int]] = {}
         self._last_valid_frame_time: Optional[float] = None
         self._stop_reason: Optional[str] = None
         self._on_stop_callback: Optional[Callable[[str], None]] = None
@@ -376,6 +581,15 @@ class TelemetryCapture:
                     error=str(exc),
                 )
 
+        # Existing readers were opened with the previous probe mode. Reopen
+        # them when a live settings change flips debug capture so the bytes
+        # and metadata match the newly selected mode immediately. The normal
+        # capture loop also retries any mapping that is momentarily absent.
+        if debug_changed and self._running:
+            self._close_readers()
+            self._all_disconnected_since = None
+            self._reconnect_missing(self._readers)
+
     def get_stop_reason(self) -> Optional[str]:
         """Get the reason why capture stopped (None if still running)."""
         return self._stop_reason
@@ -412,7 +626,19 @@ class TelemetryCapture:
             hz=self._hz,
             regions_found=regions_found,
             region_names={key: REGIONS[key][0] for key in regions_found},
-            region_sizes={key: REGIONS[key][1] for key in regions_found},
+            region_sizes={
+                key: self._region_read_sizes.get(key, REGIONS[key][1])
+                for key in regions_found
+            },
+            region_minimum_sizes={key: REGIONS[key][1] for key in regions_found},
+            region_discovered_sizes=(
+                {key: self._region_discovered_sizes.get(key) for key in regions_found}
+                if self._debug_logs
+                else {}
+            ),
+            mapping_probe_limit_bytes=(
+                MAX_DEBUG_MAPPING_BYTES if self._debug_logs else None
+            ),
         )
 
     def record_lap_boundary(
@@ -565,6 +791,14 @@ class TelemetryCapture:
         regions_found = [key for key in REGIONS if key in self._region_paths]
         if not regions_found and self._metadata is not None:
             regions_found = list(self._metadata.regions_found)
+        read_sizes = self._region_read_sizes or (
+            self._metadata.region_sizes if self._metadata is not None else {}
+        )
+        discovered_sizes = self._region_discovered_sizes or (
+            self._metadata.region_discovered_sizes
+            if self._metadata is not None
+            else {}
+        )
         return {
             "_record_type": "meta",
             "_captured_at": (self._session_start_time or datetime.now(timezone.utc)).isoformat(),
@@ -575,6 +809,25 @@ class TelemetryCapture:
             "_region_names": {key: REGIONS[key][0] for key in REGIONS},
             "_region_paths": self._region_paths.copy(),
             "_region_sizes": {key: size for key, (_, size) in REGIONS.items()},
+            "_region_minimum_sizes": {
+                key: REGIONS[key][1] for key in regions_found
+            },
+            "_region_read_sizes": {
+                key: read_sizes[key]
+                for key in regions_found
+                if key in read_sizes
+            },
+            "_region_discovered_sizes": (
+                {
+                    key: discovered_sizes.get(key)
+                    for key in regions_found
+                }
+                if self._debug_logs
+                else {}
+            ),
+            "_mapping_probe_limit_bytes": (
+                MAX_DEBUG_MAPPING_BYTES if self._debug_logs else None
+            ),
             "_payload_encoding": "json",
             "_payload_type": "decoded_region_data",
         }
@@ -657,16 +910,44 @@ class TelemetryCapture:
             "app_close",
         }
 
+    def _remember_reader(self, key: str, reader: RegionReader) -> None:
+        """Persist current-session mapping details for debug metadata."""
+        self._region_paths[key] = reader._path_used or ""
+        observed_size = getattr(reader, "size", None)
+        if (
+            not isinstance(observed_size, int)
+            or isinstance(observed_size, bool)
+            or observed_size < 0
+        ):
+            observed_size = REGIONS[key][1]
+        self._region_read_sizes[key] = observed_size
+        if self._debug_logs:
+            discovered_size = getattr(reader, "discovered_size", None)
+            self._region_discovered_sizes[key] = (
+                discovered_size
+                if isinstance(discovered_size, int)
+                and not isinstance(discovered_size, bool)
+                and discovered_size >= 0
+                else None
+            )
+        if self._metadata is not None:
+            self._refresh_capture_metadata()
+
     def _connect_regions(self) -> Dict[str, RegionReader]:
         """Connect to all shared memory regions with single attempt."""
         readers = {}
         for key, (region_name, size) in REGIONS.items():
             if key in readers:
                 continue
-            reader = RegionReader(region_name, size, self._diag_file)
+            reader = RegionReader(
+                region_name,
+                size,
+                self._diag_file,
+                probe_full_mapping=self._debug_logs,
+            )
             if reader.open():
                 readers[key] = reader
-                self._region_paths[key] = reader._path_used or ""
+                self._remember_reader(key, reader)
                 log_debug(Component.TELEMETRY, "Connected to region", key=key, region=region_name)
             else:
                 log_debug(Component.TELEMETRY, "Region not found", key=key, region=region_name)
@@ -679,10 +960,15 @@ class TelemetryCapture:
         for key, (region_name, size) in REGIONS.items():
             if key in readers:
                 continue
-            reader = RegionReader(region_name, size, self._diag_file)
+            reader = RegionReader(
+                region_name,
+                size,
+                self._diag_file,
+                probe_full_mapping=self._debug_logs,
+            )
             if reader.open():
                 readers[key] = reader
-                self._region_paths[key] = reader._path_used or ""
+                self._remember_reader(key, reader)
                 connected = True
                 log_debug(Component.TELEMETRY, "Reconnected to region", key=key, region=region_name)
         if connected:
@@ -803,12 +1089,12 @@ class TelemetryCapture:
                 log_error(Component.TELEMETRY, "Could not open diagnostic log", error=str(e))
         else:
             self._diag_file = None
-        
-        # Region discovery is cumulative only within one capture. Reset it
-        # before connecting so a mapping seen in a prior session cannot leak
-        # into this session's exported metadata.
-        self._metadata = None
+        # Mapping observations are per capture. Never let a prior session's
+        # paths or probed sizes leak into a later debug dump.
         self._region_paths = {}
+        self._region_read_sizes = {}
+        self._region_discovered_sizes = {}
+        self._metadata = None
 
         # Try to connect to regions, but don't fail if game hasn't started yet
         # The capture loop will continuously retry
