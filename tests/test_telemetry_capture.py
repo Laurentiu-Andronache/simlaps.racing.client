@@ -31,6 +31,7 @@ def _graphics_lap_buffer(*, current_lap_time_ms: int, total_lap_count: int,
     )
 
     data = bytearray(b"\x00" * REGIONS["graphics"][1])
+    struct.pack_into("<i", data, 4, 2)  # AC_LIVE, not mapping teardown
     struct.pack_into("<i", data, _PEEK_CURRENT_LAP_TIME, current_lap_time_ms)
     struct.pack_into("<i", data, _PEEK_TOTAL_LAP_COUNT, total_lap_count)
     struct.pack_into("<i", data, _PEEK_LAST_LAPTIME, last_laptime_ms)
