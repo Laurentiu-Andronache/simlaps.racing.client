@@ -18,7 +18,7 @@ class SettingsPage(ft.Container):
     Settings page for configuring the application.
     
     Note: No API key field - authentication uses signed payloads with
-    an embedded app secret.
+    an externally provisioned app secret.
     """
     
     def __init__(

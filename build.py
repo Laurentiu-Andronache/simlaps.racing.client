@@ -2,23 +2,21 @@
 """
 Build Script for SimLaps Telemetry Client
 
-Creates an obfuscated, packaged Windows executable with embedded secret.
+Creates an obfuscated, packaged Windows executable.
 
 Usage:
     python build.py              # Build with PyArmor obfuscation
     python build.py --no-obfuscate   # Build without obfuscation (faster, for testing)
     python build.py --clean      # Clean build artifacts
-    python build.py --secret KEY # Use specific secret (default: generate random)
 """
 
 import os
 import sys
-import re
 import shutil
-import secrets
 import subprocess
 import argparse
 from pathlib import Path
+from typing import TypedDict
 
 
 def get_venv_executable(name: str) -> str:
@@ -52,7 +50,12 @@ ICON_PATH = "assets/icon.ico"
 DIST_DIR = "dist"
 BUILD_DIR = "build"
 OBFUSCATED_DIR = "obfuscated"
-SECURITY_FILE = "src/core/security.py"
+
+
+class ArtifactPlan(TypedDict):
+    entry_point: str
+    data_files: tuple[tuple[str, str], ...]
+    forbidden_artifacts: tuple[str, ...]
 
 
 def clean():
@@ -62,22 +65,27 @@ def clean():
     dirs_to_clean = [BUILD_DIR, "__pycache__", ".pyarmor"]
     
     for dir_name in dirs_to_clean:
-        if os.path.exists(dir_name):
+        if os.path.islink(dir_name):
+            print(f"  Removing {dir_name} symlink")
+            os.remove(dir_name)
+        elif os.path.isdir(dir_name):
             print(f"  Removing {dir_name}/")
             shutil.rmtree(dir_name)
     
-    # Clean dist/
-    if os.path.exists(DIST_DIR):
+    # Clean dist/, including any credential artifacts left by older releases.
+    if os.path.islink(DIST_DIR):
+        # Never follow a redirected release directory during cleanup.
+        print(f"  Removing {DIST_DIR} symlink")
+        os.remove(DIST_DIR)
+    elif os.path.isdir(DIST_DIR):
         for item in os.listdir(DIST_DIR):
             item_path = os.path.join(DIST_DIR, item)
-            # Preserve old secret file if exists, just in case
-            if item != "SERVER_SECRET.txt":
-                if os.path.isfile(item_path):
-                    os.remove(item_path)
-                    print(f"  Removing {item_path}")
-                elif os.path.isdir(item_path):
-                    shutil.rmtree(item_path)
-                    print(f"  Removing {item_path}/")
+            if os.path.isfile(item_path) or os.path.islink(item_path):
+                os.remove(item_path)
+                print(f"  Removing {item_path}")
+            elif os.path.isdir(item_path):
+                shutil.rmtree(item_path)
+                print(f"  Removing {item_path}/")
     
     # Remove .pyc files
     for pyc in Path(".").rglob("*.pyc"):
@@ -184,11 +192,40 @@ def obfuscate_source():
         return False
 
 
-def build_executable():
-    """Build the executable with PyInstaller."""
-    print("Building executable with PyInstaller...")
-    
+def build_artifact_plan() -> ArtifactPlan:
+    """Describe release inputs and the credential exclusion policy.
+
+    Keeping this plan separate makes it possible to audit packaging without
+    invoking PyInstaller. Credential names are policy markers, never inputs.
+    """
+    data_files: list[tuple[str, str]] = []
+    if os.path.exists(ICON_PATH):
+        data_files.append((ICON_PATH, "assets"))
+
+    icon_png_path = "assets/icon.png"
+    if os.path.exists(icon_png_path):
+        data_files.append((icon_png_path, "assets"))
+
+    analyzer_vendor_path = "src/core/analyzer/vendor"
+    if os.path.isdir(analyzer_vendor_path):
+        data_files.append((analyzer_vendor_path, "src/core/analyzer/vendor"))
+
+    return {
+        "entry_point": ENTRY_POINT,
+        "data_files": tuple(data_files),
+        "forbidden_artifacts": (".env", "APP_SECRET", "SERVER_SECRET.txt"),
+    }
+
+
+def build_command() -> list[str]:
+    """Return the PyInstaller command for a secret-free client artifact.
+
+    Secrets are deliberately not part of the artifact plan.  An authorized
+    operator may provision ``APP_SECRET`` in the process environment of the
+    installed client, but a build must never read or package a local ``.env``.
+    """
     pyinstaller_exe = get_venv_executable("pyinstaller")
+    plan = build_artifact_plan()
     
     # Use obfuscated source if available
     src_dir = "."  # Always use root since main.py is at root
@@ -209,30 +246,10 @@ def build_executable():
     # Add icon if exists
     if os.path.exists(ICON_PATH):
         cmd.extend(["--icon", ICON_PATH])
-        # Include icon.ico as data file for window icon at runtime
-        cmd.extend(["--add-data", f"{ICON_PATH};assets"])
-    
-    # Also include icon.png for ft.Image in the UI
-    icon_png_path = "assets/icon.png"
-    if os.path.exists(icon_png_path):
-        cmd.extend(["--add-data", f"{icon_png_path};assets"])
 
-    # Saved telemetry reports are self-contained and load these pinned chart
-    # libraries from the frozen application's extraction directory.
-    analyzer_vendor_path = "src/core/analyzer/vendor"
-    if os.path.isdir(analyzer_vendor_path):
-        cmd.extend([
-            "--add-data",
-            f"{analyzer_vendor_path};src/core/analyzer/vendor",
-        ])
-    
-    # Include .env file for runtime secret loading
-    if os.path.exists(".env"):
-        cmd.extend(["--add-data", ".env;."])
-        print("  Including .env file in build")
-    else:
-        print("  WARNING: .env file not found - build may fail at runtime")
-        print("  Create .env file with APP_SECRET before building")
+    for source, destination in plan["data_files"]:
+        # Saved telemetry reports and UI assets are safe, non-credential data.
+        cmd.extend(["--add-data", f"{source};{destination}"])
     
     # Add hidden imports for Flet and psutil
     hidden_imports = [
@@ -298,6 +315,14 @@ def build_executable():
     
     # Add entry point
     cmd.append(entry)
+
+    return cmd
+
+
+def build_executable():
+    """Build the executable with PyInstaller."""
+    print("Building executable with PyInstaller...")
+    cmd = build_command()
     
     print(f"  Running: {' '.join(cmd[:10])}...")
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -410,16 +435,6 @@ def main():
     if not check_dependencies():
         return 1
     
-    # Check that .env file exists
-    if not os.path.exists(".env"):
-        print("\nERROR: .env file not found!")
-        print("Please create .env from .env.example:")
-        print("  copy .env.example .env")
-        print("\nThe .env file must contain APP_SECRET for signing lap submissions.")
-        return 1
-    
-    print("Using APP_SECRET from .env file")
-    
     # Clean previous build
     clean()
     
@@ -442,7 +457,7 @@ def main():
     print(f"\nExecutable: {DIST_DIR}/{APP_NAME}.exe")
     if not args.no_obfuscate:
         print("Source code obfuscated with PyArmor")
-    print("Server secret loaded from .env file (bundled in executable)")
+    print("No credentials were bundled. APP_SECRET is read only from the installed client's environment.")
     
     return 0
 
