@@ -15,6 +15,7 @@ import time
 import uuid
 
 from .lap import LapData, SessionData
+from .constants import LAP_TIME_RECONCILIATION_TOLERANCE_MS
 
 @dataclass
 class LapValidityData:
@@ -119,6 +120,7 @@ class SharedSessionData:
     lap_timing: Dict[int, LapTimingData] = field(default_factory=dict)
     latest_lap_completion: Optional[LapCompletionData] = None
     lap_completions: list[LapCompletionData] = field(default_factory=list)
+    consumed_lap_completion_times: Set[float] = field(default_factory=set)
     fuel_data: FuelData = field(default_factory=FuelData)
     player_identification: PlayerIdentificationData = field(
         default_factory=PlayerIdentificationData
@@ -201,20 +203,52 @@ class SharedSessionManager:
             return [
                 completion
                 for completion in self._session_data.lap_completions
-                if completion.observed_at > observed_at
+                if (
+                    completion.observed_at > observed_at
+                    and completion.observed_at
+                    not in self._session_data.consumed_lap_completion_times
+                )
             ]
 
-    def get_lap_completion_by_time(self, lap_time_ms: int) -> Optional[LapCompletionData]:
-        """Return the newest retained completion matching an exact lap time."""
+    def get_lap_completion_by_time(
+        self,
+        lap_time_ms: int,
+        *,
+        consume: bool = False,
+    ) -> Optional[LapCompletionData]:
+        """Return the nearest unconsumed completion within the small tolerance.
+
+        Matching is nearest-time first and observation-order stable for ties.
+        A caller that has used the completion to reconcile a log lap can pass
+        ``consume=True`` so another delayed log record cannot use it again.
+        """
         with self._lock:
-            return next(
-                (
-                    completion
-                    for completion in reversed(self._session_data.lap_completions)
-                    if completion.lap_time_ms == lap_time_ms
-                ),
-                None,
+            candidates = [
+                completion
+                for completion in self._session_data.lap_completions
+                if (
+                    completion.observed_at
+                    not in self._session_data.consumed_lap_completion_times
+                    and abs(completion.lap_time_ms - lap_time_ms)
+                    <= LAP_TIME_RECONCILIATION_TOLERANCE_MS
+                )
+            ]
+            if not candidates:
+                return None
+            completion = min(
+                candidates,
+                key=lambda item: (abs(item.lap_time_ms - lap_time_ms), item.observed_at),
             )
+            if consume:
+                self._session_data.consumed_lap_completion_times.add(
+                    completion.observed_at
+                )
+            return completion
+
+    def consume_lap_completion(self, completion: LapCompletionData) -> None:
+        """Mark one SHM completion as used by a parser reconciliation."""
+        with self._lock:
+            self._session_data.consumed_lap_completion_times.add(completion.observed_at)
 
     def get_fuel_data(self) -> FuelData:
         with self._lock:
@@ -621,7 +655,8 @@ class SharedSessionManager:
                 latest = self._session_data.latest_lap_completion
                 duplicate_transition = (
                     latest is not None
-                    and latest.lap_time_ms == last_laptime_ms
+                    and abs(latest.lap_time_ms - last_laptime_ms)
+                    <= LAP_TIME_RECONCILIATION_TOLERANCE_MS
                     and now_mono - latest.observed_at < 10.0
                 )
                 if not duplicate_transition:

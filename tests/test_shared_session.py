@@ -285,6 +285,29 @@ def test_graphics_retains_multiple_unconsumed_lap_completions() -> None:
     assert [completion.is_valid for completion in completions] == [True, False]
 
 
+def test_lap_completion_matching_tolerates_rounding_once_and_rejects_outside() -> None:
+    """Cross-source timing drift is accepted once, but never reused."""
+    manager = SharedSessionManager()
+    manager.update_from_graphics_shm({
+        "total_lap_count": 0,
+        "current_lap_time_ms": 100000,
+        "last_laptime_ms": 0,
+        "is_valid_lap": False,
+    })
+    manager.update_from_graphics_shm({
+        "total_lap_count": 1,
+        "current_lap_time_ms": 10,
+        "last_laptime_ms": 100000,
+        "is_valid_lap": True,
+    })
+
+    completion = manager.get_lap_completion_by_time(100001, consume=True)
+    assert completion is not None
+    assert completion.lap_time_ms == 100000
+    assert manager.get_lap_completion_by_time(100001) is None
+    assert manager.get_lap_completion_by_time(100000 + 3) is None
+
+
 def test_update_lap_from_logs_populates_player_and_sector_data() -> None:
     manager = SharedSessionManager()
     session = SessionData(

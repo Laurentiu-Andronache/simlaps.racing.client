@@ -7,7 +7,7 @@ Targets the big uncovered chunk (lines 992-1092).
 import pytest
 
 from src.core.log_parser import LogParser
-from src.models import LapData, SessionData, LapState
+from src.models import LapData, SessionData, LapState, SharedSessionManager
 
 
 class TestHandleLapCompleteBasic:
@@ -736,3 +736,64 @@ class TestHandleLapCompleteStint:
         
         # Outlaps shouldn't update stint
         assert True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("delta", [-1, 1])
+async def test_delayed_log_enrichment_rounding_keeps_one_invalid_lap_card(delta):
+    """A rounded log finish enriches, rather than duplicates, SHM output."""
+    manager = SharedSessionManager()
+    parser = LogParser(session_manager=manager)
+    session = SessionData(track="spa", car="porsche", car_uuid="abc123")
+    parser.current_session = session
+    parser.context.car_uuid = "abc123"
+    parser.context.tyre.set_all("S")
+    shm_lap = LapData(
+        lap_number=1,
+        physics_lap_number=1,
+        lap_time_ms=100000,
+        lap_time_str="01:40.000",
+        lap_state=LapState.INVALID_GAME,
+        lap_type=LapState.INVALID_GAME.value,
+        is_valid=False,
+        validity_source="shm_graphics",
+    )
+    session.laps.append(shm_lap)
+    parser._shm_emitted_laps.append(shm_lap)
+    parser._ip.physics_lap_num = 1
+
+    updates = []
+
+    async def on_update(_session, lap):
+        updates.append(lap)
+
+    parser.on_lap_update = on_update
+    log_ms = 100000 + delta
+    minutes, remainder = divmod(log_ms, 60000)
+    seconds, milliseconds = divmod(remainder, 1000)
+    assert parser._handle_lap_complete(
+        f"[2026-08-26 12:00:00.000] [gameplay] [info] New lap carId abc123: "
+        f"{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
+    ) is None
+    assert parser._reconciled_lap is shm_lap
+
+    await parser._emit_lap_update(session, shm_lap)
+
+    assert updates == [shm_lap]
+    assert len(session.laps) == 1
+    assert shm_lap.is_valid is False
+    assert shm_lap.lap_state == LapState.INVALID_GAME
+
+
+@pytest.mark.parametrize(
+    "delta, expected", [(1, True), (-1, True), (3, False), (-3, False)]
+)
+def test_lap_time_match_rejects_just_outside_tolerance(delta, expected):
+    """The named tolerance accepts rounding only, never a distinct time."""
+    lap = LapData(
+        lap_number=1,
+        physics_lap_number=1,
+        lap_time_ms=100000,
+        lap_time_str="01:40.000",
+    )
+    assert (LogParser._nearest_lap_match([lap], 100000 + delta) is not None) is expected

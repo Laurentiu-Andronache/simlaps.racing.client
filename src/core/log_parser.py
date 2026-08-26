@@ -26,6 +26,7 @@ from ..models import (
     LogContext,
     # Constants
     SECTOR_SUM_TOLERANCE_MS,
+    LAP_TIME_RECONCILIATION_TOLERANCE_MS,
     MIN_FULL_LAP_HUNDREDM,
     is_hybrid_car,
     SESSION_TYPE_MAP,
@@ -189,6 +190,24 @@ class LogParser:
         data has not yet been captured.
         """
         return self._session_manager.get_hybrid_flags()
+
+    @staticmethod
+    def _nearest_lap_match(
+        laps: list[LapData], lap_time_ms: int
+    ) -> Optional[LapData]:
+        """Return the nearest lap within the cross-source timing tolerance."""
+        candidates = [
+            (index, lap)
+            for index, lap in enumerate(laps)
+            if abs(lap.lap_time_ms - lap_time_ms)
+            <= LAP_TIME_RECONCILIATION_TOLERANCE_MS
+        ]
+        if not candidates:
+            return None
+        return min(
+            candidates,
+            key=lambda item: (abs(item[1].lap_time_ms - lap_time_ms), item[0]),
+        )[1]
 
     # ── Pattern compilation ───────────────────────────────────────────────────
 
@@ -1258,14 +1277,7 @@ class LogParser:
             return None
 
         lap_time_ms = self._parse_lap_time_ms(time_str)
-        shm_existing = next(
-            (
-                lap
-                for lap in self._shm_emitted_laps
-                if lap.lap_time_ms == lap_time_ms
-            ),
-            None,
-        )
+        shm_existing = self._nearest_lap_match(self._shm_emitted_laps, lap_time_ms)
         ip = self._ip
         completion_splits = (
             self._outlap_candidate_splits
@@ -1478,21 +1490,28 @@ class LogParser:
         laptime_ms, valid_text, validity_flags, game_lap_number = parsed
         pending = self._pending_lap
         already_emitted = False
-        if pending is None:
-            pending = next(
-                (
-                    lap
-                    for lap in reversed(self.current_session.laps[-2:])
-                    if lap.lap_time_ms == laptime_ms
-                    and lap.validity_source == "shm_graphics"
-                ),
-                None,
-            )
+        emitted_candidates = [
+            lap
+            for lap in self.current_session.laps
+            if lap.validity_source == "shm_graphics"
+        ]
+        if pending is not None:
+            # A delayed/reordered broadcast can belong to an already SHM-
+            # emitted lap rather than the newest pending log lap. Compare
+            # both candidates by time instead of letting the pending slot
+            # swallow a nearby but different completion.
+            pending = self._nearest_lap_match([pending, *emitted_candidates], laptime_ms)
+            already_emitted = pending is not self._pending_lap
+        else:
+            pending = self._nearest_lap_match(emitted_candidates, laptime_ms)
+            already_emitted = pending is not None
             if pending is None:
                 return None
-            already_emitted = True
 
-        if laptime_ms != pending.lap_time_ms:
+        if (
+            abs(laptime_ms - pending.lap_time_ms)
+            > LAP_TIME_RECONCILIATION_TOLERANCE_MS
+        ):
             # Mismatch — likely a stale broadcast for a different car.
             return None
 
@@ -1534,6 +1553,14 @@ class LogParser:
         # SharedSessionManager.update_lap_from_logs so it can protect
         # authoritative-valid results from being overridden by SHM.
         pending.validity_source = "authoritative"
+        # A completion may have been observed by SHM while the corresponding
+        # log lap was still pending. Reserve that item now, even though this
+        # path publishes the log lap directly, so the queue cannot emit it a
+        # second time later.
+        self._session_manager.get_lap_completion_by_time(
+            laptime_ms,
+            consume=True,
+        )
 
         if already_emitted:
             self._reconciled_lap = pending
@@ -1554,7 +1581,7 @@ class LogParser:
         fallback is only consulted while finalising a still-pending lap.
 
         OUTLAP normally remains a stronger structural classification. An
-        unambiguous exact SHM completion proves that ACE timed the full
+        unambiguous SHM completion within the reconciliation tolerance proves that ACE timed the full
         circuit following a rejected pit prefix. Valid completions retain the
         existing recovery behaviour. Invalid completions are recovered only
         when the SHM, parser, and physics lap counters all agree; otherwise
@@ -1564,13 +1591,21 @@ class LogParser:
         completion = None
 
         if was_outlap:
-            exact_completions = [
+            matching_completions = [
                 candidate
                 for candidate in self._session_manager.get_lap_completions_after(
                     float("-inf")
                 )
-                if candidate.lap_time_ms == pending.lap_time_ms
+                if abs(candidate.lap_time_ms - pending.lap_time_ms)
+                <= LAP_TIME_RECONCILIATION_TOLERANCE_MS
             ]
+            exact_completions = sorted(
+                matching_completions,
+                key=lambda candidate: (
+                    abs(candidate.lap_time_ms - pending.lap_time_ms),
+                    candidate.observed_at,
+                ),
+            )
             shm_counters = [
                 candidate.completed_laps for candidate in exact_completions
             ]
@@ -1614,7 +1649,6 @@ class LogParser:
             )
         completion_matches = (
             completion is not None
-            and completion.lap_time_ms == pending.lap_time_ms
             and completion.is_valid is not None
         )
 
@@ -1640,9 +1674,16 @@ class LogParser:
         pending.lap_type = pending.lap_state.value
         pending.validity_source = "shm_graphics"
 
+        # Reserve the completion only after it has supplied a verdict. This
+        # keeps an ambiguous/outlap candidate available for later log
+        # enrichment while ensuring two delayed log laps cannot reuse one
+        # completion.
+        if completion_matches:
+            self._session_manager.consume_lap_completion(completion)
+
         if was_outlap and self.current_session is not None:
             # The provisional OUTLAP did not enter a stint at construction
-            # time. Enrol it now that an exact completion has been proven to
+            # time. Enrol it now that a matching completion has been proven to
             # represent a timed lap (valid or counter-aligned invalid).
             stint = self._ensure_stint(pending.tyre_compound)
             if pending.lap_number not in stint.lap_numbers:
@@ -1703,11 +1744,16 @@ class LogParser:
         if time.monotonic() - completion.observed_at < self.PENDING_VALIDITY_GRACE_SECONDS:
             return None
 
-        if self._pending_lap and self._pending_lap.lap_time_ms == completion.lap_time_ms:
+        if (
+            self._pending_lap
+            and abs(self._pending_lap.lap_time_ms - completion.lap_time_ms)
+            <= LAP_TIME_RECONCILIATION_TOLERANCE_MS
+        ):
             self._last_shm_completion_observed_at = completion.observed_at
             return None
         if self.current_session and any(
-            lap.lap_time_ms == completion.lap_time_ms
+            abs(lap.lap_time_ms - completion.lap_time_ms)
+            <= LAP_TIME_RECONCILIATION_TOLERANCE_MS
             for lap in self.current_session.laps[-2:]
         ):
             self._last_shm_completion_observed_at = completion.observed_at
@@ -1756,6 +1802,7 @@ class LogParser:
         )
         self.current_session.laps.append(lap)
         self._shm_emitted_laps.append(lap)
+        self._session_manager.consume_lap_completion(completion)
         # Do not reset the log accumulator here. ACE may already have flushed
         # early-sector lines while still buffering S3/New lap; those partial
         # fields must survive until the delayed completion line reconciles
