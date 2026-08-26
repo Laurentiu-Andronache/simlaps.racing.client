@@ -8,6 +8,7 @@ detects user from game logs automatically.
 import flet as ft
 import os
 import sys
+import weakref
 from typing import Optional
 from enum import Enum
 
@@ -105,6 +106,13 @@ class SimLapsApp:
         # History tracking
         log_debug(Component.APP, "Setting up history tracking")
         self._history_entries: list[HistoryEntry] = []
+        # ACE lap numbers are scoped to a game session and can therefore be
+        # reused.  Keep the application-history association by object
+        # identity instead of treating ``LapData.lap_number`` as a global
+        # ordinal.  Weak references keep delayed-callback bookkeeping from
+        # retaining completed sessions or trimmed entries.
+        self._history_entry_by_lap_id: dict[int, tuple[object, object]] = {}
+        self._history_identity_enabled = False
         
         # Initialize
         log_info(Component.APP, "Starting initialization")
@@ -384,18 +392,97 @@ class SimLapsApp:
             self.page.add(self._history_page)
 
     def _get_history_entry_for_lap_number(self, lap_number: int) -> Optional[HistoryEntry]:
-        """Resolve a history entry from a lap card's absolute lap number."""
+        """Resolve a history entry from a lap card's display ordinal.
+
+        ``HomePage`` owns this application-wide display ordinal.  It is kept
+        separate from ACE's session-relative ``LapData.lap_number``.
+        """
         index = lap_number - 1
         if 0 <= index < len(self._history_entries):
             return self._history_entries[index]
         return None
+
+    def _prune_history_entry_bindings(self) -> None:
+        """Drop bindings whose history entries are no longer retained."""
+        bindings = getattr(self, "_history_entry_by_lap_id", None)
+        if not bindings:
+            return
+
+        retained_entry_ids = {id(entry) for entry in self._history_entries}
+        for lap_id, (_lap_ref, entry_ref) in list(bindings.items()):
+            entry = entry_ref() if callable(entry_ref) else entry_ref
+            if entry is None or id(entry) not in retained_entry_ids:
+                bindings.pop(lap_id, None)
+
+    def _bind_history_entry_to_lap(self, lap: LapData, entry: HistoryEntry) -> None:
+        """Remember the exact history entry created for ``lap``.
+
+        The weak references are paired with an identity check when resolving,
+        so an ``id`` reused by Python cannot accidentally target a different
+        lap object.
+        """
+        bindings = getattr(self, "_history_entry_by_lap_id", None)
+        if bindings is None:
+            bindings = self._history_entry_by_lap_id = {}
+
+        lap_id = id(lap)
+
+        def _remove_if_current(_ref) -> None:
+            current = bindings.get(lap_id)
+            if current is not None and (
+                current[0] is _ref or current[1] is _ref
+            ):
+                bindings.pop(lap_id, None)
+
+        try:
+            lap_ref = weakref.ref(lap, _remove_if_current)
+        except TypeError:
+            # LapData is weak-referenceable in production.  Keep this small
+            # fallback for test doubles/custom callbacks that are not.
+            lap_ref = lambda: lap
+
+        try:
+            entry_ref = weakref.ref(entry, _remove_if_current)
+        except TypeError:
+            entry_ref = lambda: entry
+
+        bindings[lap_id] = (lap_ref, entry_ref)
+        self._history_identity_enabled = True
+
+    def _get_history_entry_for_lap(self, lap: LapData) -> Optional[HistoryEntry]:
+        """Resolve the retained history entry originating from ``lap``."""
+        self._prune_history_entry_bindings()
+        bindings = getattr(self, "_history_entry_by_lap_id", None) or {}
+        binding = bindings.get(id(lap))
+        if binding is None:
+            return None
+
+        lap_ref, entry_ref = binding
+        bound_lap = lap_ref() if callable(lap_ref) else lap_ref
+        entry = entry_ref() if callable(entry_ref) else entry_ref
+        if bound_lap is not lap or entry is None or not any(
+            retained is entry for retained in self._history_entries
+        ):
+            bindings.pop(id(lap), None)
+            return None
+        return entry
+
+    def _clear_history_entry_bindings(self) -> None:
+        """Forget lap-to-history associations at a session/lifecycle reset."""
+        bindings = getattr(self, "_history_entry_by_lap_id", None)
+        if bindings is not None:
+            bindings.clear()
 
     def _on_retry_lap(self, card: LapCard):
         """Retry submission for a failed lap card."""
         if not card.data.lap.is_valid and not self._config.submit_invalid_laps:
             return
 
-        history_entry = self._get_history_entry_for_lap_number(card.data.lap_number)
+        history_entry = self._get_history_entry_for_lap(card.data.lap)
+        if history_entry is None and not getattr(self, "_history_identity_enabled", False):
+            # Compatibility for cards created by older callers/tests before
+            # identity bindings were introduced.
+            history_entry = self._get_history_entry_for_lap_number(card.data.lap_number)
         if history_entry is None:
             card.update_status(LapCardStatus.FAILED, "Retry unavailable: history entry missing")
             return
@@ -418,6 +505,8 @@ class SimLapsApp:
             lap_number=lap.lap_number,
         )
         try:
+            self._prune_history_entry_bindings()
+            existing_entry_ids = {id(entry) for entry in self._history_entries}
             updated_track = await self._lap_processing_service.handle_lap_complete(
                 session=session,
                 lap=lap,
@@ -430,6 +519,17 @@ class SimLapsApp:
                 schedule_submission=self._schedule_lap_submission,
                 create_history_entry=HistoryEntry,
             )
+            # LapProcessingService appends exactly one entry for a presented
+            # timed lap.  Capture the object it appended before any later
+            # session can reuse ACE's lap number.
+            new_entries = [
+                entry
+                for entry in self._history_entries
+                if id(entry) not in existing_entry_ids
+            ]
+            if len(new_entries) == 1:
+                self._bind_history_entry_to_lap(lap, new_entries[0])
+            self._prune_history_entry_bindings()
             if updated_track is not None:
                 self._current_track_name = updated_track
         except Exception as e:
@@ -439,7 +539,7 @@ class SimLapsApp:
         """Refresh a SHM-first lap after ACE eventually flushes its log data."""
         if self._home_page:
             self._home_page.refresh_lap(lap)
-        history_entry = self._get_history_entry_for_lap_number(lap.lap_number)
+        history_entry = self._get_history_entry_for_lap(lap)
         if history_entry is not None:
             history_entry.lap_time_ms = lap.lap_time_ms
             history_entry.timestamp = lap.timestamp
@@ -509,15 +609,27 @@ class SimLapsApp:
     
     async def _on_car_removed(self):
         """Delegate the player-car removal boundary."""
-        await self._session_lifecycle_service.handle_car_removed()
+        try:
+            await self._session_lifecycle_service.handle_car_removed()
+        finally:
+            self._clear_history_entry_bindings()
 
     async def _on_session_restart(self):
         """Delegate the pause-menu restart boundary."""
-        await self._session_lifecycle_service.handle_session_restart()
+        try:
+            await self._session_lifecycle_service.handle_session_restart()
+        finally:
+            self._clear_history_entry_bindings()
 
     async def _on_game_status_change(self, is_running: bool):
         """Handle game running status change."""
-        await self._session_lifecycle_service.handle_game_status_change(is_running)
+        try:
+            await self._session_lifecycle_service.handle_game_status_change(is_running)
+        finally:
+            # Both edges end the previous callback generation: a new
+            # game-status True begins a fresh shared/parser session, while
+            # False means no more delayed updates should target that run.
+            self._clear_history_entry_bindings()
     
     async def _start_telemetry_capture(self):
         """Start telemetry capture when game session begins."""
