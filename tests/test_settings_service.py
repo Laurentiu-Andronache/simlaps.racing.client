@@ -5,7 +5,7 @@ import pytest
 
 from src.ui.services.settings_service import SettingsService
 from src.ui.components.telemetry_status import TelemetryButton
-from src.utils.config import AppConfig
+from src.utils.config import AppConfig, ConfigManager
 
 
 def _make_app() -> SimpleNamespace:
@@ -337,3 +337,130 @@ def test_apply_persistence_failure_does_not_mutate_live_state(changes):
     app._attach_telemetry_ui.assert_not_called()
     app._home_page.update_config.assert_not_called()
     app.page.run_task.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "failure_point",
+    ["stop", "record_mode", "capture_config", "attach", "home_update", "parser_start", "client_close"],
+)
+def test_apply_rolls_back_persisted_and_runtime_state_after_activation_failure(failure_point):
+    """Every post-persist boundary must leave one coherent old generation."""
+    app = _make_app()
+    previous = app._config
+    old_parser = app._log_parser
+    old_api = MagicMock()
+    app._api_client = old_api
+    app._config.telemetry_output_path = "C:/old-telemetry"
+    app._config.telemetry_enabled = False
+
+    capture = MagicMock()
+    capture.record_frames = False
+    app._telemetry_capture = capture
+    app._telemetry_analyzer = MagicMock()
+    app._telemetry_button = MagicMock()
+    old_button = app._telemetry_button
+
+    new_api = MagicMock()
+    app._config_manager.set.side_effect = [True, True]
+    config = AppConfig(
+        server_url="https://new-server.com",
+        log_path="C:/new-logs" if failure_point in {"stop", "parser_start"} else previous.log_path,
+        telemetry_enabled=(failure_point in {"record_mode", "capture_config", "attach", "home_update"}),
+        telemetry_output_path=("C:/new-telemetry" if failure_point == "capture_config" else previous.telemetry_output_path),
+    )
+    # Ensure parser restart is exercised only by its dedicated case.
+    if failure_point in {"stop", "parser_start"}:
+        app._log_parser.is_running = True
+    else:
+        config = AppConfig.from_dict({**previous.to_dict(), "server_url": "https://new-server.com"})
+
+    create_api = MagicMock(return_value=new_api)
+    if failure_point == "stop":
+        app.stop_monitoring.side_effect = RuntimeError("stop failed")
+    elif failure_point == "record_mode":
+        config = AppConfig.from_dict({**previous.to_dict(), "telemetry_enabled": True})
+        capture.set_record_frames.side_effect = RuntimeError("record mode failed")
+    elif failure_point == "capture_config":
+        config = AppConfig.from_dict({**previous.to_dict(), "telemetry_output_path": "C:/new-telemetry"})
+        capture.configure.side_effect = RuntimeError("capture config failed")
+    elif failure_point == "attach":
+        config = AppConfig.from_dict({**previous.to_dict(), "telemetry_enabled": True})
+        app._attach_telemetry_ui.side_effect = RuntimeError("attach failed")
+    elif failure_point == "home_update":
+        app._home_page.update_config.side_effect = RuntimeError("home update failed")
+    elif failure_point == "parser_start":
+        def fail_parser_start(callback, *args):
+            if callback is app.start_monitoring:
+                raise RuntimeError("parser schedule failed")
+            return None
+        app.page.run_task.side_effect = fail_parser_start
+    elif failure_point == "client_close":
+        app.page.run_task.side_effect = RuntimeError("client close schedule failed")
+
+    with pytest.raises(RuntimeError):
+        SettingsService().apply(
+            app=app,
+            config=config,
+            create_discord_notifier=MagicMock(),
+            get_pb_cache_for_server=MagicMock(return_value=MagicMock()),
+            create_api_client=create_api,
+            create_log_parser=MagicMock(return_value=MagicMock()),
+        )
+
+    assert app._config is previous
+    assert app._config_manager.set.call_args_list[-1].args == (previous,)
+    assert app._api_client is old_api
+    assert app._log_parser is old_parser
+    assert app._telemetry_capture is capture
+    assert app._telemetry_button is old_button
+
+
+def test_activation_failure_restores_config_manager_and_disk(tmp_path):
+    app = _make_app()
+    manager = ConfigManager(config_path=tmp_path / "config.json")
+    previous = manager.load()
+    app._config_manager = manager
+    app._config = previous
+    app._home_page.update_config.side_effect = RuntimeError("home update failed")
+    replacement = AppConfig.from_dict({**previous.to_dict(), "server_url": "https://new-server.com"})
+
+    with pytest.raises(RuntimeError):
+        SettingsService().apply(
+            app=app,
+            config=replacement,
+            create_discord_notifier=MagicMock(),
+            get_pb_cache_for_server=MagicMock(return_value=MagicMock()),
+            create_api_client=MagicMock(return_value=MagicMock()),
+            create_log_parser=MagicMock(return_value=MagicMock()),
+        )
+
+    assert manager.get() is previous
+    assert ConfigManager(config_path=manager.config_path).load().to_dict() == previous.to_dict()
+    assert app._config is previous
+
+
+def test_cold_start_telemetry_initialization_failure_rolls_back():
+    app = _make_app()
+    previous = app._config
+    app._telemetry_capture = None
+    app._telemetry_analyzer = None
+    app._telemetry_button = None
+    app._init_telemetry_services.side_effect = RuntimeError("capture init failed")
+    app._config_manager.set.side_effect = [True, True]
+    replacement = AppConfig.from_dict({**previous.to_dict(), "telemetry_enabled": True})
+
+    with pytest.raises(RuntimeError, match="capture init failed"):
+        SettingsService().apply(
+            app=app,
+            config=replacement,
+            create_discord_notifier=MagicMock(),
+            get_pb_cache_for_server=MagicMock(),
+            create_api_client=MagicMock(return_value=MagicMock()),
+            create_log_parser=MagicMock(return_value=MagicMock()),
+        )
+
+    assert app._config is previous
+    assert app._telemetry_capture is None
+    assert app._telemetry_analyzer is None
+    assert app._telemetry_button is None
+    assert app._config_manager.get() is not replacement
