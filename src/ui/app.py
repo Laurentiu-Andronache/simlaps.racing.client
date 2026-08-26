@@ -138,9 +138,16 @@ class SimLapsApp:
         self.page.spacing = 0
         log_debug(Component.APP, "Flet page properties set")
 
-        # Window close handler
-        self.page.on_close = self._on_window_close
-        log_debug(Component.APP, "Window close handler set")
+        # Flet 0.86.5 reports native desktop close requests through the
+        # Window control.  Intercept the request until asynchronous cleanup
+        # (including telemetry analysis) has completed.
+        self.page.window.prevent_close = True
+        self.page.window.on_event = self._on_window_event
+        # These page callbacks are fallbacks for a session disappearing before
+        # a native close event reaches the window control.
+        self.page.on_disconnect = self._on_page_disconnect
+        self.page.on_close = self._on_page_close
+        log_debug(Component.APP, "Window and page lifecycle handlers set")
 
         # Window icon (best-effort — icon file is optional)
         icon_path = self._get_icon_path()
@@ -578,9 +585,23 @@ class SimLapsApp:
         if self._home_page:
             self._home_page.set_game_version(version)
     
-    def _on_window_close(self, e):
-        """Handle window close."""
-        self._cleanup()
+    async def _on_window_event(self, e):
+        """Handle native desktop window events."""
+        event_type = getattr(e, "type", None)
+        if event_type in (ft.WindowEventType.CLOSE, ft.WindowEventType.CLOSE.value):
+            await self._cleanup()
+
+    async def _on_page_disconnect(self, e=None):
+        """Fallback cleanup when the page session disconnects."""
+        await self._cleanup()
+
+    async def _on_page_close(self, e=None):
+        """Fallback cleanup when a page session expires."""
+        await self._cleanup()
+
+    async def _on_window_close(self, e=None):
+        """Backward-compatible alias for the native close callback."""
+        await self._cleanup()
     
     async def start_monitoring(self):
         """Start monitoring the log file."""
@@ -641,9 +662,9 @@ class SimLapsApp:
         async with APIClient(server_url=server_url) as test_client:
             return await test_client.test_connection()
     
-    def _cleanup(self):
+    async def _cleanup(self):
         """Cleanup resources before exit."""
-        self._app_lifecycle_service.cleanup(app=self)
+        await self._app_lifecycle_service.cleanup(app=self)
 
 
 async def main(page: ft.Page):
