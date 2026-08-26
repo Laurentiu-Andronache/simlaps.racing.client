@@ -18,12 +18,23 @@ from __future__ import annotations
 
 import json
 import math
+import struct
 from pathlib import Path
 
 import pytest
 
 from src.core.telemetry_decoder import (
     GRAPHICS_EVO_MIN_SIZE,
+    _GE_TIMING_BEST_LAPTIME,
+    _GE_TIMING_CURRENT_LAPTIME,
+    _GE_TIMING_DELTA_CURRENT,
+    _GE_TIMING_DELTA_CURRENT_P,
+    _GE_TIMING_DELTA_LAST,
+    _GE_TIMING_DELTA_LAST_P,
+    _GE_TIMING_IDEAL_LAPTIME,
+    _GE_TIMING_IS_INVALID,
+    _GE_TIMING_LAST_LAPTIME,
+    _GE_TIMING_TOTAL_TIME,
     decode_graphics,
     decode_graphics_evo,
 )
@@ -179,6 +190,46 @@ class TestDecodeGraphicsEvoFieldValues:
         assert result["completed_laps"] == result["total_lap_count"]
         assert result["position"] == result["current_pos"]
         assert result["is_in_pit"] == result["is_in_pit_box"]
+
+    def test_session_offsets_match_fixture(self, graphics_bytes):
+        result = decode_graphics_evo(graphics_bytes)
+
+        assert result["session_total_laps"] == 3
+        assert result["session_current_lap"] == 1
+        assert result["session_time_left_ms"] == 1_043_230
+
+    def test_timing_substructure_uses_aligned_non_overlapping_fields(self, graphics_bytes):
+        """Each timing field has a distinct documented ``_pack_=4`` slot."""
+        data = bytearray(graphics_bytes)
+
+        def put_string(offset, value):
+            encoded = value.encode("ascii")
+            assert len(encoded) <= 15
+            data[offset:offset + 15] = encoded.ljust(15, b"\x00")
+
+        put_string(_GE_TIMING_CURRENT_LAPTIME, "CURRENT")
+        put_string(_GE_TIMING_DELTA_CURRENT, "CUR_DELTA")
+        put_string(_GE_TIMING_LAST_LAPTIME, "LAST")
+        put_string(_GE_TIMING_DELTA_LAST, "LAST_DELTA")
+        put_string(_GE_TIMING_BEST_LAPTIME, "BEST")
+        put_string(_GE_TIMING_IDEAL_LAPTIME, "IDEAL")
+        put_string(_GE_TIMING_TOTAL_TIME, "TOTAL")
+        struct.pack_into("<i", data, _GE_TIMING_DELTA_CURRENT_P, -101)
+        struct.pack_into("<i", data, _GE_TIMING_DELTA_LAST_P, 202)
+        data[_GE_TIMING_IS_INVALID] = 1
+
+        result = decode_graphics_evo(bytes(data))
+
+        assert result["timing_current_laptime"] == "CURRENT"
+        assert result["timing_delta_current"] == "CUR_DELTA"
+        assert result["timing_delta_current_p"] == -101
+        assert result["timing_last_laptime"] == "LAST"
+        assert result["timing_delta_last"] == "LAST_DELTA"
+        assert result["timing_delta_last_p"] == 202
+        assert result["timing_best_laptime"] == "BEST"
+        assert result["timing_ideal_laptime"] == "IDEAL"
+        assert result["timing_total_time"] == "TOTAL"
+        assert result["timing_is_invalid"] is True
 
 
 class TestDecodeGraphicsDispatch:
