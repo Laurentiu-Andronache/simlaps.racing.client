@@ -41,28 +41,123 @@ async def test_preload_from_api_handles_timeout_and_request_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_preload_from_api_skips_invalid_rows_and_bad_timestamps() -> None:
+async def test_preload_from_api_rejects_malformed_rows_without_partial_state() -> None:
     cache = PBCache("https://simlaps.racing")
 
-    payload = {
+    valid_payload = {
         "personalBests": [
-            {"trackId": "spa", "carId": "car", "bestTime": 120000, "setAt": "not-a-date"},
+            {
+                "trackId": "spa",
+                "carId": "car",
+                "bestTime": 120000,
+                "setAt": "2026-01-01T00:00:00Z",
+            },
+        ]
+    }
+    malformed_payload = {
+        "personalBests": [
+            {"trackId": "monza", "carId": "car", "bestTime": 115000},
             {"trackId": "", "carId": "car", "bestTime": 120000},
-            {"trackId": "spa", "carId": "", "bestTime": 120000},
-            {"trackId": "spa", "carId": "car2", "bestTime": 0},
         ]
     }
 
     with patch("httpx.AsyncClient") as mock_client:
-        response = MagicMock()
-        response.status_code = 200
-        response.json.return_value = payload
-        mock_client.return_value.__aenter__.return_value.get = AsyncMock(return_value=response)
+        first_response = MagicMock(status_code=200)
+        first_response.json.return_value = valid_payload
+        second_response = MagicMock(status_code=200)
+        second_response.json.return_value = malformed_payload
+        mock_client.return_value.__aenter__.return_value.get = AsyncMock(
+            side_effect=[first_response, second_response]
+        )
 
-        ok = await cache.preload_from_api("steam")
+        assert await cache.preload_from_api("user-a") is True
+        state_before_failed_preload = cache.get_all_pbs()
+        assert await cache.preload_from_api("user-b") is False
 
-    assert ok is True
+    assert cache.get_all_pbs() == state_before_failed_preload
     assert cache.is_loaded() is True
-    all_pbs = cache.get_all_pbs()
-    assert len(all_pbs) == 1
-    assert ("spa", "car") in all_pbs
+    assert cache.get_steam_id() == "user-a"
+    assert ("spa", "car") in cache.get_all_pbs()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        None,
+        [],
+        {},
+        {"personalBests": {}},
+        {"personalBests": None},
+        {"personalBests": [None]},
+        {"personalBests": [{"trackId": "spa", "carId": "car"}]},
+        {
+            "personalBests": [
+                {
+                    "trackId": "spa",
+                    "carId": "car",
+                    "bestTime": 120000,
+                    "setAt": "not-a-date",
+                }
+            ]
+        },
+    ],
+)
+async def test_preload_from_api_preserves_state_for_malformed_response(payload) -> None:
+    cache = PBCache("https://simlaps.racing")
+    valid_payload = {
+        "personalBests": [{"trackId": "spa", "carId": "car", "bestTime": 120000}]
+    }
+
+    with patch("httpx.AsyncClient") as mock_client:
+        valid_response = MagicMock(status_code=200)
+        valid_response.json.return_value = valid_payload
+        malformed_response = MagicMock(status_code=200)
+        malformed_response.json.return_value = payload
+        mock_client.return_value.__aenter__.return_value.get = AsyncMock(
+            side_effect=[valid_response, malformed_response]
+        )
+
+        assert await cache.preload_from_api("user-a") is True
+        state_before_failed_preload = cache.get_all_pbs()
+        assert await cache.preload_from_api("user-b") is False
+
+    assert cache.get_all_pbs() == state_before_failed_preload
+    assert cache.get_steam_id() == "user-a"
+    assert cache.is_loaded() is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "best_time",
+    [0, -1, 120000.0, "120000", None, True, False, float("nan"), float("inf")],
+)
+async def test_preload_from_api_rejects_non_positive_or_non_integer_times(
+    best_time,
+) -> None:
+    cache = PBCache("https://simlaps.racing")
+    valid_payload = {
+        "personalBests": [{"trackId": "spa", "carId": "car", "bestTime": 120000}]
+    }
+    malformed_payload = {
+        "personalBests": [
+            {"trackId": "spa", "carId": "car", "bestTime": best_time}
+        ]
+    }
+
+    with patch("httpx.AsyncClient") as mock_client:
+        valid_response = MagicMock(status_code=200)
+        valid_response.json.return_value = valid_payload
+        malformed_response = MagicMock(status_code=200)
+        malformed_response.json.return_value = malformed_payload
+        mock_client.return_value.__aenter__.return_value.get = AsyncMock(
+            side_effect=[valid_response, malformed_response]
+        )
+
+        assert await cache.preload_from_api("user-a") is True
+        state_before_failed_preload = cache.get_all_pbs()
+        assert await cache.preload_from_api("user-b") is False
+
+    assert cache.get_all_pbs() == state_before_failed_preload
+    assert cache.get_steam_id() == "user-a"
+    assert cache.is_loaded() is True
