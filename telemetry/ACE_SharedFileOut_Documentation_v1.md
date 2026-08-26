@@ -8,6 +8,7 @@
 
 **Change log**
 
+- \[2026-08-26\] ACE 0.9.0 captures confirm that the documented graphics flags remain at bytes 42-56. RPM limiter, downshift prompt, ABS-active, and ignition-on now emit nonzero values; established outer-field offsets and shared-memory version 1.0 remain unchanged.
 - \[2026-03-31\] inner structures have fixed size (see the section structure name \[size\])  
 - \[2026-03-31\] **\!\!\!** display\_current\_page\_index is now an array of 16 items (it was 9 before)  
 - \[2026-03-31\] the example solution has been updated

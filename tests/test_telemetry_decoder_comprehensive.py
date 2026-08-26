@@ -10,6 +10,7 @@ from src.core.telemetry_decoder import (
     decode_physics,
     decode_physics_ac,
     decode_physics_fallback,
+    decode_graphics_evo,
     decode_graphics_fallback,
     decode_static_fallback,
     physics_to_dict,
@@ -20,6 +21,61 @@ from src.core.telemetry_decoder import (
     AC_FLAG_TYPE,
     peek_graphics_validity,
 )
+
+
+GRAPHICS_FLAG_FIELDS = (
+    (42, "is_rpm_limiter_on"),
+    (43, "is_change_up_rpm"),
+    (44, "is_change_down_rpm"),
+    (45, "tc_active"),
+    (46, "abs_active"),
+    (47, "esc_active"),
+    (48, "launch_active"),
+    (49, "is_ignition_on"),
+    (50, "is_engine_running"),
+    (51, "kers_is_charging"),
+    (52, "is_wrong_way"),
+    (53, "is_drs_available"),
+    (54, "battery_is_charging"),
+    (55, "is_max_kj_per_lap_reached"),
+    (56, "is_max_charge_kj_per_lap_reached"),
+)
+
+
+def _valid_graphics_buffer() -> bytearray:
+    data = bytearray(4096)
+    struct.pack_into("<f", data, 1244, 0.5)
+    struct.pack_into("<I", data, 2392, 1)
+    struct.pack_into("<I", data, 2412, 6)
+    return data
+
+
+@pytest.mark.parametrize(("offset", "field_name"), GRAPHICS_FLAG_FIELDS)
+def test_graphics_decoder_exposes_each_documented_flag(offset, field_name) -> None:
+    data = _valid_graphics_buffer()
+    data[offset] = 1
+
+    result = decode_graphics_evo(bytes(data))
+
+    assert result is not None
+    assert result[field_name] is True
+    for _, other_field in GRAPHICS_FLAG_FIELDS:
+        if other_field != field_name:
+            assert result[other_field] is False
+
+
+def test_graphics_decoder_exposes_flags_observed_in_ace_090() -> None:
+    data = _valid_graphics_buffer()
+    for offset in (42, 44, 46, 49):
+        data[offset] = 1
+
+    result = decode_graphics_evo(bytes(data))
+
+    assert result is not None
+    assert result["is_rpm_limiter_on"] is True
+    assert result["is_change_down_rpm"] is True
+    assert result["abs_active"] is True
+    assert result["is_ignition_on"] is True
 
 
 def test_lightweight_graphics_peek_includes_completed_lap_time() -> None:
