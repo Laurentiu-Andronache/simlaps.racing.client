@@ -591,7 +591,7 @@ def test_get_lap_time_uses_source_priority() -> None:
 
 
 def test_get_lap_time_graphics_fallback_when_no_log_time() -> None:
-    """Graphics SHM times must be visible when log-sourced times are absent."""
+    """Graphics SHM times remain visible for diagnostics without a verdict."""
     manager = SharedSessionManager()
 
     manager.update_lap_timing_from_graphics_shm(3, {"last_laptime_ms": 95000})
@@ -602,8 +602,98 @@ def test_get_lap_time_graphics_fallback_when_no_log_time() -> None:
     assert 3 in all_times
     assert all_times[3] == 95000.0
 
-    # get_best_lap_time must consider graphics times
+    # A timing sample without a finalized validity verdict is unknown, not a
+    # valid session best.
+    assert manager.get_best_lap_time() is None
+
+
+def test_get_best_lap_time_uses_only_finalized_valid_timed_laps() -> None:
+    manager = SharedSessionManager()
+
+    manager.update_lap_from_logs(
+        LapData(
+            lap_number=1,
+            physics_lap_number=1,
+            lap_time_ms=90000,
+            lap_time_str="1:30.000",
+            is_valid=False,
+            lap_state=LapState.INVALID_GAME,
+            lap_type=LapState.INVALID_GAME.value,
+        )
+    )
+    manager.update_lap_from_logs(
+        LapData(
+            lap_number=2,
+            physics_lap_number=2,
+            lap_time_ms=95000,
+            lap_time_str="1:35.000",
+            is_valid=True,
+            lap_state=LapState.VALID,
+            lap_type=LapState.VALID.value,
+        )
+    )
+
     assert manager.get_best_lap_time() == 95000.0
+
+
+def test_get_best_lap_time_is_none_when_all_finalized_laps_are_invalid() -> None:
+    manager = SharedSessionManager()
+
+    manager.update_lap_from_logs(
+        LapData(
+            lap_number=1,
+            physics_lap_number=1,
+            lap_time_ms=90000,
+            lap_time_str="1:30.000",
+            is_valid=False,
+            lap_state=LapState.INVALID_GAME,
+            lap_type=LapState.INVALID_GAME.value,
+        )
+    )
+
+    assert manager.get_best_lap_time() is None
+
+
+def test_get_best_lap_time_excludes_outlap_even_if_timed() -> None:
+    manager = SharedSessionManager()
+
+    manager.update_lap_from_logs(
+        LapData(
+            lap_number=1,
+            physics_lap_number=1,
+            lap_time_ms=90000,
+            lap_time_str="1:30.000",
+            is_valid=False,
+            lap_state=LapState.OUTLAP,
+            lap_type=LapState.OUTLAP.value,
+        )
+    )
+
+    assert manager.get_best_lap_time() is None
+
+
+def test_get_best_lap_time_waits_for_later_finalized_shm_lap_verdict() -> None:
+    manager = SharedSessionManager()
+
+    # SHM can expose the completed duration before the log parser has
+    # finalized whether the lap was a valid timed lap.
+    manager.update_lap_timing_from_graphics_shm(1, {"last_laptime_ms": 90000})
+    manager.update_lap_validity_from_graphics_shm(1, is_invalid=False)
+    assert manager.get_best_lap_time() is None
+
+    manager.update_lap_from_logs(
+        LapData(
+            lap_number=1,
+            physics_lap_number=1,
+            lap_time_ms=90000,
+            lap_time_str="1:30.000",
+            is_valid=True,
+            lap_state=LapState.VALID,
+            lap_type=LapState.VALID.value,
+        )
+    )
+
+    assert manager.get_best_lap_time() == 90000.0
 
 
 def test_validate_data_consistency_returns_empty_after_merge() -> None:

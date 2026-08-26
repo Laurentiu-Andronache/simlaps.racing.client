@@ -299,8 +299,22 @@ class SharedSessionManager:
         with self._lock:
             times = [
                 t.completed_lap_time
-                for t in self._session_data.lap_timing.values()
-                if t.completed_lap_time is not None
+                for lap_num, t in self._session_data.lap_timing.items()
+                if (
+                    isinstance(t.completed_lap_time, (int, float))
+                    and not isinstance(t.completed_lap_time, bool)
+                    and t.completed_lap_time > 0
+                    # A graphics time can arrive before the log parser has
+                    # finalized the lap's verdict.  Missing/SHM-only
+                    # validity is unknown, not valid, and must not become a
+                    # session best prematurely.
+                    and (
+                        validity := self._session_data.lap_validity.get(lap_num)
+                    ) is not None
+                    and validity.source == "logs"
+                    and validity.is_valid is True
+                    and validity.lap_state == "VALID"
+                )
             ]
             return min(times) if times else None
 
