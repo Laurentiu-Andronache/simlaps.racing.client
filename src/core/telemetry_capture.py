@@ -676,6 +676,7 @@ class TelemetryCapture:
         }
 
         disconnected = []
+        graphics_peek: Optional[Dict[str, Any]] = None
         for key, reader in list(self._readers.items()):
             try:
                 raw = reader.read_raw()
@@ -701,7 +702,7 @@ class TelemetryCapture:
             if key == "graphics":
                 peeked = peek_graphics_validity(raw)
                 if peeked is not None:
-                    self._session_manager.update_from_graphics_shm(peeked)
+                    graphics_peek = peeked
 
             try:
                 if key == "physics":
@@ -730,7 +731,27 @@ class TelemetryCapture:
 
         graphics_data = frame.get("graphics") or {}
         if isinstance(graphics_data, dict) and not graphics_data.get("error"):
+            # The lightweight peek reads stable lap timing/validity offsets
+            # even when the richer decoder rejects a buffer whose layout has
+            # changed. Publish one combined update so a fallback payload
+            # cannot overwrite those fields with absent/default values. Keep
+            # peek values authoritative when the full decoder is the fallback;
+            # otherwise only fill fields absent from a genuine full-decoder
+            # payload. All other decoded graphics fields still come from the
+            # full decoder.
+            if graphics_peek is not None:
+                if graphics_data.get("_decoder") == "fallback":
+                    graphics_data = {**graphics_data, **graphics_peek}
+                else:
+                    graphics_data = {
+                        **graphics_peek,
+                        **graphics_data,
+                    }
             self._session_manager.update_from_graphics_shm(graphics_data)
+        elif graphics_peek is not None:
+            # Preserve the validity-only path if the full decoder raises
+            # rather than returning its normal fallback payload.
+            self._session_manager.update_from_graphics_shm(graphics_peek)
 
         static_data = frame.get("static") or {}
         if isinstance(static_data, dict) and not static_data.get("error"):
