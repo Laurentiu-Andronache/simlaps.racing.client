@@ -8,17 +8,17 @@ Usage:
     python build.py              # Build with PyArmor obfuscation
     python build.py --no-obfuscate   # Build without obfuscation (faster, for testing)
     python build.py --clean      # Clean build artifacts
-    python build.py --secret KEY # Use specific secret (default: generate random)
 """
 
 import os
 import sys
-import re
 import shutil
 import secrets
 import subprocess
 import argparse
 from pathlib import Path
+
+from dotenv import dotenv_values
 
 
 def get_venv_executable(name: str) -> str:
@@ -54,6 +54,12 @@ BUILD_DIR = "build"
 OBFUSCATED_DIR = "obfuscated"
 SECURITY_FILE = "src/core/security.py"
 
+# Build-time embedded secret: generated Cython module compiled to a native
+# extension so the release artifact carries no plaintext credential.
+SECRET_STAGE_DIR = os.path.join(BUILD_DIR, "secret_stage")
+EMBEDDED_SECRET_MODULE = "_embedded_secret"
+PLACEHOLDER_SECRETS = frozenset({"blahtopsecret"})
+
 
 def clean():
     """Remove build artifacts."""
@@ -66,18 +72,16 @@ def clean():
             print(f"  Removing {dir_name}/")
             shutil.rmtree(dir_name)
     
-    # Clean dist/
+    # Clean dist/, including credential artifacts left by older releases.
     if os.path.exists(DIST_DIR):
         for item in os.listdir(DIST_DIR):
             item_path = os.path.join(DIST_DIR, item)
-            # Preserve old secret file if exists, just in case
-            if item != "SERVER_SECRET.txt":
-                if os.path.isfile(item_path):
-                    os.remove(item_path)
-                    print(f"  Removing {item_path}")
-                elif os.path.isdir(item_path):
-                    shutil.rmtree(item_path)
-                    print(f"  Removing {item_path}/")
+            if os.path.isfile(item_path):
+                os.remove(item_path)
+                print(f"  Removing {item_path}")
+            elif os.path.isdir(item_path):
+                shutil.rmtree(item_path)
+                print(f"  Removing {item_path}/")
     
     # Remove .pyc files
     for pyc in Path(".").rglob("*.pyc"):
@@ -98,6 +102,7 @@ def check_dependencies():
     required = {
         "pyinstaller": "PyInstaller",
         "pyarmor": "pyarmor",
+        "cython": "Cython",
     }
     missing = []
     
@@ -137,14 +142,15 @@ def obfuscate_source():
         "src/core/api_client.py",
     ]
     
-    # PyArmor obfuscation command (using free features only)
-    # Invoke via python -m pyarmor.cli for venv-path resilience
+    # PyArmor obfuscation command (free tier maximum: code-object and
+    # module-level obfuscation, which are the defaults at level 1).
+    # Invoke via python -m pyarmor.cli for venv-path resilience.
     cmd = [
         sys.executable, "-m", "pyarmor.cli",
         "gen",
         "--output", OBFUSCATED_DIR,
-        "--obf-code", "0",  # Basic obfuscation (free tier)
-        "--obf-module", "0",  # Basic module obfuscation (free tier)
+        "--obf-code", "1",  # Obfuscate each function code object (free tier)
+        "--obf-module", "1",  # Obfuscate whole module code (free tier)
         *files_to_obfuscate,
     ]
     
@@ -182,6 +188,94 @@ def obfuscate_source():
     else:
         print("  Obfuscation failed: output directory not found")
         return False
+
+
+def get_build_secret() -> str | None:
+    """Resolve the APP_SECRET to embed, from the process env or a local .env.
+
+    Returns None when no usable secret is available (unset or placeholder).
+    """
+    secret = os.environ.get("APP_SECRET")
+    if not secret and os.path.exists(".env"):
+        secret = dotenv_values(".env").get("APP_SECRET")
+    if not secret or secret.strip() in PLACEHOLDER_SECRETS:
+        return None
+    return secret.strip()
+
+
+def generate_secret_module_source(secret: str) -> str:
+    """Generate Cython source carrying the secret as two XOR pads.
+
+    The secret never appears as a contiguous literal; it is reconstructed at
+    runtime as pad_a ^ pad_b inside compiled machine code.
+    """
+    data = secret.encode("utf-8")
+    pad_a = secrets.token_bytes(len(data))
+    pad_b = bytes(a ^ b for a, b in zip(pad_a, data))
+
+    def fmt(raw: bytes) -> str:
+        return "".join(f"\\x{byte:02x}" for byte in raw)
+
+    return (
+        "# Auto-generated at build time by build.py. Never commit this file.\n"
+        f'_PA = b"{fmt(pad_a)}"\n'
+        f'_PB = b"{fmt(pad_b)}"\n'
+        "\n"
+        "def get_secret() -> bytes:\n"
+        "    return bytes(a ^ b for a, b in zip(_PA, _PB))\n"
+    )
+
+
+def stage_embedded_secret() -> bool:
+    """Generate and compile the embedded-secret native extension.
+
+    Output lands in SECRET_STAGE_DIR (inside build/, which is gitignored) and
+    is picked up by PyInstaller via --paths + --hidden-import.
+    """
+    print("Embedding APP_SECRET as compiled native module...")
+
+    secret = get_build_secret()
+    if not secret:
+        print("\nERROR: no usable APP_SECRET found in the process environment or .env!")
+        print("Set APP_SECRET before building (see .env.example).")
+        print("A release without the embedded secret cannot submit laps.")
+        return False
+
+    os.makedirs(SECRET_STAGE_DIR, exist_ok=True)
+
+    pyx_path = os.path.join(SECRET_STAGE_DIR, f"{EMBEDDED_SECRET_MODULE}.pyx")
+    with open(pyx_path, "w", encoding="utf-8") as f:
+        f.write(generate_secret_module_source(secret))
+
+    setup_path = os.path.join(SECRET_STAGE_DIR, "setup.py")
+    with open(setup_path, "w", encoding="utf-8") as f:
+        f.write(
+            "from setuptools import Extension, setup\n"
+            "from Cython.Build import cythonize\n"
+            "setup(ext_modules=cythonize(\n"
+            f'    [Extension("{EMBEDDED_SECRET_MODULE}", ["{EMBEDDED_SECRET_MODULE}.pyx"])],\n'
+            "    language_level=3,\n"
+            "))\n"
+        )
+
+    result = subprocess.run(
+        [sys.executable, "setup.py", "build_ext", "--inplace"],
+        cwd=SECRET_STAGE_DIR,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print(f"  Cython compile failed: {result.stderr}")
+        print("  Ensure Cython is installed and MSVC Build Tools are present.")
+        return False
+
+    compiled = list(Path(SECRET_STAGE_DIR).glob(f"{EMBEDDED_SECRET_MODULE}.*.pyd"))
+    if not compiled:
+        print("  Cython compile produced no .pyd output")
+        return False
+
+    print(f"  Embedded secret module: {compiled[0]}")
+    return True
 
 
 def build_executable():
@@ -226,13 +320,17 @@ def build_executable():
             f"{analyzer_vendor_path};src/core/analyzer/vendor",
         ])
     
-    # Include .env file for runtime secret loading
-    if os.path.exists(".env"):
-        cmd.extend(["--add-data", ".env;."])
-        print("  Including .env file in build")
+    # Never bundle .env as data: the secret ships only inside the compiled
+    # native extension produced by stage_embedded_secret().
+    if os.path.isdir(SECRET_STAGE_DIR):
+        if not list(Path(SECRET_STAGE_DIR).glob(f"{EMBEDDED_SECRET_MODULE}.*.pyd")):
+            print("  ERROR: embedded secret module not staged - run stage_embedded_secret first")
+            return False
+        cmd.extend(["--paths", SECRET_STAGE_DIR])
+        hidden_imports_extra = [EMBEDDED_SECRET_MODULE]
     else:
-        print("  WARNING: .env file not found - build may fail at runtime")
-        print("  Create .env file with APP_SECRET before building")
+        print("  WARNING: no embedded secret module - release will run in offline mode")
+        hidden_imports_extra = []
     
     # Add hidden imports for Flet and psutil
     hidden_imports = [
@@ -267,7 +365,7 @@ def build_executable():
         "src.utils",
     ]
     
-    for imp in hidden_imports:
+    for imp in [*hidden_imports, *hidden_imports_extra]:
         cmd.extend(["--hidden-import", imp])
     
     # Add data files for Flet
@@ -289,12 +387,12 @@ def build_executable():
         "--collect-all", "src.utils",
     ])
     
-    # Add the source directory to path so imports work
-    cmd.extend(["--paths", src_dir])
-    
-    # Add obfuscated src directory to path if available
+    # Add obfuscated src directory first so it shadows the plain sources
     if os.path.exists(OBFUSCATED_DIR):
         cmd.extend(["--paths", os.path.join(OBFUSCATED_DIR)])
+    
+    # Add the source directory to path so imports work
+    cmd.extend(["--paths", src_dir])
     
     # Add entry point
     cmd.append(entry)
@@ -410,18 +508,12 @@ def main():
     if not check_dependencies():
         return 1
     
-    # Check that .env file exists
-    if not os.path.exists(".env"):
-        print("\nERROR: .env file not found!")
-        print("Please create .env from .env.example:")
-        print("  copy .env.example .env")
-        print("\nThe .env file must contain APP_SECRET for signing lap submissions.")
-        return 1
-    
-    print("Using APP_SECRET from .env file")
-    
-    # Clean previous build
+    # Clean previous build (also wipes the previous secret staging dir)
     clean()
+    
+    # Compile the embedded secret module from APP_SECRET (env or local .env)
+    if not stage_embedded_secret():
+        return 1
     
     # Obfuscate source unless disabled
     if not args.no_obfuscate:
@@ -442,7 +534,7 @@ def main():
     print(f"\nExecutable: {DIST_DIR}/{APP_NAME}.exe")
     if not args.no_obfuscate:
         print("Source code obfuscated with PyArmor")
-    print("Server secret loaded from .env file (bundled in executable)")
+    print("APP_SECRET embedded as compiled native module (no plaintext .env in artifact)")
     
     return 0
 

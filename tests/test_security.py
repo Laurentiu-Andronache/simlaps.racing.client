@@ -42,7 +42,7 @@ class TestSecretManagement:
 
         assert security.APP_SECRET is None
         assert is_secret_configured() is False
-        with pytest.raises(RuntimeError, match="APP_SECRET environment variable not set"):
+        with pytest.raises(RuntimeError, match="APP_SECRET not provisioned"):
             get_app_secret()
 
 
