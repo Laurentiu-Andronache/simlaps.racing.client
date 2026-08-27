@@ -7,3 +7,4 @@ psutil>=5.9.0
 # Development dependencies (for building)
 pyinstaller>=6.0.0
 pyarmor>=8.0.0
+cython>=3.0

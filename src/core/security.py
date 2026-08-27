@@ -50,15 +50,55 @@ else:
     # Running as script - load from project root
     load_dotenv()
 
+# The old .env.example placeholder. Treated as absent so a copied template
+# cannot mask a real embedded secret or accidentally enable submissions.
+PLACEHOLDER_APP_SECRETS = frozenset({"blahtopsecret"})
+
+
+def _is_usable_secret(value: Optional[str]) -> bool:
+    """Return whether a candidate secret is provisioned and not a placeholder."""
+    return bool(value) and value.strip() not in PLACEHOLDER_APP_SECRETS
+
+
+def _load_embedded_secret() -> Optional[str]:
+    """Load the build-time embedded secret from the compiled native module.
+
+    Only release builds contain this module (generated and compiled by
+    build.py); source runs fall through to the environment only.
+    """
+    try:
+        import _embedded_secret  # type: ignore[import-not-found]
+    except ImportError:
+        return None
+    try:
+        raw = _embedded_secret.get_secret()
+    except Exception:
+        return None
+    if not raw:
+        return None
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def _resolve_secret(env_value: Optional[str], embedded_value: Optional[str]) -> Optional[str]:
+    """Pick the effective secret: process env / dotenv wins, embedded is fallback."""
+    if _is_usable_secret(env_value):
+        return env_value
+    if _is_usable_secret(embedded_value):
+        return embedded_value
+    return None
+
+
 # Production secret for signing payloads
 # Matches CLIENT_APP_SECRET in server .env
-# Load from environment variable, fallback to None if not set
-APP_SECRET = os.environ.get("APP_SECRET")
+APP_SECRET = _resolve_secret(os.environ.get("APP_SECRET"), _load_embedded_secret())
 
 
 def is_secret_configured() -> bool:
-    """Return True when APP_SECRET is present and non-empty."""
-    return bool(APP_SECRET)
+    """Return True when a usable (non-placeholder) APP_SECRET is provisioned."""
+    return _is_usable_secret(APP_SECRET)
 
 
 def get_app_secret() -> bytes:
@@ -68,11 +108,11 @@ def get_app_secret() -> bytes:
     Raises RuntimeError if APP_SECRET is not configured so the app can run without it
     until a signature is actually required.
     """
-    if not APP_SECRET:
+    if not _is_usable_secret(APP_SECRET):
         raise RuntimeError(
-            "APP_SECRET environment variable not set. "
-            "Please set APP_SECRET in your .env file or environment. "
-            "See .env.example for the required format."
+            "APP_SECRET not provisioned. "
+            "Set it in the process environment or a local .env file. "
+            "Release builds carry a compiled embedded secret module."
         )
     return APP_SECRET.encode('utf-8')
 
