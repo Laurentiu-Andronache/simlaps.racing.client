@@ -57,7 +57,7 @@ version = {attr = "src.version.VERSION"}
 [tool.ruff]
 # Target Python version and line lengths
 target-version = "py311"
-line-length = 88
+line-length = 120
 
 [tool.ruff.lint]
 # Enable specific rule categories

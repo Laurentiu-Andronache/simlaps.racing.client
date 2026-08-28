@@ -197,7 +197,7 @@ def obfuscate_source() -> bool:
     print("Obfuscating source code with PyArmor...")
     _clear_obfuscated_output()
     cmd = [sys.executable, "-m", "pyarmor.cli", "gen", "--output", str(OBFUSCATED_DIR),
-           "--obf-code", "0", "--obf-module", "0",
+           "--obf-code", "1", "--obf-module", "1",
            *(REPO_ROOT / path for path in OBFUSCATED_MODULES)]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, cwd=REPO_ROOT)

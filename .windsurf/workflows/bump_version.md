@@ -60,4 +60,3 @@ href="/downloads/SimLapsClient-v120.exe"  # v119 -> v120
 
 - [ ] src/version.py - VERSION_MAJOR, VERSION_MINOR, VERSION_PATCH
 - [ ] web/src/version.ts - LATEST_CLIENT_VERSION string  
-- [ ] web/src/components/footr.tsx - download link filename
