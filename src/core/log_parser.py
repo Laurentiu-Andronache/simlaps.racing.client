@@ -411,20 +411,27 @@ class LogParser:
 
     def _clean_track_name(self, raw: str) -> str:
         """Strip session-type words and date suffixes from track description."""
+        session_suffixes = (
+            " Race Race", " Race", " Time Attack Practice",
+            " Time Attack", " Practice", " Qualifying", " Hotlap", " Drift",
+        )
         if "@" in raw:
             raw = raw[: raw.index("@")]
-        # Newer ACE builds append the session length before the @date,
-        # e.g. "Laguna Seca GP Race Race  5 laps @2014/8/15 15:0:0".
-        raw = re.sub(
+        raw = raw.strip()
+        # ACE appends the session duration/count before the dated descriptor,
+        # e.g. ``Time Attack Practice  5400 seconds`` or ``Race Race  3 laps``.
+        # Keep this deliberately narrow so words in a legitimate track name
+        # are not treated as session metadata.
+        duration = re.search(
             r"\s+\d+\s+(?:laps?|seconds?|minutes?|hours?)\s*$",
-            "",
             raw,
             flags=re.IGNORECASE,
         )
-        for suffix in (
-            " Race Race", " Race", " Time Attack Practice",
-            " Time Attack", " Practice", " Qualifying", " Hotlap", " Drift",
-        ):
+        if duration:
+            candidate = raw[: duration.start()].rstrip()
+            if candidate.endswith(session_suffixes):
+                raw = candidate
+        for suffix in session_suffixes:
             if raw.endswith(suffix):
                 raw = raw[: -len(suffix)]
                 break
