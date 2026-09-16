@@ -5,7 +5,7 @@ Owns lap submit result mapping and optional Discord post flow.
 
 from typing import Awaitable, Callable, Optional
 
-from src.core.api_client import APIClient, SubmissionStatus
+from src.core.api_client import APIClient, SubmissionStatus, SubmittedLapSnapshot
 from src.core.discord_notifier import DiscordLapPayload, DiscordNotifier
 from src.models import LapData, SessionData
 from src.utils.config import AppConfig
@@ -22,15 +22,34 @@ from ..components.lap_card import LapCard, LapCardStatus
 from ..pages.history import HistoryEntry
 
 
+def _update_card(card: Optional[LapCard], *args) -> None:
+    """An evicted recent-lap card does not prevent its history reconciliation."""
+    if card is not None:
+        card.update_status(*args)
+
+
 class LapSubmissionService:
     """Encapsulates lap submission + Discord posting orchestration."""
 
     async def submit_lap(
+        self, *, history_entry: HistoryEntry, **kwargs,
+    ) -> None:
+        """Serialize attempts for a result; success is never submitted twice."""
+        if history_entry.was_submitted or getattr(history_entry, "submission_in_flight", False):
+            return
+        history_entry.submission_in_flight = True
+        try:
+            await self._submit_lap(history_entry=history_entry, **kwargs)
+        finally:
+            history_entry.submission_in_flight = False
+            history_entry.submission_pending = False
+
+    async def _submit_lap(
         self,
         *,
         api_client: APIClient,
         config: AppConfig,
-        card: LapCard,
+        card: Optional[LapCard],
         session: SessionData,
         lap: LapData,
         history_entry: HistoryEntry,
@@ -38,6 +57,19 @@ class LapSubmissionService:
         post_to_discord: Callable[..., Awaitable[None]],
     ) -> None:
         """Submit a lap and update UI card state from result."""
+        # A queued UI task can run after its lap has been reclassified. Never
+        # rely on the eligibility decision made when the task was scheduled.
+        if getattr(lap, "is_unverified", False):
+            _update_card(card, LapCardStatus.UNVERIFIED)
+            return
+        if getattr(lap, "lap_type", None) == "OUTLAP":
+            return
+        if not lap.is_valid and not config.submit_invalid_laps:
+            _update_card(card, LapCardStatus.INVALID, "Lap invalidated before submission")
+            return
+        history_entry.submission_attempted = True
+        initial_valid = lap.is_valid
+        initial_time = getattr(lap, "lap_time_ms", None)
         log_info(
             Component.APP,
             "Starting lap submission",
@@ -48,7 +80,7 @@ class LapSubmissionService:
             server_url=config.server_url,
         )
 
-        card.update_status(LapCardStatus.SUBMITTING)
+        _update_card(card, LapCardStatus.SUBMITTING)
 
         try:
             log_debug(Component.APP, "Sending lap submission request")
@@ -60,18 +92,41 @@ class LapSubmissionService:
             log_debug(Component.APP, "Lap submission response received", status=getattr(result, "status", None))
         except Exception as exc:
             log_exception(Component.APP, "Submit error", exc)
-            card.update_status(LapCardStatus.FAILED, f"Submit error: {str(exc)}")
+            _update_card(card, LapCardStatus.FAILED, f"Submit error: {str(exc)}")
             return
 
         if result is None:
             log_error(Component.APP, "No response from server")
-            card.update_status(LapCardStatus.FAILED, "No response from server")
+            _update_card(card, LapCardStatus.FAILED, "No response from server")
             return
 
         if result.status == SubmissionStatus.SUCCESS:
             log_info(Component.APP, "Lap submitted successfully", lap_time=lap.lap_time_str, track=session.track)
-            card.update_status(LapCardStatus.SUBMITTED)
             history_entry.was_submitted = True
+            snapshot = getattr(result, "submitted_snapshot", None)
+            # Legacy API implementations do not return a sent snapshot. Keep
+            # their pre-await values rather than recording a later mutation
+            # as if it had already been accepted by the server.
+            history_entry.submitted_is_valid = (
+                snapshot.is_valid if isinstance(snapshot, SubmittedLapSnapshot) else initial_valid
+            )
+            history_entry.submitted_lap_time_ms = (
+                snapshot.lap_time_ms if isinstance(snapshot, SubmittedLapSnapshot) else initial_time
+            )
+            history_entry.was_valid = lap.is_valid and not getattr(lap, "is_unverified", False)
+            history_entry.lap_state = getattr(lap, "lap_type", None)
+            history_entry.submission_needs_review = bool(
+                getattr(lap, "is_unverified", False)
+                or history_entry.submitted_is_valid != lap.is_valid
+                or (
+                    history_entry.submitted_lap_time_ms is not None
+                    and history_entry.submitted_lap_time_ms != getattr(lap, "lap_time_ms", None)
+                )
+            )
+            if history_entry.submission_needs_review:
+                _update_card(card, LapCardStatus.REVIEW_REQUIRED)
+                return
+            _update_card(card, LapCardStatus.SUBMITTED)
 
             log_debug(Component.APP, "Checking Discord posting eligibility")
             await post_to_discord(
@@ -79,13 +134,25 @@ class LapSubmissionService:
                 lap,
                 steam_id=session.player_id,
                 steam_name=session.player_name,
-                pb_was_new=pb_was_new,
+                pb_was_new=bool(pb_was_new and lap.is_valid),
             )
+            return
+
+        if result.status == SubmissionStatus.UNVERIFIED_LAP or getattr(lap, "is_unverified", False):
+            if result.status == SubmissionStatus.UNVERIFIED_LAP:
+                history_entry.submission_attempted = False
+            _update_card(card, LapCardStatus.UNVERIFIED)
+            return
+
+        if not lap.is_valid and not config.submit_invalid_laps:
+            if result.status == SubmissionStatus.INVALID_LAP and getattr(result, "submitted_snapshot", None) is None:
+                history_entry.submission_attempted = False
+            _update_card(card, LapCardStatus.INVALID, result.message)
             return
 
         if result.status == SubmissionStatus.INVALID_LAP:
             log_warning(Component.APP, "Lap rejected as invalid", server_message=result.message)
-            card.update_status(LapCardStatus.INVALID, result.message)
+            _update_card(card, LapCardStatus.INVALID, result.message)
             return
 
         if result.status in {
@@ -94,6 +161,7 @@ class LapSubmissionService:
             SubmissionStatus.RATE_LIMITED,
             SubmissionStatus.PLAUSIBILITY_FAILED,
             SubmissionStatus.NO_SECRET,
+            SubmissionStatus.NETWORK_ERROR,
         }:
             log_warning(
                 Component.APP,
@@ -101,7 +169,7 @@ class LapSubmissionService:
                 status=result.status.value,
                 server_message=result.message,
             )
-            card.update_status(LapCardStatus.FAILED, result.message)
+            _update_card(card, LapCardStatus.FAILED, result.message)
             return
 
         log_error(Component.APP, "Unknown submission error", server_message=result.message)
@@ -119,6 +187,9 @@ class LapSubmissionService:
         pb_was_new: Optional[bool] = None,
     ) -> None:
         """Post lap to Discord if configured and eligible."""
+        if getattr(lap, "is_unverified", False) or getattr(lap, "lap_type", None) == "OUTLAP":
+            return
+        pb_was_new = bool(pb_was_new and lap.is_valid)
         try:
             log_debug(Component.APP, "Starting Discord post check")
 

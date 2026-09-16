@@ -258,6 +258,7 @@ class SimLapsApp:
             )
             # Set up auto-stop callback to trigger analysis
             self._telemetry_capture.set_on_stop_callback(self._on_telemetry_auto_stop)
+            self._telemetry_capture.set_on_origin_status_callback(self._on_telemetry_origin_status)
 
             if self._config.telemetry_enabled:
                 self._telemetry_analyzer = TelemetryAnalyzer(
@@ -474,6 +475,8 @@ class SimLapsApp:
 
     def _on_retry_lap(self, card: LapCard):
         """Retry submission for a failed lap card."""
+        if card.data.lap.is_unverified or card.data.lap.lap_type == "OUTLAP":
+            return
         if not card.data.lap.is_valid and not self._config.submit_invalid_laps:
             return
 
@@ -492,6 +495,10 @@ class SimLapsApp:
 
     async def _on_lap_complete(self, session: SessionData, lap: LapData):
         """Handle completed lap from parser."""
+        await self._process_lap_result(session, lap, record_boundary=True)
+
+    async def _process_lap_result(self, session: SessionData, lap: LapData, *, record_boundary: bool):
+        """Bind presentation/history for initial and delayed result callbacks."""
         log_debug(
             Component.APP,
             "Lap complete event",
@@ -513,6 +520,7 @@ class SimLapsApp:
                 history_entries=self._history_entries,
                 schedule_submission=self._schedule_lap_submission,
                 create_history_entry=HistoryEntry,
+                record_boundary=record_boundary,
             )
             # LapProcessingService appends exactly one entry for a presented
             # timed lap.  Capture the object it appended before any later
@@ -527,14 +535,8 @@ class SimLapsApp:
             log_exception(Component.APP, "_on_lap_complete failed", e)
 
     async def _on_lap_update(self, session: SessionData, lap: LapData):
-        """Refresh a SHM-first lap after ACE eventually flushes its log data."""
-        if self._home_page:
-            self._home_page.refresh_lap(lap)
-        history_entry = self._get_history_entry_for_lap(lap)
-        if history_entry is not None:
-            history_entry.lap_time_ms = lap.lap_time_ms
-            history_entry.timestamp = lap.timestamp
-            history_entry.was_valid = lap.is_valid
+        """Reconcile delayed log or SHM evidence into its existing result."""
+        await self._process_lap_result(session, lap, record_boundary=False)
 
     def _schedule_lap_submission(
         self,
@@ -637,6 +639,14 @@ class SimLapsApp:
             current_track_name=self._current_track_name,
         )
 
+    async def _on_telemetry_origin_status(self, event):
+        """Forward capture-origin transitions to the telemetry lifecycle/UI."""
+        await self._telemetry_lifecycle_service.handle_origin_status(
+            event=event,
+            telemetry_capture=self._telemetry_capture,
+            home_page=self._home_page,
+        )
+
     async def _stop_telemetry_capture(self, reason: str = "session_end", discard: bool = False):
         """Stop telemetry capture and generate analysis when game session ends.
 
@@ -654,6 +664,10 @@ class SimLapsApp:
             home_page=self._home_page,
             current_track_name=self._current_track_name,
         )
+
+    async def _cancel_pending_session_stop(self):
+        """Finish invalidating the parser's delayed stop before app close."""
+        await self._session_lifecycle_service.cancel_pending_game_stop()
 
     async def _on_user_detected(self, steam_id: str, player_name: Optional[str]):
         """Handle user detection from log parser."""

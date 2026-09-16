@@ -22,6 +22,13 @@ class HistoryEntry:
     timestamp: str
     was_submitted: bool
     was_valid: bool
+    lap_state: Optional[str] = None
+    submitted_is_valid: Optional[bool] = None
+    submitted_lap_time_ms: Optional[int] = None
+    submission_needs_review: bool = False
+    submission_pending: bool = False
+    submission_attempted: bool = False
+    submission_in_flight: bool = False
 
 
 class HistoryPage(ft.Container):
@@ -172,6 +179,13 @@ class HistoryPage(ft.Container):
             else (ft.Icons.CANCEL if not entry.was_valid else ft.Icons.SCHEDULE)
         )
         status_color = "#51cf66" if entry.was_submitted else ("#888888" if not entry.was_valid else "#ffd43b")
+        status_label = None
+        if entry.submission_needs_review:
+            status_icon, status_color = ft.Icons.WARNING_AMBER, "#ffd43b"
+            status_label = "Submitted; result changed"
+        elif entry.lap_state == "UNVERIFIED":
+            status_icon, status_color = ft.Icons.SCHEDULE, "#ffd43b"
+            status_label = "Unverified"
 
         return ft.Container(
             content=ft.Row(
@@ -208,11 +222,15 @@ class HistoryPage(ft.Container):
                         format_lap_time(entry.lap_time_ms),
                         size=16,
                         weight=ft.FontWeight.W_600,
-                        color="#ffffff" if entry.was_valid else "#666666",
+                        color="#ffffff" if entry.was_valid or entry.lap_state == "UNVERIFIED" else "#666666",
                         font_family="monospace",
                     ),
                     # Status
-                    ft.Icon(status_icon, color=status_color, size=20),
+                    ft.Column(
+                        controls=[ft.Icon(status_icon, color=status_color, size=20)]
+                        + ([ft.Text(status_label, size=11, color=status_color)] if status_label else []),
+                        spacing=2,
+                    ),
                 ],
                 spacing=12,
             ),

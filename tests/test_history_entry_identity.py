@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.models import LapData, SessionData
+from src.models import LapData, LapState, SessionData
 from src.ui.app import SimLapsApp
 from src.ui.services.lap_processing_service import LapProcessingService
 from src.utils.config import AppConfig
@@ -13,6 +13,10 @@ from src.utils.config import AppConfig
 
 def _lap(timestamp: str, lap_time_ms: int) -> LapData:
     return LapData(
+        lap_state=LapState.VALID,
+        lap_type="VALID",
+        is_valid=True,
+        validity_source="authoritative",
         lap_number=1,
         physics_lap_number=1,
         lap_time_ms=lap_time_ms,

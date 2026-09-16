@@ -4,7 +4,9 @@ Owns lap-complete orchestration for telemetry lap boundary recording,
 submission eligibility, history/card synchronization, and auto-submit trigger.
 """
 
+from dataclasses import dataclass
 from typing import Callable, Optional
+from weakref import ReferenceType, ref
 
 from src.core.pb_cache import PBCache
 from src.core.telemetry_capture import TelemetryCapture
@@ -13,7 +15,6 @@ from src.utils.config import AppConfig
 from src.utils.structured_logger import (
     Component,
     log_debug,
-    log_error,
     log_exception,
 )
 
@@ -22,8 +23,31 @@ from ..pages.history import HistoryEntry
 from ..pages.home import HomePage
 
 
+@dataclass
+class _Presentation:
+    lap_ref: ReferenceType[LapData]
+    boundary_seen: bool = False
+    _card_ref: object = None
+    history: Optional[HistoryEntry] = None
+
+    @property
+    def card(self):
+        return self._card_ref() if isinstance(self._card_ref, ReferenceType) else self._card_ref
+
+    @card.setter
+    def card(self, value):
+        try:
+            self._card_ref = ref(value)
+        except TypeError:
+            # Small legacy/test adapters may not support weak references.
+            self._card_ref = value
+
+
 class LapProcessingService:
     """Encapsulates app-side lap completion processing flow."""
+
+    def __init__(self):
+        self._presentations: dict[tuple[str, int], _Presentation] = {}
 
     async def handle_lap_complete(
         self,
@@ -38,6 +62,7 @@ class LapProcessingService:
         history_entries: list[HistoryEntry],
         schedule_submission: Callable[..., None],
         create_history_entry: Callable[..., HistoryEntry],
+        record_boundary: bool = True,
     ) -> Optional[str]:
         """Process lap completion, update UI/history, and optionally auto-submit.
 
@@ -45,28 +70,64 @@ class LapProcessingService:
         ``current_track_name``), otherwise ``None``.
         """
         updated_track: Optional[str] = None
+        result_key = (session.session_id, id(lap))
+        presentation = self._presentations.get(result_key)
+        if presentation is None:
+            presentation = _Presentation(ref(lap, lambda _ref: self._presentations.pop(result_key, None)))
+            self._presentations[result_key] = presentation
+        first_boundary = record_boundary and not presentation.boundary_seen
+        if record_boundary:
+            presentation.boundary_seen = True
 
-        # Update detected user in UI
-        if session.player_id:
+        active_session_id = session_manager.get_active_session_id()
+        owns_live_context = not isinstance(active_session_id, str) or active_session_id == session.session_id
+        if active_session_id is None and isinstance(session_manager, SharedSessionManager):
+            owns_live_context = session_manager.get_session_origin().epoch == 0
+        # Late outgoing results keep their own cards without replacing the
+        # active capture's track/player context.
+        if session.player_id and owns_live_context and record_boundary:
             log_debug(Component.APP, "Updating detected user", steam_id=session.player_id)
             home_page.set_detected_user(session.player_id, session.player_name)
 
         # Return updated track name for telemetry (caller sets it on the app)
-        if session.track and session.track != "Unknown":
+        if session.track and session.track != "Unknown" and owns_live_context and record_boundary:
             updated_track = session.track
 
         # Record lap boundary so the analyzer can use authoritative lap splits.
         # Fuel per lap is owned entirely by the log parser (Physics SHM + spike
         # detection) and is already set on lap.fuel_used before this point.
-        if telemetry_capture and telemetry_capture.is_capturing():
+        capture_owner_check = getattr(telemetry_capture, "owns_session", None)
+        capture_ownership = (
+            capture_owner_check(session.session_id)
+            if callable(capture_owner_check)
+            else None
+        ) if telemetry_capture is not None else None
+        if isinstance(capture_ownership, bool):
+            owns_capture_boundary = capture_ownership
+        else:
+            # Legacy capture implementations do not expose immutable origin
+            # ownership; retain the manager-id guard for those embedders.
+            owns_capture_boundary = (
+                not isinstance(active_session_id, str)
+                or active_session_id == session.session_id
+            )
+        if (
+            first_boundary
+            and telemetry_capture
+            and telemetry_capture.is_capturing()
+            and owns_capture_boundary
+        ):
             lap_type = getattr(lap, "lap_type", None) or getattr(getattr(lap, "lap_state", None), "value", None)
             telemetry_capture.record_lap_boundary(
                 lap.lap_time_ms,
                 lap.lap_number,
-                lap_type or "VALID",
+                lap_type or "UNVERIFIED",
             )
+            bind_boundary = getattr(telemetry_capture, "bind_lap_boundary", None)
+            if callable(bind_boundary):
+                bind_boundary(session.session_id, lap)
 
-        elif config.telemetry_enabled and telemetry_capture:
+        elif first_boundary and config.telemetry_enabled and telemetry_capture:
             # A lap-complete event is too late to begin a useful capture
             # for that lap and can fire during post-session shutdown.
             log_debug(
@@ -75,133 +136,92 @@ class LapProcessingService:
                 lap_number=lap.lap_number,
             )
 
-        # OUTLAP is a structural classification, not a validity verdict. The
-        # boundary above lets telemetry exclude the pit-exit circuit, and the
-        # lap itself is still presented — as invalid (is_valid is always False
-        # for OUTLAP), so it is visible instead of silently dropped. It never
-        # reaches PB or auto-submission unless the user opted into invalid
-        # laps, and a later authoritative/SHM verdict can still have upgraded
-        # it to a real timed lap (tourist layouts time the first circuit).
-        if (getattr(lap, "lap_type", None) or "").upper() == "OUTLAP":
-            log_debug(
-                Component.APP,
-                "Outlap presented as invalid lap",
-                lap_number=lap.lap_number,
-            )
+        if not record_boundary and telemetry_capture and owns_capture_boundary:
+            # A delayed verdict may correct the displayed number/time, but
+            # its capture marker must retain the same result identity/index.
+            reconcile_boundary = getattr(telemetry_capture, "reconcile_lap_boundary", None)
+            if callable(reconcile_boundary):
+                reconcile_boundary(session.session_id, lap)
 
-        # Determine if we should submit this lap. The log parser's verdict
-        # is authoritative for completed laps: it uses the game's own
-        # ``Relevant onSplit`` broadcast when available and structural
-        # classification otherwise. The SHM is_valid_lap flag cannot
-        # distinguish contact from track cuts, and contact must never
-        # invalidate a lap, so SHM validity is only used for the real-time
-        # in-progress display — never to override a completed-lap verdict.
-        effective_is_valid = lap.is_valid
-        should_submit = config.auto_submit and (effective_is_valid or config.submit_invalid_laps)
-        log_debug(
-            Component.APP,
-            "Lap submission decision",
-            should_submit=should_submit,
-            parser_is_valid=lap.is_valid,
-            effective_is_valid=effective_is_valid,
-            lap_number=lap.lap_number,
+        # Structural outlaps own a capture boundary but no result card. Keep
+        # the presentation record so a later authoritative upgrade creates one
+        # card/history row without recording the boundary a second time.
+        if lap.lap_type == "OUTLAP":
+            return updated_track
+
+        unverified = lap.is_unverified
+        eligible = not unverified and (lap.is_valid or config.submit_invalid_laps)
+        known_combo = bool(
+            session.track and session.track != "Unknown"
+            and session.car and session.car != "Unknown"
         )
-        log_debug(
-            Component.APP,
-            "Lap diagnostics",
-            lap_state=getattr(lap, "lap_state", "UNKNOWN"),
-            lap_type=getattr(lap, "lap_type", "UNKNOWN"),
-            physics_lap_number=getattr(lap, "physics_lap_number", None),
-            sector1_ms=lap.sector1_ms,
-            sector2_ms=lap.sector2_ms,
-            sector3_ms=lap.sector3_ms,
-            sectors_consistent=getattr(lap, "sectors_consistent", None),
-        )
-        if not effective_is_valid:
-            log_debug(
-                Component.APP,
-                "Invalid lap diagnostics",
-                lap_state=getattr(lap, "lap_state", "UNKNOWN"),
-                lap_number=lap.lap_number,
+        reconcile_pb = getattr(pb_cache, "reconcile_lap_candidate", None)
+        pb_was_new = False
+        if callable(reconcile_pb):
+            pb_was_new = reconcile_pb(
+                result_key, session.track, session.car, lap.lap_time_ms,
+                eligible=known_combo and lap.is_valid and not unverified,
             )
+        elif known_combo and lap.is_valid and not unverified:
+            # Older embedders retain their established PB API.
+            pb_was_new = pb_cache.check_and_update_pb(session.track, session.car, lap.lap_time_ms)
 
-        # Update local PB cache for every valid lap (independent of Discord posting)
-        pb_was_new: Optional[bool] = None
-        if effective_is_valid and lap.lap_time_ms > 0:
-            if session.track and session.track != "Unknown" and session.car and session.car != "Unknown":
-                pb_was_new = pb_cache.check_and_update_pb(
-                    session.track,
-                    session.car,
-                    lap.lap_time_ms,
-                )
-                log_debug(
-                    Component.APP,
-                    "PB cache update",
-                    pb_was_new=pb_was_new,
-                    track=session.track,
-                    car=session.car,
-                    lap_time_ms=lap.lap_time_ms,
-                )
-            else:
-                log_debug(Component.APP, "Skipping PB cache update: missing track/car")
-
-        # Determine initial status
-        if not effective_is_valid and not config.submit_invalid_laps:
-            status = LapCardStatus.INVALID
+        history_entry = presentation.history
+        if history_entry is not None and not any(history_entry is item for item in history_entries):
+            # A deliberately trimmed result must not be resurrected by metadata.
+            return updated_track
+        should_submit = config.auto_submit and eligible and (
+            history_entry is None or not (
+                history_entry.was_submitted
+                or getattr(history_entry, "submission_pending", False)
+                or getattr(history_entry, "submission_attempted", False)
+            )
+        )
+        status = (
+            LapCardStatus.UNVERIFIED if unverified else
+            LapCardStatus.INVALID if not eligible else
+            LapCardStatus.SUBMITTING if should_submit else LapCardStatus.PENDING
+        )
+        if history_entry is None:
+            history_entry = create_history_entry(
+                track=session.track, car=session.car, lap_time_ms=lap.lap_time_ms,
+                timestamp=lap.timestamp, was_submitted=False,
+                was_valid=lap.is_valid and not unverified,
+            )
+            history_entries.append(history_entry)
+            try:
+                presentation.card = home_page.add_lap(session, lap, status)
+            except Exception as exc:
+                history_entries.remove(history_entry)
+                log_exception(Component.APP, "Failed to add lap card to home page", exc)
+                raise
+            presentation.history = history_entry
         else:
-            status = LapCardStatus.SUBMITTING if should_submit else LapCardStatus.PENDING
+            history_entry.lap_time_ms = lap.lap_time_ms
+            history_entry.timestamp = lap.timestamp
+            history_entry.was_valid = lap.is_valid and not unverified
+            if history_entry.was_submitted:
+                submitted_valid = getattr(history_entry, "submitted_is_valid", None)
+                submitted_time = getattr(history_entry, "submitted_lap_time_ms", None)
+                history_entry.submission_needs_review = bool(
+                    unverified or
+                    (submitted_valid is not None and submitted_valid != lap.is_valid) or
+                    (submitted_time is not None and submitted_time != lap.lap_time_ms)
+                )
+                status = (LapCardStatus.REVIEW_REQUIRED if history_entry.submission_needs_review
+                          else LapCardStatus.SUBMITTED)
+            elif eligible and not should_submit:
+                existing = getattr(getattr(presentation.card, "data", None), "status", None)
+                if existing in {LapCardStatus.SUBMITTING, LapCardStatus.FAILED}:
+                    status = existing
+            if presentation.card is not None:
+                presentation.card.update_status(status)
+            home_page.refresh_lap(lap)
+        history_entry.lap_state = lap.lap_type
 
-        # Add to history FIRST (before home page to ensure synchronization)
-        history_entry = create_history_entry(
-            track=session.track,
-            car=session.car,
-            lap_time_ms=lap.lap_time_ms,
-            timestamp=lap.timestamp,
-            was_submitted=False,
-            was_valid=lap.is_valid,
-        )
-        history_entries.append(history_entry)
-
-        # Add to home page (this increments the counter)
-        try:
-            card = home_page.add_lap(session, lap, status)
-            log_debug(Component.APP, "Lap card added", lap_number=lap.lap_number)
-        except Exception as exc:
-            # If home page add fails, remove the history entry to maintain sync
-            log_exception(Component.APP, "Failed to add lap card to home page", exc)
-            history_entries.pop()  # Remove the entry we just added
-            raise
-
-        # Debug: Check synchronization
-        log_debug(
-            Component.APP,
-            "Lap/history synchronization state",
-            home_lap_count=home_page._lap_count,
-            history_entries=len(history_entries),
-            was_submitted=history_entry.was_submitted,
-            was_valid=history_entry.was_valid,
-        )
-
-        # Verify synchronization
-        if home_page._lap_count != len(history_entries):
-            log_error(
-                Component.APP,
-                "Synchronization mismatch",
-                home_lap_count=home_page._lap_count,
-                history_entries=len(history_entries),
-            )
-            # This should never happen now, but if it does, we have a serious issue
-
-        # Auto-submit if enabled
         if should_submit:
-            log_debug(Component.APP, "Queueing auto-submit", lap_number=lap.lap_number)
+            history_entry.submission_pending = True
             schedule_submission(
-                card,
-                session,
-                lap,
-                history_entry,
-                pb_was_new,
+                presentation.card, session, lap, history_entry, bool(pb_was_new),
             )
-            log_debug(Component.APP, "Auto-submit queued", lap_number=lap.lap_number)
-
         return updated_track

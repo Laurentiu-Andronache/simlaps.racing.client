@@ -22,6 +22,8 @@ class LapCardStatus(Enum):
     SUBMITTED = "submitted"
     FAILED = "failed"
     INVALID = "invalid"
+    UNVERIFIED = "unverified"
+    REVIEW_REQUIRED = "review_required"
 
 
 @dataclass
@@ -80,13 +82,15 @@ class LapCard(ft.Container):
             return "#ff6b6b"
         elif self.data.status == LapCardStatus.SUBMITTED:
             return "#51cf66"
-        elif self.data.status == LapCardStatus.SUBMITTING:
+        elif self.data.status in {LapCardStatus.SUBMITTING, LapCardStatus.UNVERIFIED, LapCardStatus.REVIEW_REQUIRED}:
             return "#ffd43b"
         else:
             return "#3d3d5c"
 
     def _get_status_icon(self) -> ft.Control:
         """Get status icon."""
+        if self.data.status == LapCardStatus.REVIEW_REQUIRED:
+            return ft.Icon(ft.Icons.WARNING_AMBER, color="#ffd43b", size=20)
         if self.data.status == LapCardStatus.INVALID:
             return ft.Icon(ft.Icons.CANCEL, color="#888888", size=20)
         elif self.data.status == LapCardStatus.FAILED:
@@ -134,7 +138,7 @@ class LapCard(ft.Container):
                 format_lap_time(lap.lap_time_ms),
                 size=32,
                 weight=ft.FontWeight.W_700,
-                color="#ffffff" if lap.is_valid else "#666666",
+                color="#ffffff" if lap.is_valid or lap.is_unverified else "#666666",
                 font_family="monospace",
             ),
             margin=ft.Margin.symmetric(vertical=12),
@@ -158,7 +162,9 @@ class LapCard(ft.Container):
             ft.Text(f"Tires: {lap.tyre_compound}", size=11, color="#666666"),
         ]
 
-        if not lap.is_valid:
+        if lap.is_unverified:
+            footer_items.append(ft.Text("Unverified", size=11, color="#ffd43b", weight=ft.FontWeight.W_600))
+        elif not lap.is_valid:
             footer_items.append(ft.Text("INVALID", size=11, color="#ff6b6b", weight=ft.FontWeight.W_600))
 
         footer = ft.Row(
@@ -168,8 +174,14 @@ class LapCard(ft.Container):
 
         # Error message if failed
         content_controls = [header, lap_time_display, sectors, footer]
+        if lap.is_unverified:
+            content_controls.append(ft.Text("Waiting for lap-validity data", size=11, color="#aaaaaa"))
+        if self.data.status == LapCardStatus.REVIEW_REQUIRED:
+            content_controls.append(ft.Text(
+                "Submitted; result changed. Server record needs review.", size=11, color="#ffd43b"
+            ))
 
-        if self.data.status == LapCardStatus.FAILED and self.data.error_message:
+        if self.data.status == LapCardStatus.FAILED and self.data.error_message and not lap.is_unverified:
             error_row = ft.Row(
                 controls=[
                     ft.Text(

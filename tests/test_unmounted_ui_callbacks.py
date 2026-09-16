@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 import pytest
 
 from src.core.api_client import SubmissionStatus
-from src.models import LapData, SessionData
+from src.models import LapData, LapState, SessionData
 from src.ui.app import SimLapsApp
 from src.ui.components.lap_card import LapCardStatus
 from src.ui.components.mount_safe import safe_update
@@ -20,6 +20,9 @@ from src.utils.config import AppConfig
 
 def _lap() -> LapData:
     return LapData(
+        lap_state=LapState.VALID,
+        lap_type="VALID",
+        validity_source="authoritative",
         lap_number=1,
         physics_lap_number=1,
         lap_time_ms=89556,

@@ -7,7 +7,7 @@ Preloads from API and provides fast PB detection for new laps.
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Hashable, Optional, Tuple
 
 import httpx
 
@@ -58,6 +58,8 @@ class PBCache:
         self.server_url = server_url.rstrip("/")
         self.timeout = timeout
         self._cache: Dict[Tuple[str, str], PersonalBest] = {}
+        self._baseline: Dict[Tuple[str, str], PersonalBest] = {}
+        self._candidates: Dict[Hashable, Tuple[Tuple[str, str], PersonalBest]] = {}
         self._steam_id: Optional[str] = None
         self._loaded = False
 
@@ -106,8 +108,12 @@ class PBCache:
                 data = response.json()
                 personal_bests = data.get("personalBests", [])
 
-                # Clear existing cache and populate with new data
-                self._cache.clear()
+                # A refresh replaces the server baseline, not this driver's
+                # independently owned local results. Changing drivers clears
+                # both sources so one user's candidates cannot leak to another.
+                if self._steam_id is not None and self._steam_id != steam_id:
+                    self._candidates.clear()
+                self._baseline.clear()
 
                 for pb in personal_bests:
                     track_id = pb.get("trackId", "")
@@ -130,7 +136,9 @@ class PBCache:
                         except (TypeError, ValueError):
                             pass
 
-                    self._cache[key] = PersonalBest(best_time_ms=best_time, updated_at=updated_at)
+                    self._baseline[key] = PersonalBest(best_time_ms=best_time, updated_at=updated_at)
+
+                self._recompute()
 
                 self._steam_id = steam_id
                 self._loaded = True
@@ -171,12 +179,62 @@ class PBCache:
                 best_time_ms=lap_time_ms,
                 updated_at=datetime.now(timezone.utc),
             )
+            self._baseline[key] = new_pb
             self._cache[key] = new_pb
             log_info(Component.PB_CACHE, "New personal best!", track=track_id, car=car_id, time_ms=lap_time_ms)
             return True
 
+        # A legacy result slower than a tracked local candidate can still be
+        # the best surviving baseline if that candidate is later invalidated.
+        baseline = self._baseline.get(key)
+        if baseline is None or lap_time_ms < baseline.best_time_ms:
+            self._baseline[key] = PersonalBest(lap_time_ms, updated_at=datetime.now(timezone.utc))
         log_debug(Component.PB_CACHE, "Not a PB", current_ms=current.best_time_ms, new_ms=lap_time_ms)
         return False
+
+    def _recompute(self) -> None:
+        self._cache = dict(self._baseline)
+        for key, candidate in self._candidates.values():
+            current = self._cache.get(key)
+            if current is None or candidate.best_time_ms < current.best_time_ms:
+                self._cache[key] = candidate
+
+    def reconcile_lap_candidate(
+        self,
+        candidate_id: Hashable,
+        track_id: str,
+        car_id: str,
+        lap_time_ms: int,
+        *,
+        eligible: bool,
+    ) -> bool:
+        """Replace one local result and derive PB from all surviving evidence.
+
+        Candidate identity must survive display-lap renumbering. Removing a
+        reclassified result preserves both the server baseline and other laps;
+        restoring a saved previous value would lose a later valid improvement.
+        Returns True only for a new improvement, never an identical replay.
+        """
+        if not self._candidates:
+            # Preserve existing/legacy callers' preloaded entries on first use.
+            self._baseline.update(self._cache)
+        key = self._normalize_key(track_id, car_id)
+        before = self._cache.get(key)
+        previous = self._candidates.get(candidate_id)
+        if eligible and lap_time_ms > 0:
+            if previous and previous[0] == key and previous[1].best_time_ms == lap_time_ms:
+                return False
+            self._candidates[candidate_id] = (
+                key, PersonalBest(lap_time_ms, updated_at=datetime.now(timezone.utc))
+            )
+        else:
+            self._candidates.pop(candidate_id, None)
+        self._recompute()
+        after = self._cache.get(key)
+        return bool(
+            eligible and after is not None
+            and (before is None or after.best_time_ms < before.best_time_ms)
+        )
 
     def get_personal_best(self, track_id: str, car_id: str) -> Optional[PersonalBest]:
         """
@@ -213,6 +271,8 @@ class PBCache:
     def clear(self) -> None:
         """Clear the cache."""
         self._cache.clear()
+        self._baseline.clear()
+        self._candidates.clear()
         self._steam_id = None
         self._loaded = False
 

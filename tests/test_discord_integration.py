@@ -13,7 +13,7 @@ import pytest
 from src.core.discord_notifier import DiscordLapPayload, DiscordNotifier, create_discord_notifier
 from src.core.pb_cache import PBCache, PersonalBest
 from src.models import LapData as SessionLapData
-from src.models import SessionData
+from src.models import LapState, SessionData
 from src.ui.app import SimLapsApp
 from src.ui.components.lap_card import LapCardStatus
 from src.ui.pages.history import HistoryEntry
@@ -448,6 +448,9 @@ class TestAppDiscordPosting:
 
         session = SessionData(track="Laguna Seca", car="Ferrari 296 GT3", player_id="steam123")
         lap = SessionLapData(
+            lap_state=LapState.VALID,
+            lap_type="VALID",
+            validity_source="authoritative",
             lap_number=7,
             physics_lap_number=7,
             lap_time_ms=89556,
@@ -528,6 +531,9 @@ class TestAppDiscordPosting:
 
         session = SessionData(track="Laguna Seca", car="Ferrari 296 GT3")
         lap = SessionLapData(
+            lap_state=LapState.INVALID_GAME,
+            lap_type="INVALID_GAME",
+            validity_source="authoritative",
             lap_number=7,
             physics_lap_number=7,
             lap_time_ms=89556,
@@ -549,6 +555,7 @@ class TestAppDiscordPosting:
             history_entries=app._history_entries,
             schedule_submission=app._schedule_lap_submission,
             create_history_entry=HistoryEntry,
+            record_boundary=True,
         )
 
     @pytest.mark.asyncio
@@ -572,6 +579,9 @@ class TestAppDiscordPosting:
 
         session = SessionData(track="Laguna Seca", car="Ferrari 296 GT3")
         lap = SessionLapData(
+            lap_state=LapState.VALID,
+            lap_type="VALID",
+            validity_source="authoritative",
             lap_number=7,
             physics_lap_number=7,
             lap_time_ms=89556,
@@ -593,6 +603,7 @@ class TestAppDiscordPosting:
             history_entries=app._history_entries,
             schedule_submission=app._schedule_lap_submission,
             create_history_entry=HistoryEntry,
+            record_boundary=True,
         )
 
     @pytest.mark.asyncio
@@ -627,6 +638,9 @@ class TestAppDiscordPosting:
 
         session = SessionData(track="Laguna Seca", car="Ferrari 296 GT3")
         lap = SessionLapData(
+            lap_state=LapState.VALID,
+            lap_type="VALID",
+            validity_source="authoritative",
             lap_number=9,
             physics_lap_number=9,
             lap_time_ms=89556,
@@ -657,6 +671,9 @@ class TestAppDiscordPosting:
 
         session = SessionData(track="Laguna Seca", car="Ferrari 296 GT3")
         lap = SessionLapData(
+            lap_state=LapState.INVALID_GAME,
+            lap_type="INVALID_GAME",
+            validity_source="authoritative",
             lap_number=9,
             physics_lap_number=9,
             lap_time_ms=89556,
@@ -681,6 +698,9 @@ class TestAppDiscordPosting:
 
         session = SessionData(track="Laguna Seca", car="Ferrari 296 GT3")
         lap = SessionLapData(
+            lap_state=LapState.VALID,
+            lap_type="VALID",
+            validity_source="authoritative",
             lap_number=9,
             physics_lap_number=9,
             lap_time_ms=89556,

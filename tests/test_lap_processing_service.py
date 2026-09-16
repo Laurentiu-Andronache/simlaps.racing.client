@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from src.models import LapData as SessionLapData
-from src.models import SessionData
+from src.models import LapState, SessionData
 from src.ui.components.lap_card import LapCardStatus
 from src.ui.services.lap_processing_service import LapProcessingService
 from src.utils.config import AppConfig
@@ -50,6 +50,9 @@ async def test_handle_lap_complete_shm_valid_cannot_resurrect_parser_invalid():
 
     session = SessionData(track="Laguna Seca", car="Ferrari 296 GT3")
     lap = SessionLapData(
+        lap_state=LapState.INVALID_GAME,
+        lap_type="INVALID_GAME",
+        validity_source="authoritative",
         lap_number=7,
         physics_lap_number=7,
         lap_time_ms=89556,
@@ -84,6 +87,9 @@ async def test_handle_lap_complete_ignores_shm_invalid_verdict_in_race_session()
 
     session = SessionData(session_type="RACE", track="Nordschleife", car="Ferrari 296 GT3")
     lap = SessionLapData(
+        lap_state=LapState.VALID,
+        lap_type="VALID",
+        validity_source="authoritative",
         lap_number=1,
         physics_lap_number=1,
         lap_time_ms=441811,
@@ -119,6 +125,9 @@ async def test_handle_lap_complete_ignores_shm_invalid_verdict_in_practice_sessi
 
     session = SessionData(session_type="PRACTICE", track="Laguna Seca", car="Ferrari 296 GT3")
     lap = SessionLapData(
+        lap_state=LapState.VALID,
+        lap_type="VALID",
+        validity_source="authoritative",
         lap_number=3,
         physics_lap_number=3,
         lap_time_ms=90000,
@@ -149,6 +158,9 @@ async def test_handle_lap_complete_uses_invalid_status_when_not_submitting_inval
 
     session = SessionData(track="Laguna Seca", car="Ferrari 296 GT3")
     lap = SessionLapData(
+        lap_state=LapState.INVALID_GAME,
+        lap_type="INVALID_GAME",
+        validity_source="authoritative",
         lap_number=5,
         physics_lap_number=5,
         lap_time_ms=90234,
@@ -177,6 +189,9 @@ async def test_handle_lap_complete_rolls_back_history_if_card_creation_fails():
 
     session = SessionData(track="Laguna Seca", car="Ferrari 296 GT3")
     lap = SessionLapData(
+        lap_state=LapState.VALID,
+        lap_type="VALID",
+        validity_source="authoritative",
         lap_number=8,
         physics_lap_number=8,
         lap_time_ms=88001,
@@ -206,6 +221,9 @@ async def test_handle_lap_complete_updates_detected_user_when_player_id_present(
 
     session = SessionData(track="Laguna Seca", car="Ferrari 296 GT3", player_id="123", player_name="Driver")
     lap = SessionLapData(
+        lap_state=LapState.VALID,
+        lap_type="VALID",
+        validity_source="authoritative",
         lap_number=1,
         physics_lap_number=1,
         lap_time_ms=90000,
@@ -236,6 +254,9 @@ async def test_handle_lap_complete_logs_telemetry_missed_boundary():
 
     session = SessionData(track="Laguna Seca", car="Ferrari 296 GT3")
     lap = SessionLapData(
+        lap_state=LapState.VALID,
+        lap_type="VALID",
+        validity_source="authoritative",
         lap_number=1,
         physics_lap_number=1,
         lap_time_ms=90000,
@@ -266,6 +287,9 @@ async def test_handle_lap_complete_records_telemetry_boundary_when_capturing():
 
     session = SessionData(track="Laguna Seca", car="Ferrari 296 GT3")
     lap = SessionLapData(
+        lap_state=LapState.VALID,
+        lap_type="VALID",
+        validity_source="authoritative",
         lap_number=1,
         physics_lap_number=1,
         lap_time_ms=90000,
@@ -296,6 +320,8 @@ async def test_handle_lap_complete_records_structural_outlap_boundary():
 
     session = SessionData(track="Laguna Seca", car="Ferrari 296 GT3")
     lap = SessionLapData(
+        lap_state=LapState.OUTLAP,
+        validity_source="authoritative",
         lap_number=1,
         physics_lap_number=1,
         lap_time_ms=120000,
@@ -314,14 +340,11 @@ async def test_handle_lap_complete_records_structural_outlap_boundary():
     )
 
     deps["telemetry_capture"].record_lap_boundary.assert_called_once_with(120000, 1, "OUTLAP")
-    # The outlap is presented as an invalid lap so it is never silently
-    # dropped, but it must not reach PB or submission.
-    deps["home_page"].add_lap.assert_called_once()
-    assert deps["home_page"].add_lap.call_args.args[2] == LapCardStatus.INVALID
+    # A structural outlap records its boundary without becoming a result.
+    deps["home_page"].add_lap.assert_not_called()
     deps["pb_cache"].check_and_update_pb.assert_not_called()
     deps["schedule_submission"].assert_not_called()
-    assert len(deps["history_entries"]) == 1
-    assert deps["history_entries"][0].was_valid is False
+    assert deps["history_entries"] == []
 
 
 @pytest.mark.asyncio
@@ -333,6 +356,9 @@ async def test_handle_lap_complete_skips_pb_cache_when_unknown_track_or_car():
 
     session = SessionData(track="Unknown", car="Ferrari 296 GT3")
     lap = SessionLapData(
+        lap_state=LapState.VALID,
+        lap_type="VALID",
+        validity_source="authoritative",
         lap_number=1,
         physics_lap_number=1,
         lap_time_ms=90000,
@@ -362,6 +388,9 @@ async def test_handle_lap_complete_logs_sync_mismatch():
 
     session = SessionData(track="Laguna Seca", car="Ferrari 296 GT3")
     lap = SessionLapData(
+        lap_state=LapState.VALID,
+        lap_type="VALID",
+        validity_source="authoritative",
         lap_number=1,
         physics_lap_number=1,
         lap_time_ms=90000,

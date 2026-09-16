@@ -63,7 +63,8 @@ async def test_submit_lap_invalid_maps_to_invalid_status():
         post_to_discord=AsyncMock(),
     )
 
-    card.update_status.assert_any_call(LapCardStatus.INVALID, "invalid")
+    card.update_status.assert_any_call(LapCardStatus.INVALID, "Lap invalidated before submission")
+    api_client.submit_lap.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -559,6 +559,7 @@ class HomePage(ft.Column):
         """Rebuild a card whose shared LapData gained delayed log fields."""
         for card in self._lap_cards:
             if card.data is not None and card.data.lap is lap:
+                card.data.lap_number = lap.lap_number
                 card.update_status(card.data.status, card.data.error_message)
                 return
 
@@ -568,6 +569,8 @@ class HomePage(ft.Column):
 
     def _on_retry_lap(self, card: LapCard):
         """Handle retry button click on failed lap."""
+        if card.data.lap.is_unverified or card.data.lap.lap_type == "OUTLAP":
+            return
         if not card.data.lap.is_valid and not self.config.submit_invalid_laps:
             return
 
