@@ -295,11 +295,11 @@ class TestTelemetryCapture:
         # Add some frames
         capture._frames = [FrameData(timestamp="2024-01-01T00:00:00Z", frame_number=i, physics={}) for i in range(10)]
 
-        capture.record_lap_boundary(123456, 7)
+        capture.record_lap_boundary(123456, 7, "VALID")
 
         assert len(capture.get_lap_boundaries()) == 1
         assert capture.get_lap_boundaries()[0][0] == 9  # Last frame index
-        assert capture.get_lap_boundaries()[0][1:] == (123456, 7, "VALID")
+        assert capture.get_lap_boundaries()[0][1:] == (123456, 7, "VALID", 7, None)
 
     def test_capture_get_lap_boundaries(self):
         """Test getting lap boundaries."""
