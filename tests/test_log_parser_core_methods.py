@@ -73,7 +73,7 @@ class TestDetermineLapStateEdgeCases:
         ip.splits = {0: 30000, 1: 30000, 2: 38456}
 
         state = parser._determine_lap_state(ip, "PRACTICE")
-        assert state == LapState.VALID
+        assert state == LapState.UNVERIFIED
 
 
 class TestMaybeEmitAbortedLap:
@@ -225,7 +225,7 @@ class TestHandleOutlap:
         assert result is None
 
     def test_handle_outlap_signals_failed(self):
-        """Rejected practice pit prefix preserves the full-circuit outlap."""
+        """Rejected practice pit prefix closes the structural outlap."""
         parser = LogParser()
         parser.current_session = SessionData(track="spa", car="porsche", session_type="PRACTICE")
         parser._ip.is_outlap = True

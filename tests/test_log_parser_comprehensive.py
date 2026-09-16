@@ -580,7 +580,7 @@ class TestLogParserLapState:
         ip.physics_lap_num = 2
 
         state = parser._determine_lap_state(ip, "PRACTICE")
-        assert state == LapState.VALID
+        assert state == LapState.UNVERIFIED
 
     def test_determine_lap_state_practice_outlap_fallback(self):
         """Test practice lap 1 with no splits returns OUTLAP."""
@@ -606,7 +606,7 @@ class TestLogParserLapState:
         ip.splits = {0: 30000, 1: 60000}
 
         state = parser._determine_lap_state(ip, "PRACTICE")
-        assert state == LapState.VALID
+        assert state == LapState.UNVERIFIED
 
 
 class TestLogParserParserState:

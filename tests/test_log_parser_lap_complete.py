@@ -98,8 +98,8 @@ class TestHandleLapCompleteWithData:
         parser._handle_lap_complete(line)
 
         assert parser._pending_lap is not None
-        assert parser._pending_lap.lap_state == LapState.VALID
-        assert parser._pending_lap.is_valid is True
+        assert parser._pending_lap.lap_state == LapState.UNVERIFIED
+        assert parser._pending_lap.is_valid is False
 
     def test_handle_lap_complete_outlap(self):
         """Test lap completion when marked as outlap."""
@@ -171,7 +171,7 @@ class TestHandleLapCompleteWithData:
         assert parser._pending_lap.lap_time_ms == 146939
         # Default heuristic state is VALID; the validity line
         # will confirm it.
-        assert parser._pending_lap.lap_state == LapState.VALID
+        assert parser._pending_lap.lap_state == LapState.UNVERIFIED
 
         # 2) Authoritative validity line arrives ~13 ms later
         line_validity = (
@@ -216,8 +216,8 @@ class TestHandleLapCompleteWithData:
         result = parser._handle_lap_complete(line_new_lap)
         assert result is None  # deferred emit
         assert parser._pending_lap is not None
-        assert parser._pending_lap.lap_state == LapState.VALID
-        assert parser._pending_lap.is_valid is True
+        assert parser._pending_lap.lap_state == LapState.UNVERIFIED
+        assert parser._pending_lap.is_valid is False
 
         # 2) Game says invalid (e.g., track cut the UI didn't show)
         line_validity = (
@@ -266,6 +266,9 @@ class TestHandleLapCompleteWithData:
         from src.models import SharedSessionManager
 
         manager = SharedSessionManager()
+        parser = LogParser(session_manager=manager)
+        parser.current_session = SessionData(session_type="RACE")
+        parser._establish_session_ownership(parser.current_session)
         manager.update_lap_from_logs(
             LapData(
                 lap_number=2,
@@ -293,7 +296,6 @@ class TestHandleLapCompleteWithData:
                 "is_valid_lap": True,
             }
         )
-        parser = LogParser(session_manager=manager)
         pending = LapData(
             lap_number=3,
             physics_lap_number=2,
@@ -332,7 +334,7 @@ class TestHandleLapCompleteWithData:
         result = parser._handle_lap_complete(line_new_lap)
         assert result is None
         assert parser._pending_lap is not None
-        assert parser._pending_lap.is_valid is True
+        assert parser._pending_lap.is_valid is False
 
         line_validity = (
             "[2026-06-03 23:17:00.135] [network] [info] "
@@ -428,7 +430,7 @@ class TestHandleLapCompleteWithData:
         )
         assert flushed is None
         assert parser._pending_lap is not None
-        assert parser._pending_lap.lap_state == LapState.VALID
+        assert parser._pending_lap.lap_state == LapState.UNVERIFIED
 
         parser._ip.physics_lap_num = 3
         parser._ip.splits = {0: 42000, 1: 44000, 2: 37000}
@@ -436,15 +438,15 @@ class TestHandleLapCompleteWithData:
             "[2026-08-13 22:26:30.100] [gameplay] [info] Penalty Type PenaltyType_Warning has no tranformation"
         )
 
-        assert parser._pending_lap.lap_state == LapState.VALID
+        assert parser._pending_lap.lap_state == LapState.UNVERIFIED
         assert parser._pending_penalty_warning is True
 
         flushed = parser._handle_lap_complete(
             "[2026-08-13 22:28:32.000] [gameplay] [info] New lap carId abc123-def456: 02:03.000"
         )
         assert flushed is not None
-        assert flushed.lap_state == LapState.VALID
-        assert flushed.is_valid is True
+        assert flushed.lap_state == LapState.UNVERIFIED
+        assert flushed.is_valid is False
         assert parser._pending_lap is not None
         assert parser._pending_lap.lap_state == LapState.INVALID_PENALTY
         assert parser._pending_lap.is_valid is False
@@ -595,8 +597,8 @@ class TestHandleLapCompleteWithData:
         parser._handle_lap_complete(line)
 
         assert parser._pending_lap is not None
-        assert parser._pending_lap.lap_state == LapState.VALID
-        assert parser._pending_lap.is_valid is True
+        assert parser._pending_lap.lap_state == LapState.UNVERIFIED
+        assert parser._pending_lap.is_valid is False
 
     def test_handle_lap_complete_no_physics_lap_num(self):
         """Test uses fallback lap number when physics_lap_num not set."""
@@ -731,8 +733,8 @@ async def test_delayed_log_enrichment_rounding_keeps_one_invalid_lap_card(delta)
     seconds, milliseconds = divmod(remainder, 1000)
     assert (
         parser._handle_lap_complete(
-            f"[2026-08-26 12:00:00.000] [gameplay] [info] New lap carId abc123: "
-            f"{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
+        f"[2026-08-26 12:00:00.000] [gameplay] [info] New lap carId abc123: "
+        f"{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
         )
         is None
     )
@@ -786,6 +788,12 @@ def test_unmatched_validity_broadcast_preserves_pending_lap() -> None:
 def test_equal_time_completions_keep_their_lap_associations() -> None:
     """A delayed first log line cannot consume the second SHM completion."""
     manager = SharedSessionManager()
+    session = SessionData(
+        track="spa", car="porsche", session_type="PRACTICE", car_uuid="abc123"
+    )
+    manager.begin_session(
+        session.session_id, car_model=session.car, car_uuid=session.car_uuid
+    )
     for completed_laps, lap_time_ms in ((1, 100_000), (2, 100_001)):
         manager.update_from_graphics_shm(
             {
@@ -807,8 +815,9 @@ def test_equal_time_completions_keep_their_lap_associations() -> None:
     parser = LogParser(session_manager=manager)
     parser.PENDING_VALIDITY_GRACE_SECONDS = 0
     parser._last_shm_completion_observed_at = 0
-    parser.current_session = SessionData(track="spa", car="porsche", session_type="PRACTICE")
-    parser.context.car_uuid = "abc123"
+    parser.current_session = session
+    parser._sessions_by_id[session.session_id] = session
+    parser.context.car_uuid = session.car_uuid
 
     assert (
         parser._handle_lap_complete("[2026-08-26 12:00:00.000] [gameplay] [info] New lap carId abc123: 01:40.000")
@@ -849,9 +858,9 @@ def test_equal_time_validity_prefers_game_lap_number_over_pending_tie() -> None:
 
     assert (
         parser._handle_lap_validity(
-            "[2026-08-26 12:00:00.000] [network] [info] "
-            "Relevant onSplit for Combo 1@1: laptime 100000, valid false, "
-            "flags 1, lap 1 (prev 0)"
+        "[2026-08-26 12:00:00.000] [network] [info] "
+        "Relevant onSplit for Combo 1@1: laptime 100000, valid false, "
+        "flags 1, lap 1 (prev 0)"
         )
         is None
     )
@@ -866,9 +875,9 @@ def test_equal_time_validity_prefers_game_lap_number_over_pending_tie() -> None:
     # its first verdict has changed the provenance from SHM to logs.
     assert (
         parser._handle_lap_validity(
-            "[2026-08-26 12:00:00.001] [network] [info] "
-            "Relevant onSplit for Combo 1@1: laptime 100000, valid false, "
-            "flags 1, lap 1 (prev 0)"
+        "[2026-08-26 12:00:00.001] [network] [info] "
+        "Relevant onSplit for Combo 1@1: laptime 100000, valid false, "
+        "flags 1, lap 1 (prev 0)"
         )
         is None
     )
@@ -905,9 +914,9 @@ def test_validity_uses_pending_time_before_stale_same_number_lap() -> None:
 
     assert (
         parser._handle_lap_validity(
-            "[2026-08-26 12:00:00.000] [network] [info] "
-            "Relevant onSplit for Combo 1@1: laptime 100000, valid false, "
-            "flags 1, lap 1 (prev 0)"
+        "[2026-08-26 12:00:00.000] [network] [info] "
+        "Relevant onSplit for Combo 1@1: laptime 100000, valid false, "
+        "flags 1, lap 1 (prev 0)"
         )
         is pending
     )
@@ -946,15 +955,16 @@ def test_bound_unknown_completion_is_consumed_when_validity_map_finishes_lap() -
         physics_lap_number=1,
         lap_time_ms=100_000,
         lap_time_str="01:40.000",
-        lap_state=LapState.VALID,
-        lap_type=LapState.VALID.value,
-        is_valid=True,
+        lap_state=LapState.UNVERIFIED,
+        lap_type=LapState.UNVERIFIED.value,
+        is_valid=False,
     )
     parser._lap_completion_by_lap_id[id(pending)] = completion
     parser._apply_shm_fallback_validity(pending)
 
-    assert pending.is_valid is True
-    assert pending.validity_source == "shm_graphics"
+    assert pending.is_valid is False
+    assert pending.validity_source == "unknown"
+    assert pending.is_unverified
     assert manager.get_lap_completions_after(0) == []
 
 
@@ -994,7 +1004,11 @@ def test_shm_completion_waits_for_log_session_identity() -> None:
     from src.models import SharedSessionManager
 
     manager = SharedSessionManager()
-    manager.update_from_graphics_shm({"total_lap_count": 0, "current_lap_time_ms": 100_000})
+    session = SessionData(track="spa", car="porsche", session_type="PRACTICE")
+    manager.begin_session(session.session_id, car_model=session.car)
+    manager.update_from_graphics_shm(
+        {"total_lap_count": 0, "current_lap_time_ms": 100_000}
+    )
     manager.update_from_graphics_shm(
         {
             "total_lap_count": 1,
@@ -1009,7 +1023,8 @@ def test_shm_completion_waits_for_log_session_identity() -> None:
     assert parser._take_ready_shm_lap() is None
     assert manager.get_lap_completions_after(0)
 
-    parser.current_session = SessionData(track="spa", car="porsche", session_type="PRACTICE")
+    parser.current_session = session
+    parser._sessions_by_id[session.session_id] = session
     lap = parser._take_ready_shm_lap()
     assert lap is not None
     assert lap.lap_time_ms == 100_000

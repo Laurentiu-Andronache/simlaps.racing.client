@@ -299,4 +299,4 @@ class TestOutlapFlagClearing:
         assert ip.is_outlap is False
 
         state = parser._determine_lap_state(ip, "PRACTICE")
-        assert state == LapState.VALID
+        assert state == LapState.UNVERIFIED

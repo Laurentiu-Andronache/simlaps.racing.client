@@ -172,7 +172,8 @@ class TestInferredSessionBoundary:
         parser._process_line(TRACK_NAME_INDY)
 
         # Old session closed with its true identity; the lap stays on it.
-        assert parser.current_session is None
+        assert parser.current_session is not None
+        assert parser._session_manager.get_active_session_id() == parser.current_session.session_id
         assert len(parser.sessions) == 1
         assert parser.sessions[0].track == "Brands Hatch"
         assert parser.sessions[0].car == "ks_alpine_a110_s"
@@ -200,7 +201,8 @@ class TestInferredSessionBoundary:
 
         parser._process_line(SET_NEW_CAR_B)
 
-        assert parser.current_session is None
+        assert parser.current_session is not None
+        assert parser._session_manager.get_active_session_id() == parser.current_session.session_id
         assert len(parser.sessions) == 1
         assert parser.sessions[0].car == "ks_alpine_a110_s"
 

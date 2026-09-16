@@ -242,7 +242,7 @@ class TestDetermineLapStateFull:
         ip.physics_lap_num = 2
 
         state = self.parser._determine_lap_state(ip, "PRACTICE")
-        assert state == LapState.VALID
+        assert state == LapState.UNVERIFIED
 
     def test_determine_lap_state_outlap_flag(self):
         """Outlap flag returns ``OUTLAP``."""
@@ -271,7 +271,7 @@ class TestDetermineLapStateFull:
         ip.splits = {0: 30000, 1: 30000, 2: 38456}
 
         state = self.parser._determine_lap_state(ip, "PRACTICE")
-        assert state == LapState.VALID
+        assert state == LapState.UNVERIFIED
 
 
 class TestLogBufferOperations:
