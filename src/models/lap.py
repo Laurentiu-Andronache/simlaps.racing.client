@@ -19,6 +19,7 @@ class LapState(str, Enum):
     Using `str` mixin so values serialise naturally to JSON without extra work.
     """
 
+    UNVERIFIED = "UNVERIFIED"  # No owned completed-lap verdict
     VALID = "VALID"  # Clean timed lap
     OUTLAP = "OUTLAP"  # Pit-exit or formation lap
     INLAP = "INLAP"  # Return to pits lap
@@ -118,10 +119,10 @@ class LapData:
     sector3_ms: Optional[int] = None
     sectors_consistent: Optional[bool] = None  # |S1+S2+S3 − lap_time| ≤ 50 ms
 
-    lap_state: LapState = field(default_factory=lambda: LapState.VALID)
-    lap_type: str = "VALID"  # String alias of lap_state.value (compat)
-    is_valid: bool = True
-    validity_source: str = "heuristic"  # heuristic, shm_graphics, or authoritative (Relevant onSplit)
+    lap_state: LapState = field(default_factory=lambda: LapState.UNVERIFIED)
+    lap_type: str = "UNVERIFIED"  # String alias of lap_state.value (compat)
+    is_valid: bool = False
+    validity_source: str = "unknown"  # unknown, shm_graphics, or authoritative (Relevant onSplit)
 
     fuel_used: Optional[float] = None
     fuel_reliable: bool = True
@@ -131,6 +132,11 @@ class LapData:
 
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
     distance_hundredm: Optional[int] = None
+
+    @property
+    def is_unverified(self) -> bool:
+        """No completed-lap verdict exists, irrespective of a stray bool."""
+        return self.lap_state == LapState.UNVERIFIED or self.lap_type == "UNVERIFIED"
 
     def to_dict(self) -> dict:
         return {
@@ -184,7 +190,7 @@ class SessionData:
 
     @property
     def valid_laps(self) -> list[LapData]:
-        return [l for l in self.laps if l.is_valid]  # noqa: E741
+        return [l for l in self.laps if l.is_valid and not l.is_unverified]  # noqa: E741
 
     @property
     def best_lap(self) -> Optional[LapData]:

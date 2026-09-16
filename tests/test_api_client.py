@@ -10,7 +10,7 @@ import pytest
 
 from src.core.api_client import APIClient, SubmissionResult, SubmissionStatus
 from src.core.security import GameProcessStatus
-from src.models import LapData, SessionData, SharedSessionManager
+from src.models import LapData, LapState, SessionData, SharedSessionManager
 
 
 @pytest.fixture
@@ -31,6 +31,9 @@ def sample_session():
 def sample_lap():
     """Create a fresh sample lap for each test."""
     return LapData(
+        lap_state=LapState.VALID,
+        lap_type="VALID",
+        validity_source="authoritative",
         lap_number=1,
         physics_lap_number=1,
         lap_time_ms=138456,
@@ -127,6 +130,10 @@ class TestSubmitLap:
         sample_lap.fuel_used = None
 
         manager = SharedSessionManager()
+        manager.begin_session(
+            sample_session.session_id,
+            car_model="ferrari_296_gt3",
+        )
         manager.update_player_identification_from_logs(
             {
                 "steam_id": "76561198000000001",
@@ -156,7 +163,7 @@ class TestSubmitLap:
         # rate (L/km) and must never be submitted as fuelUsed.
         manager.update_fuel_from_graphics_shm(
             {
-                "fuel_liter_per_lap": 2.7,  # per-lap consumption
+            "fuel_liter_per_lap": 2.7,  # per-lap consumption
                 "fuel_liter_per_km": 0.04,  # rate only
             }
         )
@@ -263,7 +270,7 @@ class TestSubmitLap:
         # SHM fuel not available (None)
         manager.update_fuel_from_graphics_shm(
             {
-                "fuel_liter_per_km": 0.04  # rate only, no per-lap data
+            "fuel_liter_per_km": 0.04   # rate only, no per-lap data
             }
         )
 
