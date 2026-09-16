@@ -134,7 +134,16 @@ async def test_captured_two_complete_laps_reach_analyzer(captured_rows, tmp_path
         return await original_generate(data, prefix)
 
     monkeypatch.setattr(analyzer, "_generate_ai_prompt", observe_prompt)
-    result = await analyzer.analyze(frames, hz=10.0, output_prefix="captured_race")
+    # The real parser forwards these frozen completion verdicts with its lap
+    # callbacks. Raw timing frames alone must not imply a valid completed lap.
+    boundaries = [
+        (frame, completion.lap_time_ms, number, "VALID" if completion.is_valid is True else "INVALID_GAME")
+        for number, (frame, completion) in enumerate(zip([565, 1110], completions, strict=True), start=1)
+    ]
+    result = await analyzer.analyze(
+        frames, hz=10.0, output_prefix="captured_race",
+        capture_origin=capture.get_capture_origin(), game_lap_boundaries=boundaries,
+    )
     assert result.laps_detected == 2
     # The invalid second lap is faster; it must not become the reference/PB.
     assert result.best_lap_time == pytest.approx(56.350, abs=0.2)

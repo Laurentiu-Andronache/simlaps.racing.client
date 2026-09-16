@@ -3,6 +3,7 @@
   "laps": [
     {
       "lap_num": 1,
+      "is_valid": true,
       "lap_time_s": 100.0,
       "lap_time_str": "1:40.00",
       "max_speed": 200.0,
@@ -17,6 +18,7 @@
     },
     {
       "lap_num": 2,
+      "is_valid": true,
       "lap_time_s": 105.0,
       "lap_time_str": "1:45.00",
       "max_speed": 195.0,
