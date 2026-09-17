@@ -379,6 +379,189 @@ def test_html_template_substitutes_trusted_scripts_before_report_data():
     assert html.count("trusted-chart") == 1
 
 
+def _trace_point(frame: int, *, norm_pos=None, authoritative=False, speed=100.0) -> dict:
+    return {
+        "frame": frame,
+        "x": float(frame),
+        "z": float(frame) / 2,
+        "speed": speed,
+        "brake": 0.1,
+        "gas": 0.8,
+        "gear": 3,
+        "steer": 0.0,
+        "yaw_rate": 0.0,
+        "acc_g_x": 0.0,
+        "acc_g_z": 0.0,
+        "brake_temp_fl": 0.0,
+        "brake_temp_fr": 0.0,
+        "brake_temp_rl": 0.0,
+        "brake_temp_rr": 0.0,
+        "norm_pos": norm_pos,
+        "has_authoritative_progress": authoritative,
+    }
+
+
+def _trace_lap(lap_num: int, points: list[dict], corners=None, *, start_frame=None) -> dict:
+    start_frame = start_frame if start_frame is not None else (points[0]["frame"] if points else lap_num * 100)
+    return {
+        "lap_num": lap_num,
+        "lap_time_s": 10.0,
+        "lap_time_str": "0:10.00",
+        "max_speed": 100.0,
+        "avg_speed": 90.0,
+        "fuel_used": 1.0,
+        "is_valid": True,
+        "start_frame": start_frame,
+        "end_frame": points[-1]["frame"] if points else start_frame,
+        "corners": corners or [],
+        "track": points,
+    }
+
+
+def _trace_report(laps: list[dict]) -> dict:
+    return {
+        "meta": {},
+        "hz": 10.0,
+        "track_key": "test",
+        "track_name": "Test",
+        "config_key": "full",
+        "config_name": "Full",
+        "track_label": "Test (Full)",
+        "laps": laps,
+        "best_lap_num": laps[0]["lap_num"] if laps else None,
+        "reference_lap_num": None,
+        "comparison_lap_num": None,
+        "comparison_available": False,
+        "valid_lap_nums": [lap["lap_num"] for lap in laps],
+        "ref_corners": [],
+        "corner_data": {},
+        "corner_speeds": {},
+        "analysis_mode": "full",
+        "analysis_confidence": "high",
+        "analysis_notes": [],
+    }
+
+
+def _rendered_payload(html: str) -> dict:
+    data_match = re.search(r"const DATA = (.*);\nconst LAP_COLORS", html)
+    assert data_match is not None
+    return json.loads(data_match.group(1))
+
+
+@pytest.mark.asyncio
+async def test_html_trace_progress_uses_shared_authoritative_coordinates(tmp_path):
+    lap_one = _trace_lap(
+        1,
+        [_trace_point(100 + i, norm_pos=value, authoritative=True) for i, value in enumerate([0.0, 0.2, 0.2, 1.0])],
+    )
+    for point in lap_one["track"][1:3]:
+        point["x"] = point["z"] = 0.0
+        point["speed"] = 0.0
+    lap_two = _trace_lap(
+        2,
+        [
+            _trace_point(200 + i, norm_pos=value, authoritative=True)
+            for i, value in enumerate([0.0, 0.1, 0.2, 0.4, 1.0])
+        ],
+    )
+    lap_one["canonical_track"] = lap_one["track"][:2]
+    path = await render_html(_trace_report([lap_one, lap_two]), str(tmp_path), "progress")
+    payload = _rendered_payload((tmp_path / "telemetry_progress.html").read_text(encoding="utf-8"))
+
+    assert path.endswith("telemetry_progress.html")
+    assert payload["trace_axis"] == {"mode": "progress", "label": "Lap progress (%)", "max": 100.0}
+    assert len(payload["laps"][0]["track"]) == 2
+    assert len(payload["laps"][0]["trace"]) == 4
+    assert payload["laps"][0]["trace"][1]["trace_x"] == pytest.approx(20.0)
+    assert payload["laps"][0]["trace"][2]["trace_x"] == pytest.approx(20.0)
+    assert payload["laps"][1]["trace"][2]["trace_x"] == pytest.approx(20.0)
+    html = (tmp_path / "telemetry_progress.html").read_text(encoding="utf-8")
+    assert ".track.map((pt, i)" not in html
+    assert "traceData(lap, pt => pt.speed)" in html
+    assert "traceData(active[0], pt => pt.gear * 10)" in html
+    assert "traceData(lap, pt => pt.brake * 100)" in html
+    assert "traceData(lap, pt => dynValue(pt, mode))" in html
+    assert "mode: 'nearest', axis: 'x', intersect: false" in html
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bad_points",
+    [
+        [_trace_point(200, norm_pos=0.0, authoritative=True), _trace_point(205, norm_pos=0.5, authoritative=False)],
+        [_trace_point(200, norm_pos=0.8, authoritative=True), _trace_point(205, norm_pos=0.2, authoritative=True)],
+        [
+            _trace_point(200, norm_pos=float("nan"), authoritative=True),
+            _trace_point(205, norm_pos=1.0, authoritative=True),
+        ],
+        [
+            _trace_point(200, norm_pos=float("inf"), authoritative=True),
+            _trace_point(205, norm_pos=1.0, authoritative=True),
+        ],
+        [_trace_point(200, norm_pos=0.0, authoritative=True), _trace_point(205, norm_pos=1.1, authoritative=True)],
+        [_trace_point(200, norm_pos=0.2, authoritative=True), _trace_point(205, norm_pos=0.2, authoritative=True)],
+    ],
+    ids=["missing", "reversing", "nan", "infinity", "out-of-bounds", "constant"],
+)
+async def test_html_trace_falls_back_to_elapsed_for_invalid_progress(tmp_path, bad_points):
+    laps = [
+        _trace_lap(
+            1,
+            [_trace_point(100, norm_pos=0.0, authoritative=True), _trace_point(103, norm_pos=1.0, authoritative=True)],
+        ),
+        _trace_lap(2, bad_points),
+    ]
+    await render_html(_trace_report(laps), str(tmp_path), "elapsed")
+    payload = _rendered_payload((tmp_path / "telemetry_elapsed.html").read_text(encoding="utf-8"))
+
+    assert payload["trace_axis"]["mode"] == "elapsed"
+    assert payload["trace_axis"]["label"] == "Elapsed time (s)"
+    assert [point["trace_x"] for point in payload["laps"][0]["trace"]] == [0.0, 0.3]
+    assert [point["trace_x"] for point in payload["laps"][1]["trace"]] == [0.0, 0.5]
+    assert len(payload["laps"][1]["trace"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_html_trace_preserves_frame_gaps_and_stationary_samples(tmp_path):
+    lap = _trace_lap(
+        1,
+        [
+            _trace_point(100, speed=0.0),
+            _trace_point(102, speed=0.0),
+            _trace_point(110, speed=100.0),
+        ],
+        start_frame=95,
+    )
+    for point in lap["track"]:
+        point["x"] = point["z"] = 0.0
+    await render_html(_trace_report([lap]), str(tmp_path), "gaps")
+    payload = _rendered_payload((tmp_path / "telemetry_gaps.html").read_text(encoding="utf-8"))
+
+    assert [point["trace_x"] for point in payload["laps"][0]["trace"]] == [0.5, 0.7, 1.5]
+    assert [point["speed"] for point in payload["laps"][0]["trace"]] == [0.0, 0.0, 100.0]
+
+
+@pytest.mark.asyncio
+async def test_html_corner_shading_requires_bracketed_monotonic_trace_bounds(tmp_path):
+    valid_corner = _corner()
+    valid_corner.update(start_frame=105, end_frame=115)
+    invalid_corner = _corner(10)
+    invalid_corner.update(id=2, start_frame=95, end_frame=115)
+    points = [
+        _trace_point(100, norm_pos=0.0, authoritative=True),
+        _trace_point(110, norm_pos=0.5, authoritative=True),
+        _trace_point(120, norm_pos=1.0, authoritative=True),
+    ]
+    await render_html(_trace_report([_trace_lap(1, points, [valid_corner, invalid_corner])]), str(tmp_path), "corners")
+    payload = _rendered_payload((tmp_path / "telemetry_corners.html").read_text(encoding="utf-8"))
+
+    corners = payload["laps"][0]["corners"]
+    assert corners[0]["trace_start_x"] == pytest.approx(25.0)
+    assert corners[0]["trace_end_x"] == pytest.approx(75.0)
+    assert corners[1]["trace_start_x"] is None
+    assert corners[1]["trace_end_x"] == pytest.approx(75.0)
+
+
 @pytest.mark.asyncio
 async def test_analyzer_trims_mid_session_pit_prefix_to_completed_lap_duration(
     tmp_path,
