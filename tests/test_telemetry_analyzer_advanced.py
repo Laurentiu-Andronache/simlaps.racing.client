@@ -60,6 +60,20 @@ class TestSelectTrackProfile:
         assert track_key == "nurburgring_gp"
         assert profile["config_key"] == "gp"
 
+    def test_select_split_profile_and_reject_conflict_through_analyzer(self):
+        """The analyzer path preserves explicit layout identity."""
+        track_key, profile = _select_track_profile_for_analysis("Suzuka", "East")
+        assert track_key == "suzuka_east"
+        assert profile["config_key"] == "east"
+
+        assert _select_track_profile_for_analysis("Suzuka East", "West") == (None, None)
+
+    def test_select_laguna_gp_alias_through_analyzer(self):
+        """The supported session label resolves to Laguna's full profile."""
+        track_key, profile = _select_track_profile_for_analysis("Laguna Seca GP")
+        assert track_key == "laguna_seca"
+        assert profile["config_key"] == "full"
+
     def test_read_static_track_config_extracts_names(self):
         """Static frames yield authoritative track/config names."""
         frames = [

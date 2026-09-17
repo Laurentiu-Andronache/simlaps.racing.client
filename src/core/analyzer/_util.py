@@ -292,6 +292,10 @@ def _select_track_profile_for_analysis(
     track_key, track_profile = select_track_profile(track_name=track_name, config_name=config_name)
     if track_profile:
         return track_key, track_profile
+    if config_name:
+        # An explicit layout is authoritative. Do not let the loose path
+        # fallback reinterpret a conflicting or unknown configuration.
+        return None, None
     return select_track_profile(path=track_name, config_name=config_name)
 
 
