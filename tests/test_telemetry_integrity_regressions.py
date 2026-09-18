@@ -449,6 +449,37 @@ def _rendered_payload(html: str) -> dict:
 
 
 @pytest.mark.asyncio
+async def test_html_corner_markers_preserve_coordinates_and_omit_unlocatable(tmp_path):
+    finite = _corner(10)
+    finite.update(apex_x=42.5, apex_z=-8.25)
+    exact_frame = _corner(20)
+    exact_frame.update(apex_x=None, apex_z=None, apex_frame=21)
+    nonfinite = _corner(25)
+    nonfinite.update(apex_x=float("nan"), apex_z=float("inf"), apex_frame=21)
+    missing = _corner(30)
+    missing.update(apex_x=None, apex_z=None, apex_frame=999)
+    lap = _trace_lap(
+        1,
+        [_trace_point(20, norm_pos=0.0, authoritative=True), _trace_point(21, norm_pos=1.0, authoritative=True)],
+        corners=[finite, exact_frame, nonfinite, missing],
+    )
+
+    await render_html(_trace_report([lap]), str(tmp_path), "corner_markers")
+    html = (tmp_path / "telemetry_corner_markers.html").read_text(encoding="utf-8")
+    payload = _rendered_payload(html)
+    corners = payload["laps"][0]["corners"]
+
+    assert corners[0]["apex_x"] == pytest.approx(42.5)
+    assert corners[0]["apex_z"] == pytest.approx(-8.2)
+    assert corners[1]["apex_x"] is None
+    assert corners[1]["apex_z"] is None
+    assert corners[2]["apex_x"] is None
+    assert corners[2]["apex_z"] is None
+    assert "pts.find(pt => pt.frame === c.apex_frame)" in html
+    assert "|| pts[0]" not in html
+
+
+@pytest.mark.asyncio
 async def test_html_trace_progress_uses_shared_authoritative_coordinates(tmp_path):
     lap_one = _trace_lap(
         1,

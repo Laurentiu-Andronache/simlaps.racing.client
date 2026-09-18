@@ -148,20 +148,27 @@ async def render_html(
             }
             for point in raw_track
         ]
-        corners_json = [
-            {
-                "id": c["id"],
-                "name": c.get("name"),
-                "apex_frame": c["apex_frame"],
-                "trace_start_x": _interpolate_trace_x(
-                    raw_track, lap, c["start_frame"], trace_axis, data["hz"]
-                ),
-                "trace_end_x": _interpolate_trace_x(
-                    raw_track, lap, c["end_frame"], trace_axis, data["hz"]
-                ),
-            }
-            for c in lap["corners"]
-        ]
+        corners_json = []
+        for corner in lap["corners"]:
+            apex_x = _optional_float(corner.get("apex_x"))
+            apex_z = _optional_float(corner.get("apex_z"))
+            corners_json.append(
+                {
+                    "id": corner["id"],
+                    "name": corner.get("name"),
+                    "apex_frame": corner["apex_frame"],
+                    # Preserve analyzer coordinates when they are finite. The
+                    # browser can use these even when the retained map is sparse.
+                    "apex_x": round(apex_x, 1) if apex_x is not None else None,
+                    "apex_z": round(apex_z, 1) if apex_z is not None else None,
+                    "trace_start_x": _interpolate_trace_x(
+                        raw_track, lap, corner["start_frame"], trace_axis, data["hz"]
+                    ),
+                    "trace_end_x": _interpolate_trace_x(
+                        raw_track, lap, corner["end_frame"], trace_axis, data["hz"]
+                    ),
+                }
+            )
         laps_json.append(
             {
                 "lap_num": lap["lap_num"],
@@ -534,7 +541,11 @@ function drawTrackMap() {
   }
   window._cornerHits = [];
   lap.corners.forEach((c, idx) => {
-    const p = pts.find(pt => pt.frame === c.apex_frame) || pts[0];
+    const apexX = Number(c.apex_x), apexZ = Number(c.apex_z);
+    const p = Number.isFinite(apexX) && Number.isFinite(apexZ)
+      ? { x: apexX, z: apexZ }
+      : pts.find(pt => pt.frame === c.apex_frame);
+    if (!p || !Number.isFinite(Number(p.x)) || !Number.isFinite(Number(p.z))) return;
     const px = cx(p.x), pz = cz(p.z);
     ctx.beginPath(); ctx.arc(px, pz, 6, 0, Math.PI * 2); ctx.fillStyle = '#fff'; ctx.fill();
     ctx.fillStyle = '#000'; ctx.font = 'bold 9px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
