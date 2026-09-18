@@ -100,6 +100,19 @@ class TestCarTuningCatalog:
         # Footer present
         assert "When recommending setup changes, only suggest adjustments from the above list." in block
 
+    def test_get_tuning_params_718_gt4_clubsport_alias(self):
+        """SHM reports the display name 'Porsche 718 Cayman GT4 Clubsport';
+        it must resolve to the catalog's internal cs_mr key."""
+        params = get_tuning_params("Porsche 718 Cayman GT4 Clubsport")
+
+        assert params is not None
+        labels = {param["label"]: param["settings_count"] for param in params}
+        assert labels["Brake bias"] == 151
+        assert labels["Front ride height"] == 31
+        assert labels["Rear ride height"] == 31
+        assert labels["Front slow bump"] == 11
+        assert labels["Rear slow rebound"] == 11
+
     def test_unknown_car_returns_empty_tuning_block(self):
         assert get_tuning_params("Unknown Car") is None
         assert format_tuning_block("Unknown Car") == ""

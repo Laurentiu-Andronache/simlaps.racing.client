@@ -621,20 +621,24 @@ class TelemetryAnalyzer:
             if isinstance(shared_validity, bool):
                 lap["is_valid"] = shared_validity
 
-        valid_laps = [lap for lap in laps if lap.get("is_valid", True)]
+        # Lap validity is advisory for coaching: invalid laps still reveal
+        # what the car and driver are doing, so every completed lap feeds
+        # the analysis. is_valid stays on each lap for display only.
+        coached_laps = list(laps)
+        valid_laps = [lap for lap in coached_laps if lap.get("is_valid", True)]
         profile_sanity_notes = _profile_corner_sanity_notes(
-            valid_laps or laps,
+            coached_laps,
             profile_corners=track_profile.get("corners", []) if track_profile else None,
         )
         if profile_sanity_notes:
             analysis_mode = "diagnostic"
             analysis_notes.extend(profile_sanity_notes)
 
-        best_lap = min(valid_laps, key=lambda lap: lap["lap_time_s"]) if valid_laps else None
-        laps_with_corners = [lap for lap in valid_laps if lap.get("corners")]
+        best_lap = min(coached_laps, key=lambda lap: lap["lap_time_s"]) if coached_laps else None
+        laps_with_corners = [lap for lap in coached_laps if lap.get("corners")]
         ref_lap = min(laps_with_corners, key=lambda lap: lap["lap_time_s"]) if laps_with_corners else best_lap
         coachable_laps = [lap for lap in laps_with_corners if lap.get("confidence_label") != "low"]
-        comparison_pool = coachable_laps or laps_with_corners or valid_laps
+        comparison_pool = coachable_laps or laps_with_corners or coached_laps
         comparison_pool = sorted(
             (lap for lap in comparison_pool if ref_lap is None or lap["lap_num"] != ref_lap["lap_num"]),
             key=lambda lap: lap["lap_time_s"],
@@ -642,13 +646,8 @@ class TelemetryAnalyzer:
         comparison_lap = comparison_pool[(len(comparison_pool) - 1) // 2] if comparison_pool else None
         ref_corners = ref_lap.get("corners", []) if ref_lap else []
 
-        if best_lap is None:
-            analysis_mode = "diagnostic"
-            analysis_notes.append(
-                "No valid completed laps were available; invalid laps are shown for diagnostics only."
-            )
-        elif comparison_lap is None:
-            analysis_notes.append("Only one coachable valid lap was available; comparative coaching is unavailable.")
+        if comparison_lap is None:
+            analysis_notes.append("Only one coachable lap was available; comparative coaching is unavailable.")
 
         log_info(
             Component.ANALYZER,
@@ -716,7 +715,7 @@ class TelemetryAnalyzer:
         # ── Session-over-session comparison
         _track_label = data.get("track_label") or data.get("track_name") or ""
         _car = data.get("car") or ""
-        _laps_with_fuel = [lap for lap in valid_laps if lap.get("fuel_used") is not None]
+        _laps_with_fuel = [lap for lap in coached_laps if lap.get("fuel_used") is not None]
         _avg_fuel = sum(lap["fuel_used"] for lap in _laps_with_fuel) / len(_laps_with_fuel) if _laps_with_fuel else None
         _prev = _load_previous_summary(self._output_dir, _track_label, _car) if best_lap else None
         if _prev and best_lap:
@@ -731,14 +730,14 @@ class TelemetryAnalyzer:
                 _track_label,
                 _car,
                 best_lap["lap_time_s"],
-                max((lap.get("max_speed") or 0.0) for lap in valid_laps),
-                len(valid_laps),
+                max((lap.get("max_speed") or 0.0) for lap in coached_laps),
+                len(coached_laps),
                 _avg_fuel,
             )
 
-        if valid_laps:
+        if coached_laps:
             telemetry_summary = {
-                "max_speed": max((lap.get("max_speed") or 0.0) for lap in valid_laps),
+                "max_speed": max((lap.get("max_speed") or 0.0) for lap in coached_laps),
                 "stint_number": 1,
             }
             self._session_manager.update_from_telemetry(telemetry_summary)

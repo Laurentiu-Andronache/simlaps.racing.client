@@ -136,14 +136,15 @@ async def test_captured_two_complete_laps_reach_analyzer(captured_rows, tmp_path
     monkeypatch.setattr(analyzer, "_generate_ai_prompt", observe_prompt)
     result = await analyzer.analyze(frames, hz=10.0, output_prefix="captured_race")
     assert result.laps_detected == 2
-    # The invalid second lap is faster; it must not become the reference/PB.
-    assert result.best_lap_time == pytest.approx(56.350, abs=0.2)
+    # The invalid second lap is faster; validity is display-only, so it
+    # becomes the reference lap and lap 1 is the comparison.
+    assert result.best_lap_time == pytest.approx(54.453, abs=0.2)
     assert Path(result.html_path).is_file()
     assert Path(result.ai_prompt_path).read_text(encoding="utf-8")
     assert rendered_data["valid_lap_nums"] == [1]
-    assert rendered_data["best_lap_num"] == 1
-    assert rendered_data["reference_lap_num"] == 1
-    assert rendered_data["comparison_lap_num"] is None
+    assert rendered_data["best_lap_num"] == 2
+    assert rendered_data["reference_lap_num"] == 2
+    assert rendered_data["comparison_lap_num"] == 1
 
 
 @pytest.mark.asyncio

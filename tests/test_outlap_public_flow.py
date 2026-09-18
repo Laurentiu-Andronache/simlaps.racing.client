@@ -381,7 +381,9 @@ async def test_invalid_timed_lap_after_rejected_pit_prefix_reaches_diagnostics(
     second_lap = analysis["laps"][1]
     assert len(second_lap["track"]) == 80
     assert all(point["status_name"] != "AC_PAUSE" for point in second_lap["track"])
-    assert any("invalid laps are shown for diagnostics only" in note for note in analysis["analysis_notes"])
+    # Invalid laps still feed coaching selection; diagnostic mode here comes
+    # from the lack of trustworthy corners, not from lap validity.
+    assert any("No trustworthy canonical corners" in note for note in analysis["analysis_notes"])
     assert any("paused telemetry samples" in note for note in analysis["analysis_notes"])
 
 

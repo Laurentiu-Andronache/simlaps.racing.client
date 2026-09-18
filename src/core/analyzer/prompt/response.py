@@ -12,6 +12,14 @@ def render_response_contract(ctx: PromptContext) -> List[str]:
     car_known = car_model != "Unknown Car"
     track_label = ctx.track_label
     tuning_block = format_tuning_block(car_model) if car_known else ""
+    # Scale advice density with corner count — a 50-corner lap needs far
+    # more coverage than a 10-corner club track.
+    corner_count = len(ctx.ref_corners)
+    top_n = min(10, max(3, corner_count // 5))
+    technique_n = min(15, max(5, corner_count // 4))
+    consistency_n = min(8, max(3, corner_count // 7))
+    straights_n = min(8, max(3, corner_count // 7))
+    notes_n = min(8, max(3, corner_count // 7))
     lines: List[str] = []
     lines.append("RESPONSE FORMAT — FOLLOW EXACTLY. NO DEVIATION.")
     lines.append("")
@@ -30,7 +38,7 @@ def render_response_contract(ctx: PromptContext) -> List[str]:
     lines.append("")
     lines.append("---")
     lines.append("")
-    lines.append("## 1. TOP 3 TIME-LOSS CORNERS")
+    lines.append(f"## 1. TOP {top_n} TIME-LOSS CORNERS")
     lines.append("")
     lines.append("Exclude any corners flagged as corrupt/capped in the data above.")
     lines.append("Format each corner EXACTLY like this:")
@@ -46,7 +54,7 @@ def render_response_contract(ctx: PromptContext) -> List[str]:
     lines.append("")
     lines.append("## 2. DRIVING TECHNIQUE")
     lines.append("")
-    lines.append("5 bullets maximum. Each bullet is ONE short instruction the driver can act on immediately.")
+    lines.append(f"{technique_n} bullets maximum. Each bullet is ONE short instruction the driver can act on immediately.")
     lines.append("Format: **[Corner]:** [do X] ([one supporting number]).")
     lines.append("")
     lines.append("Examples of correct brevity:")
@@ -60,7 +68,7 @@ def render_response_contract(ctx: PromptContext) -> List[str]:
     lines.append("")
     lines.append("## 3. CONSISTENCY")
     lines.append("")
-    lines.append("3 bullets maximum. One line each.")
+    lines.append(f"{consistency_n} bullets maximum. One line each.")
     lines.append(
         "Format: **[Corner]:** [apex range] km/h spread — [one-phrase cause: 'no braking marker' or 'commitment varies']."  # noqa: E501
     )
@@ -101,7 +109,7 @@ def render_response_contract(ctx: PromptContext) -> List[str]:
     lines.append("")
     lines.append("## 5. STRAIGHTS & SECTORS")
     lines.append("")
-    lines.append("3 bullets maximum. One line each.")
+    lines.append(f"{straights_n} bullets maximum. One line each.")
     lines.append("Use the STRAIGHT/SECTOR ANALYSIS and EXIT-TO-ENTRY CORRELATION data above.")
     lines.append("Format: **[Corner A → Corner B]:** [insight] ([one number]).")
     lines.append(
@@ -114,7 +122,7 @@ def render_response_contract(ctx: PromptContext) -> List[str]:
     lines.append("")
     lines.append(f"## 6. TRACK NOTES — {track_label}")
     lines.append("")
-    lines.append("3 bullets maximum. One line each.")
+    lines.append(f"{notes_n} bullets maximum. One line each.")
     lines.append("Format: **[Corner/Section]:** [short insight] ([one number]).")
     lines.append(
         "Only include observations where the car has significant unused grip or the corner can be taken differently than expected."  # noqa: E501
