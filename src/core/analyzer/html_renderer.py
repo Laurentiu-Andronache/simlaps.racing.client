@@ -158,6 +158,8 @@ async def render_html(
             "valid_lap_nums": data.get("valid_lap_nums", []),
             "analysis_mode": data.get("analysis_mode"),
             "analysis_confidence": data.get("analysis_confidence"),
+            "authoritative_progress_ratio": data.get("authoritative_progress_ratio", 0.0),
+            "plausible_frame_ratio": data.get("plausible_frame_ratio", 0.0),
             "analysis_notes": data.get("analysis_notes", []),
             "ref_corners": ref_corners_json,
             "corner_data": corner_data_json,

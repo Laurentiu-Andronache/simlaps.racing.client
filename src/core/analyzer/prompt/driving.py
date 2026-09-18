@@ -441,7 +441,7 @@ def build_braking_sections(
                 continue
             phases = analyze_corner_phases(lap["track"], corner, lap["start_frame"], hz)
             if phases:
-                phase_data_per_lap.append((lap["lap_num"], phases))
+                phase_data_per_lap.append((lap_result_key(lap), phases))
 
         if not phase_data_per_lap:
             continue

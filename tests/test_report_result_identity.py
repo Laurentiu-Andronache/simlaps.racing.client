@@ -95,6 +95,27 @@ async def test_identity_boundary_does_not_use_stale_display_number_maps(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_closed_report_cannot_update_new_session_telemetry_summary(tmp_path):
+    manager = SharedSessionManager()
+    manager._session_data.session_metadata.session_id = "new-session"
+    manager._session_data.max_speed = 42.0
+    analyzer = TelemetryAnalyzer(str(tmp_path), session_manager=manager)
+
+    result = await analyzer.analyze(
+        [_frame(index, index * 100) for index in range(100)],
+        hz=10.0,
+        car_name="Unknown Car",
+        game_lap_boundaries=[
+            LapBoundary(99, 10_000, 1, "VALID", "old-session", "old-result", 1),
+        ],
+        output_prefix="closed_summary",
+    )
+
+    assert result.laps_detected == 1
+    assert manager._session_data.max_speed == pytest.approx(42.0)
+
+
+@pytest.mark.asyncio
 async def test_identity_callback_late_frame_keeps_shm_boundary_and_result_metadata(tmp_path):
     analyzer = TelemetryAnalyzer(str(tmp_path))
     frames = []
@@ -375,6 +396,75 @@ async def test_prompt_keeps_faster_untrusted_best_out_of_coaching_reference(tmp_
 
 
 @pytest.mark.asyncio
+async def test_prompt_does_not_coach_untrusted_invalid_result(tmp_path):
+    analyzer = TelemetryAnalyzer(str(tmp_path))
+    path = await analyzer._generate_ai_prompt(
+        {
+            "laps": [
+                {
+                    "lap_num": 1,
+                    "lap_time_s": 5.0,
+                    "lap_time_str": "0:05.00",
+                    "max_speed": 100.0,
+                    "avg_speed": 90.0,
+                    "fuel_used": 0.1,
+                    "is_valid": True,
+                    "derived_metrics_trustworthy": True,
+                    "corners": [],
+                    "track": [],
+                },
+                {
+                    "lap_num": 2,
+                    "lap_time_s": 10.0,
+                    "lap_time_str": "0:10.00",
+                    "max_speed": 95.0,
+                    "avg_speed": 85.0,
+                    "fuel_used": 0.2,
+                    "is_valid": False,
+                    "derived_metrics_trustworthy": True,
+                    "corners": [],
+                    "track": [],
+                },
+                {
+                    "lap_num": 3,
+                    "lap_time_s": 3.0,
+                    "lap_time_str": "0:03.00",
+                    "max_speed": None,
+                    "avg_speed": None,
+                    "fuel_used": None,
+                    "is_valid": False,
+                    "derived_metrics_trustworthy": False,
+                    "corners": [],
+                    "track": [],
+                },
+            ],
+            "best_lap_num": 3,
+            "reference_lap_num": 1,
+            "comparison_lap_num": 2,
+            "comparison_available": True,
+            "analysis_mode": "full",
+            "analysis_confidence": "high",
+            "analysis_notes": [],
+            "authoritative_progress_ratio": 1.0,
+            "plausible_frame_ratio": 1.0,
+            "ref_corners": [{"id": 1, "name": "T1"}],
+            "corner_data": {},
+            "corner_speeds": {},
+            "track_label": "Test Track",
+            "track_name": "Test Track",
+            "car": "Test Car",
+            "hz": 10.0,
+        },
+        output_prefix="untrusted_invalid_prompt",
+    )
+
+    prompt = Path(path).read_text(encoding="utf-8")
+    assert "INVALID LAPS (coached anyway; treat deltas with care):" in prompt
+    assert "Lap 2: 0:10.00 [INVALID]" in prompt
+    assert "- Lap 3: 0:03.00 [INVALID]" not in prompt
+
+
+@pytest.mark.asyncio
 async def test_partial_timer_coverage_keeps_official_result_without_metrics(tmp_path):
     analyzer = TelemetryAnalyzer(str(tmp_path))
     frames = [_frame(i, i * 100) for i in range(100)]
@@ -418,6 +508,10 @@ async def test_rendered_outputs_keep_trustworthy_and_official_results_separate(t
             timer = (index - 200) * 100
         last = 19_998 if index == 100 else (9_998 if index == 200 else 0)
         frame = _frame(index, timer, last=last)
+        frame.physics["quality_score"] = 0.1 if index < 100 else 1.0
+        frame.graphics["quality_score"] = 0.1 if index < 100 else 1.0
+        if index < 100:
+            frame.graphics["has_authoritative_progress"] = False
         frames.append(frame)
     result = await analyzer.analyze(
         frames,
@@ -435,5 +529,8 @@ async def test_rendered_outputs_keep_trustworthy_and_official_results_separate(t
     data = json.loads(re.search(r"const DATA = (.*);\nconst LAP_COLORS", html).group(1))
     assert [lap["result_id"] for lap in data["laps"]] == ["result-a", "result-b"]
     assert [lap["derived_metrics_trustworthy"] for lap in data["laps"]] == [False, True]
+    # Capture-level quality is recomputed from the trustworthy segment, even
+    # though this synthetic input has no track profile and remains diagnostic.
+    assert data["authoritative_progress_ratio"] == pytest.approx(1.0)
     assert "Lap 1: 0:20.00 [VALID] top speed N/A km/h" in prompt
     assert "Lap 2: 0:10.00 [INVALID] top speed 100.0 km/h" in prompt
