@@ -54,7 +54,10 @@ def render_response_contract(ctx: PromptContext) -> List[str]:
     lines.append("")
     lines.append("## 2. DRIVING TECHNIQUE")
     lines.append("")
-    lines.append(f"{technique_n} bullets maximum. Each bullet is ONE short instruction the driver can act on immediately.")
+    lines.append(
+        f"{technique_n} bullets maximum. "
+        "Each bullet is ONE short instruction the driver can act on immediately."
+    )
     lines.append("Format: **[Corner]:** [do X] ([one supporting number]).")
     lines.append("")
     lines.append("Examples of correct brevity:")
