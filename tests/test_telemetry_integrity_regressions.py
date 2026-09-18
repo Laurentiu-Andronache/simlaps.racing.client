@@ -533,7 +533,7 @@ document.body.textContent = JSON.stringify(window._cornerHits);
     harness_path = tmp_path / "corner_marker_harness.html"
     harness_path.write_text(harness, encoding="utf-8")
     user_data_dir = tmp_path / "chrome-profile"
-    result = subprocess.run(
+    result = subprocess.run(  # noqa: S603 - executable is a fixed local Chrome path
         [
             str(chrome),
             "--headless=new",
