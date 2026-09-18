@@ -509,14 +509,18 @@ class TelemetryCapture:
         # The shared session manager sees the same graphics callback before
         # this recorder boundary check. When it has observed live timer data,
         # stale counter/timer values must not release an armed recording.
-        if not self._session_manager.has_live_timer_ownership():
-            self._awaiting_lap_time_ms = None
-            return False
+        # Keep the ownership decision and release of the armed boundary in a
+        # single manager lock section. A session reset must not replace the
+        # owned state between the check and the recorder mutation.
+        with self._session_manager._lock:
+            if not self._session_manager.has_live_timer_ownership():
+                self._awaiting_lap_time_ms = None
+                return False
 
-        self._frames.clear()
-        self._lap_boundaries.clear()
-        self._recording_awaiting_boundary = False
-        self._awaiting_lap_time_ms = None
+            self._frames.clear()
+            self._lap_boundaries.clear()
+            self._recording_awaiting_boundary = False
+            self._awaiting_lap_time_ms = None
         log_info(
             Component.TELEMETRY,
             "Telemetry recording started at shared-memory timing boundary",

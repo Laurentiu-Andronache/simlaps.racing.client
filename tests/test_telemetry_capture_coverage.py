@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import tempfile
+import threading
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
@@ -610,6 +611,56 @@ class TestValidityOnlyCaptureLoop:
 
         assert capture._recording_awaiting_boundary is False
         assert [frame.frame_number for frame in capture.get_frames()] == [2, 3]
+
+    def test_armed_boundary_holds_ownership_during_session_reset(self):
+        capture = TelemetryCapture(record_frames=True)
+        manager = capture._session_manager
+        for current_time in (78_000, 79_000):
+            manager.update_from_graphics_shm(
+                {
+                    "status_name": "AC_LIVE",
+                    "total_lap_count": 0,
+                    "current_lap_time_ms": current_time,
+                    "last_laptime_ms": 0,
+                    "is_valid_lap": True,
+                }
+            )
+        capture._recording_awaiting_boundary = True
+        capture._awaiting_lap_time_ms = 78_000
+        frame = FrameData(
+            "2026-01-01T00:00:00Z",
+            1,
+            {"speed_kmh": 100.0},
+            graphics={"status_name": "AC_LIVE", "current_lap_time_ms": 104},
+        )
+        reset_started = threading.Event()
+        reset_finished = threading.Event()
+
+        def reset_session():
+            reset_started.set()
+            manager.reset()
+            reset_finished.set()
+
+        real_has_ownership = manager.has_live_timer_ownership
+        reset_thread_holder = []
+
+        def has_ownership_while_reset_attempts():
+            reset_thread = threading.Thread(target=reset_session)
+            reset_thread_holder.append(reset_thread)
+            reset_thread.start()
+            assert reset_started.wait(timeout=1)
+            assert not reset_finished.wait(timeout=0.05)
+            real_has_ownership()
+            return True
+
+        with patch.object(manager, "has_live_timer_ownership", side_effect=has_ownership_while_reset_attempts):
+            assert capture._start_recording_at_timing_boundary(frame) is True
+
+        assert capture._recording_awaiting_boundary is False
+        reset_thread_holder[0].join(timeout=1)
+        assert not reset_thread_holder[0].is_alive()
+        assert reset_finished.is_set()
+        assert manager.has_live_timer_ownership() is False
 
     def test_armed_recording_keeps_race_from_standing_start(self):
         capture = TelemetryCapture(record_frames=True)
