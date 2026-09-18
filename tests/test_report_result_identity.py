@@ -3,10 +3,12 @@
 import json
 import re
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
 
+from src.core.analyzer.lap_detection import _detect_laps_by_timing_state
 from src.core.telemetry_analyzer import TelemetryAnalyzer
 from src.core.telemetry_capture import FrameData, LapBoundary, TelemetryCapture
 from src.models import LapData, LapState, SharedSessionManager
@@ -26,6 +28,16 @@ def _frame(index: int, timer: int, *, last: int = 0) -> FrameData:
             "is_valid_lap": True,
         },
     )
+
+
+def test_timer_reset_while_paused_does_not_create_shm_boundary():
+    assert _detect_laps_by_timing_state(
+        [
+            {"frame": 0, "lap_time_ms": 5_000, "last_lap_time_ms": 90_000, "status_name": "AC_LIVE"},
+            {"frame": 10, "lap_time_ms": 0, "last_lap_time_ms": 90_000, "status_name": "AC_PAUSE"},
+        ],
+        hz=10.0,
+    ) in (None, [])
 
 
 def test_late_result_update_keeps_original_capture_frame_boundary():
@@ -148,6 +160,9 @@ async def test_missing_telemetry_retains_captured_official_result(tmp_path, fram
 
     assert result.laps_detected == 1
     assert result.best_lap_time == pytest.approx(20.0)
+    if frame_count == 0:
+        html = (tmp_path / "telemetry_missing_0.html").read_text(encoding="utf-8")
+        assert "Telemetry map unavailable" in html
 
 
 @pytest.mark.asyncio
@@ -232,6 +247,131 @@ async def test_equal_time_outlap_does_not_claim_timed_result(tmp_path):
     assert data["laps"][0]["lap_num"] == 2
     assert data["laps"][0]["result_id"] == "timed"
     assert data["laps"][0]["derived_metrics_trustworthy"] is True
+
+
+@pytest.mark.asyncio
+async def test_equal_time_results_use_original_numbers_when_callbacks_are_reordered(tmp_path):
+    analyzer = TelemetryAnalyzer(str(tmp_path))
+    frames = []
+    for index in range(260):
+        if index < 100:
+            timer = index * 100
+        elif index < 200:
+            timer = (index - 100) * 100
+        else:
+            timer = (index - 200) * 100
+        frames.append(_frame(index, timer, last=10_000 if index in (100, 200) else 0))
+
+    result = await analyzer.analyze(
+        frames,
+        hz=10.0,
+        game_lap_boundaries=[
+            # Arrival order is reversed, but original callback numbers bind
+            # each equal-time result to its physical timer epoch.
+            LapBoundary(205, 10_000, 2, "VALID", "session-a", "second", 2),
+            LapBoundary(210, 10_000, 1, "INVALID_GAME", "session-a", "first", 1),
+        ],
+        output_prefix="equal_time_reordered",
+    )
+
+    data = json.loads(
+        re.search(
+            r"const DATA = (.*);\nconst LAP_COLORS",
+            (tmp_path / "telemetry_equal_time_reordered.html").read_text(encoding="utf-8"),
+        ).group(1)
+    )
+    assert result.laps_detected == 2
+    assert [(lap["result_id"], lap["lap_num"], lap["is_valid"]) for lap in data["laps"]] == [
+        ("first", 1, False),
+        ("second", 2, True),
+    ]
+    assert all(lap["derived_metrics_trustworthy"] for lap in data["laps"])
+
+
+@pytest.mark.asyncio
+async def test_duplicate_display_numbers_use_result_key_for_official_best(tmp_path):
+    analyzer = TelemetryAnalyzer(str(tmp_path))
+    frames = []
+    for index in range(311):
+        if index < 200:
+            timer = index * 100
+        else:
+            timer = (index - 200) * 100
+        frames.append(_frame(index, timer, last=20_000 if index == 200 else (10_000 if index == 300 else 0)))
+
+    result = await analyzer.analyze(
+        frames,
+        hz=10.0,
+        game_lap_boundaries=[
+            LapBoundary(205, 20_000, 1, "VALID", "session-a", "result-a", 1),
+            LapBoundary(305, 10_000, 1, "VALID", "session-a", "result-b", 2),
+        ],
+        output_prefix="duplicate_display",
+    )
+
+    data = json.loads(
+        re.search(
+            r"const DATA = (.*);\nconst LAP_COLORS",
+            (tmp_path / "telemetry_duplicate_display.html").read_text(encoding="utf-8"),
+        ).group(1)
+    )
+    assert result.best_lap_time == pytest.approx(10.0)
+    assert [lap["lap_num"] for lap in data["laps"]] == [1, 1]
+    assert data["best_lap_key"] == data["laps"][1]["result_key"]
+    assert data["best_lap_key"] != data["laps"][0]["result_key"]
+
+
+@pytest.mark.asyncio
+async def test_prompt_keeps_faster_untrusted_best_out_of_coaching_reference(tmp_path):
+    analyzer = TelemetryAnalyzer(str(tmp_path))
+    path = await analyzer._generate_ai_prompt(
+        {
+            "laps": [
+                {
+                    "lap_num": 1,
+                    "lap_time_s": 5.0,
+                    "lap_time_str": "0:05.00",
+                    "max_speed": None,
+                    "avg_speed": None,
+                    "fuel_used": None,
+                    "is_valid": True,
+                    "derived_metrics_trustworthy": False,
+                },
+                {
+                    "lap_num": 2,
+                    "lap_time_s": 10.0,
+                    "lap_time_str": "0:10.00",
+                    "max_speed": 100.0,
+                    "avg_speed": 90.0,
+                    "fuel_used": 0.1,
+                    "is_valid": False,
+                    "derived_metrics_trustworthy": True,
+                },
+            ],
+            "best_lap_num": 1,
+            "analysis_mode": "full",
+            "analysis_confidence": "high",
+            "analysis_notes": [],
+            "authoritative_progress_ratio": 1.0,
+            "plausible_frame_ratio": 1.0,
+            "ref_corners": [{"id": 1, "name": "T1"}],
+            "comparison_available": False,
+            "reference_lap_num": 2,
+            "comparison_lap_num": None,
+            "corner_data": {},
+            "corner_speeds": {},
+            "track_label": "Test Track",
+            "track_name": "Test Track",
+            "car": "Test Car",
+            "hz": 10.0,
+        },
+        output_prefix="untrusted_best_prompt",
+    )
+
+    prompt = Path(path).read_text(encoding="utf-8")
+    assert "Official best result: #1  0:05.00" in prompt
+    assert "Coaching reference:   #2  0:10.00" in prompt
+    assert "- Top speed:  100.0 km/h" in prompt
 
 
 @pytest.mark.asyncio

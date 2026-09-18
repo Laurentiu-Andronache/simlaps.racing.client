@@ -135,6 +135,19 @@ class CaptureMetadata:
 
 
 @dataclass(frozen=True)
+class CaptureSnapshot:
+    """Immutable capture data handed to an asynchronous finalizer."""
+
+    frames: tuple[FrameData, ...]
+    metadata: Optional[CaptureMetadata]
+    lap_boundaries: tuple["LapBoundary", ...]
+    output_prefix: Optional[str]
+    stop_reason: str
+    track_name: Optional[str]
+    car_model: Optional[str]
+
+
+@dataclass(frozen=True)
 class LapBoundary:
     """Captured result boundary with legacy four-item tuple behavior."""
 
@@ -328,6 +341,7 @@ class TelemetryCapture:
         self._last_valid_frame_time: Optional[float] = None
         self._stop_reason: Optional[str] = None
         self._on_stop_callback: Optional[Callable[[str], None]] = None
+        self._on_stop_snapshot_callback: Optional[Callable[[str, CaptureSnapshot], None]] = None
         self._output_dir = output_dir or get_default_output_dir()
         self._all_disconnected_since: Optional[float] = None
         self._output_prefix: Optional[str] = None
@@ -338,6 +352,9 @@ class TelemetryCapture:
         self._last_sample_had_data = False
         self._recording_awaiting_boundary = False
         self._awaiting_lap_time_ms: Optional[int] = None
+        self._last_stop_snapshot: Optional[CaptureSnapshot] = None
+        self._source_track_name: Optional[str] = None
+        self._source_car_model: Optional[str] = None
 
     def is_capturing(self) -> bool:
         """Check if currently capturing."""
@@ -429,6 +446,31 @@ class TelemetryCapture:
             callback: Function receiving stop reason string
         """
         self._on_stop_callback = callback
+
+    def set_on_stop_snapshot_callback(self, callback: Optional[Callable[[str, CaptureSnapshot], None]]) -> None:
+        """Set the callback that receives an immutable stopped-capture snapshot."""
+        self._on_stop_snapshot_callback = callback
+
+    def get_last_stop_snapshot(self) -> Optional[CaptureSnapshot]:
+        """Return the completed capture snapshot, if one was created."""
+        return self._last_stop_snapshot
+
+    def set_source_context(self, *, track_name: Optional[str], car_model: Optional[str]) -> None:
+        """Freeze session labels used when the current capture is finalized."""
+        self._source_track_name = track_name
+        self._source_car_model = car_model
+
+    def _freeze_stop_snapshot(self) -> CaptureSnapshot:
+        """Copy outgoing capture data before another start can reset state."""
+        return CaptureSnapshot(
+            frames=tuple(self._frames),
+            metadata=self._metadata,
+            lap_boundaries=tuple(self._lap_boundaries),
+            output_prefix=self._output_prefix,
+            stop_reason=self._stop_reason or "manual_stop",
+            track_name=self._source_track_name,
+            car_model=self._source_car_model,
+        )
 
     def get_frame_count(self) -> int:
         """Get number of captured frames."""
@@ -900,6 +942,7 @@ class TelemetryCapture:
         self._running = True
         self._frames = []
         self._lap_boundaries = []
+        self._last_stop_snapshot = None
         self._recording_awaiting_boundary = self._record_frames
         self._awaiting_lap_time_ms = None
         self._metadata = None
@@ -1091,6 +1134,9 @@ class TelemetryCapture:
 
         self._close_readers()
 
+        if self._last_stop_snapshot is None:
+            self._last_stop_snapshot = self._freeze_stop_snapshot()
+
         # Close diagnostic log
         if self._diag_file:
             try:
@@ -1098,6 +1144,11 @@ class TelemetryCapture:
             except OSError:
                 pass
             self._diag_file = None
+
+        # Freeze all outgoing data before the asynchronous callback can race
+        # with a new start_capture() resetting this object's live buffers.
+        snapshot = self._freeze_stop_snapshot()
+        self._last_stop_snapshot = snapshot
 
         # Save raw dump for reverse-engineering if we captured frames.
         # Gated behind the telemetry-debug-logs setting because in normal
@@ -1110,9 +1161,13 @@ class TelemetryCapture:
             self.save_raw_dump(raw_dump_path)
 
         # Notify callback if set
-        if self._on_stop_callback and self._should_notify_stop_callback():
+        if (self._on_stop_callback or self._on_stop_snapshot_callback) and self._should_notify_stop_callback():
             try:
-                result = self._on_stop_callback(self._stop_reason or "manual_stop")
+                reason = self._stop_reason or "manual_stop"
+                if self._on_stop_snapshot_callback:
+                    result = self._on_stop_snapshot_callback(reason, snapshot)
+                else:
+                    result = self._on_stop_callback(reason)
                 if asyncio.iscoroutine(result):
                     asyncio.create_task(result)
             except Exception as e:

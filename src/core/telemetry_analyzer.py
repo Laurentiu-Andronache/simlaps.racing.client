@@ -92,7 +92,12 @@ _LAP_TIME_ALIGNMENT_TOLERANCE_MS = 2.0
 _LAP_SEGMENT_MIN_TRIM_MS = 2_000.0
 
 
-def _nearest_lap_marker_by_time(markers: List, timing_lap_time: Any):
+def _nearest_lap_marker_by_time(
+    markers: List,
+    timing_lap_time: Any,
+    *,
+    expected_original_number: Optional[int] = None,
+):
     """Return the nearest unused log marker within rounding tolerance."""
     if not isinstance(timing_lap_time, (int, float)) or isinstance(timing_lap_time, bool):
         return None
@@ -108,6 +113,19 @@ def _nearest_lap_marker_by_time(markers: List, timing_lap_time: Any):
 
     if not candidates:
         return None
+    if expected_original_number is not None:
+        ordered = [
+            candidate
+            for candidate in candidates
+            if (
+                candidate[2][4] is not None
+                or candidate[2][5]
+                or candidate[2][6]
+            )
+            and candidate[2][4] == expected_original_number
+        ]
+        if ordered:
+            return min(ordered, key=lambda candidate: (candidate[0], candidate[1]))[2]
     return min(candidates, key=lambda candidate: (candidate[0], candidate[1]))[2]
 
 
@@ -297,6 +315,7 @@ class TelemetryAnalyzer:
         game_lap_boundaries: Optional[
             List
         ] = None,  # Can be List[int] or List[Tuple[int, Optional[float], Optional[int]]]
+        car_name: Optional[str] = None,
     ) -> AnalysisResult:
         """Run full analysis pipeline and generate outputs."""
         log_info(
@@ -470,6 +489,7 @@ class TelemetryAnalyzer:
                         match = _nearest_lap_marker_by_time(
                             unused_markers,
                             timing_lap_time,
+                            expected_original_number=initial_completed_laps + idx + 1,
                         )
                         if match is not None and match[3] in {"OUTLAP", "INLAP", "ABORTED"}:
                             timed_markers = [
@@ -477,7 +497,11 @@ class TelemetryAnalyzer:
                                 for marker in unused_markers
                                 if marker[3] not in {"OUTLAP", "INLAP", "ABORTED"}
                             ]
-                            preferred = _nearest_lap_marker_by_time(timed_markers, timing_lap_time)
+                            preferred = _nearest_lap_marker_by_time(
+                                timed_markers,
+                                timing_lap_time,
+                                expected_original_number=initial_completed_laps + idx + 1,
+                            )
                             if preferred is not None:
                                 match = preferred
                         if match is not None:
@@ -751,6 +775,14 @@ class TelemetryAnalyzer:
                     "derived_metrics_trustworthy": derived_metrics_trustworthy,
                 }
             )
+            # The displayed lap number is presentation metadata and may be
+            # reused after a restart or corrected by a delayed callback.  Give
+            # every captured result a stable internal key for report joins.
+            lap = laps[-1]
+            if result_id is not None:
+                lap["result_key"] = f"result:{session_id or ''}:{result_id}"
+            else:
+                lap["result_key"] = f"capture:{i + 1}"
             fuel_str = f"  fuel {fuel_used:.3f}L" if fuel_used is not None else ""
             log_debug(
                 Component.ANALYZER,
@@ -788,6 +820,45 @@ class TelemetryAnalyzer:
         # segment whose timer epoch cannot be verified contributes no derived
         # metrics or comparison data.
         coached_laps = [lap for lap in laps if lap.get("derived_metrics_trustworthy", True)]
+        if coached_laps:
+            # Capture-level quality can be depressed by an abandoned or
+            # partial segment. Recompute coaching mode from the segments that
+            # passed the timer trust contract so one good lap remains usable.
+            trusted_track = [point for lap in coached_laps for point in lap.get("track", [])]
+            trusted_authoritative_ratio = _fraction(
+                trusted_track,
+                lambda pt: pt.get("has_authoritative_progress") and pt.get("norm_pos") is not None,
+            )
+            trusted_plausible_ratio = _fraction(
+                trusted_track,
+                lambda pt: (pt.get("frame_quality") or 0.0) >= _PLAUSIBLE_FRAME_THRESHOLD,
+            )
+            if (
+                trusted_authoritative_ratio > authoritative_progress_ratio
+                or trusted_plausible_ratio > plausible_frame_ratio
+            ):
+                authoritative_progress_ratio = trusted_authoritative_ratio
+                plausible_frame_ratio = trusted_plausible_ratio
+                analysis_confidence_score = round(
+                    authoritative_progress_ratio * 0.7 + plausible_frame_ratio * 0.3,
+                    3,
+                )
+                analysis_confidence = _confidence_label(analysis_confidence_score)
+                analysis_mode, _, _ = _decide_analysis_mode(
+                    authoritative_progress_ratio,
+                    plausible_frame_ratio,
+                )
+                analysis_notes = [
+                    note
+                    for note in analysis_notes
+                    if not note.startswith(
+                        (
+                            "Authoritative graphics progress coverage is",
+                            "Authoritative graphics progress coverage too low",
+                            "Physics frame plausibility coverage is only",
+                        )
+                    )
+                ]
         valid_laps = [lap for lap in laps if lap.get("is_valid", True)]
         profile_sanity_notes = _profile_corner_sanity_notes(
             coached_laps,
@@ -810,7 +881,7 @@ class TelemetryAnalyzer:
         coachable_laps = [lap for lap in laps_with_corners if lap.get("confidence_label") != "low"]
         comparison_pool = coachable_laps or laps_with_corners or coached_laps
         comparison_pool = sorted(
-            (lap for lap in comparison_pool if ref_lap is None or lap["lap_num"] != ref_lap["lap_num"]),
+            (lap for lap in comparison_pool if ref_lap is None or lap["result_key"] != ref_lap["result_key"]),
             key=lambda lap: lap["lap_time_s"],
         )
         comparison_lap = comparison_pool[(len(comparison_pool) - 1) // 2] if comparison_pool else None
@@ -850,7 +921,7 @@ class TelemetryAnalyzer:
             for cid, corner in matched.items():
                 if corner and corner.get("confidence_label") != "low":
                     seg_time = corner_segment_time(corner, hz)
-                    corner_data[cid][lap["lap_num"]] = {
+                    corner_data[cid][lap["result_key"]] = {
                         "apex": round(corner["apex_speed"], 1),
                         "entry": round(corner["entry_speed"], 1),
                         "exit": round(corner["exit_speed"], 1),
@@ -858,7 +929,7 @@ class TelemetryAnalyzer:
                         "confidence": round(float(corner.get("confidence", 0.0)), 3),
                         "confidence_label": corner.get("confidence_label", "low"),
                     }
-                    corner_speeds[cid][lap["lap_num"]] = corner["apex_speed"]
+                    corner_speeds[cid][lap["result_key"]] = corner["apex_speed"]
 
         data = {
             "meta": metadata.to_dict() if metadata else {},
@@ -868,11 +939,14 @@ class TelemetryAnalyzer:
             "config_key": track_profile["config_key"] if track_profile else None,
             "config_name": track_profile["config_name"] if track_profile else None,
             "track_label": track_profile["display_name"] if track_profile else track_name,
-            "car": self._session_manager.get_car(),
+            "car": car_name or self._session_manager.get_car(),
             "laps": laps,
             "best_lap_num": best_lap["lap_num"] if best_lap else None,
+            "best_lap_result_key": best_lap.get("result_key") if best_lap else None,
             "reference_lap_num": ref_lap["lap_num"] if ref_lap else None,
+            "reference_lap_result_key": ref_lap.get("result_key") if ref_lap else None,
             "comparison_lap_num": comparison_lap["lap_num"] if comparison_lap else None,
+            "comparison_lap_result_key": comparison_lap.get("result_key") if comparison_lap else None,
             "comparison_available": comparison_lap is not None,
             "valid_lap_nums": [lap["lap_num"] for lap in valid_laps],
             "coaching_lap_nums": [lap["lap_num"] for lap in coachable_laps],

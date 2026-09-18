@@ -6,12 +6,12 @@ from typing import Dict, List
 from src.core.analyzer.metrics import analyze_brake_thermals, analyze_suspension
 from src.core.car_tuning_catalog import format_tuning_block
 
-from .context import PromptContext
+from .context import PromptContext, lap_result_key
 
 
 def build_aero_sections(
     ctx: PromptContext,
-    lap_corner_map: Dict[int, Dict[int, Dict]],
+    lap_corner_map: Dict[str | int, Dict[int, Dict]],
 ) -> List[str]:
     laps = list(ctx.coached_laps)
     list(ctx.ref_corners)
@@ -174,7 +174,7 @@ def build_aero_sections(
 
 def build_gearing_sections(
     ctx: PromptContext,
-    lap_corner_map: Dict[int, Dict[int, Dict]],
+    lap_corner_map: Dict[str | int, Dict[int, Dict]],
 ) -> List[str]:
     laps = list(ctx.coached_laps)
     ref_corners = list(ctx.ref_corners)
@@ -195,7 +195,7 @@ def build_gearing_sections(
 
             gear_data = []
             for lap in laps:
-                corner = lap_corner_map[lap["lap_num"]].get(cid)
+                corner = lap_corner_map[lap_result_key(lap)].get(cid)
                 if not corner:
                     continue
 
@@ -244,7 +244,7 @@ def build_gearing_sections(
 
 def build_brake_sections(
     ctx: PromptContext,
-    lap_corner_map: Dict[int, Dict[int, Dict]],
+    lap_corner_map: Dict[str | int, Dict[int, Dict]],
 ) -> List[str]:
     laps = list(ctx.coached_laps)
     ref_corners = list(ctx.ref_corners)
@@ -265,7 +265,7 @@ def build_brake_sections(
 
             bias_data = []
             for lap in laps:
-                corner = lap_corner_map[lap["lap_num"]].get(cid)
+                corner = lap_corner_map[lap_result_key(lap)].get(cid)
                 if not corner:
                     continue
 
@@ -312,7 +312,7 @@ def build_brake_sections(
             for spec in ref_corners:
                 cid = spec["id"]
                 for lap in laps:
-                    corner = lap_corner_map[lap["lap_num"]].get(cid)
+                    corner = lap_corner_map[lap_result_key(lap)].get(cid)
                     if not corner:
                         continue
                     corner_track = [
@@ -360,7 +360,7 @@ def build_brake_sections(
 
 def build_suspension_sections(
     ctx: PromptContext,
-    lap_corner_map: Dict[int, Dict[int, Dict]],
+    lap_corner_map: Dict[str | int, Dict[int, Dict]],
 ) -> List[str]:
     data = ctx.data
     laps = list(ctx.coached_laps)
@@ -386,7 +386,7 @@ def build_suspension_sections(
 
 def build_car_sections(
     ctx: PromptContext,
-    lap_corner_map: Dict[int, Dict[int, Dict]],
+    lap_corner_map: Dict[str | int, Dict[int, Dict]],
 ) -> List[str]:
     lines: List[str] = []
     tuning_block = format_tuning_block(ctx.car_model)

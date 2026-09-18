@@ -60,6 +60,9 @@ class LapProcessingService:
         # detection) and is already set on lap.fuel_used before this point.
         if telemetry_capture and telemetry_capture.is_capturing():
             lap_type = getattr(lap, "lap_type", None) or getattr(getattr(lap, "lap_state", None), "value", None)
+            set_source_context = getattr(telemetry_capture, "set_source_context", None)
+            if callable(set_source_context):
+                set_source_context(track_name=session.track, car_model=session.car)
             telemetry_capture.record_lap_boundary(
                 lap.lap_time_ms,
                 lap.lap_number,
