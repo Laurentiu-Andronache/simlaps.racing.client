@@ -40,7 +40,7 @@ class TestSelectTrackProfile:
 
     def test_select_unknown_path_style_label_is_profileless(self):
         """An unknown session label cannot borrow a profile by substring."""
-        assert _select_track_profile_for_analysis("unknown_track_gp") == (None, None)
+        assert _select_track_profile_for_analysis("unknown_circuit_de_spa_francorchamps") == (None, None)
 
     def test_select_track_profile_by_static_config_nordschleife(self):
         """Static config "Nordschleife" selects the plain Nordschleife layout."""
