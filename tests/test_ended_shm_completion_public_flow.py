@@ -153,18 +153,19 @@ async def test_stale_shm_transition_keeps_parser_services_and_capture_armed(tmp_
         )
 
     parser = LogParser(log_path=str(log_file), on_lap_complete=on_lap, session_manager=manager)
+    parser.PENDING_VALIDITY_GRACE_SECONDS = 0.0
     parser.current_session = SessionData(track="monza", car="test-car", session_type="PRACTICE", car_uuid="same-car")
     follow_task = asyncio.create_task(parser.follow(poll_interval=0.005))
     try:
         for frame_number in range(2):
             frame = telemetry._capture_frame(frame_number)
             telemetry._start_recording_at_timing_boundary(frame)
-        manager.reset()
+        await parser._emit_session_restart()
         telemetry._recording_awaiting_boundary = True
         for frame_number in range(2, 4):
             frame = telemetry._capture_frame(frame_number)
             telemetry._start_recording_at_timing_boundary(frame)
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0.1)
     finally:
         parser.stop()
         await asyncio.wait_for(follow_task, timeout=1.0)
