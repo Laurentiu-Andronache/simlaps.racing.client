@@ -10,11 +10,11 @@ class PromptContext:
 
     data: Mapping[str, Any]
     all_laps: Tuple[dict, ...]
+    coached_laps: Tuple[dict, ...]
     valid_laps: Tuple[dict, ...]
     invalid_laps: Tuple[dict, ...]
     best_lap: Optional[dict]
     worst_lap: Optional[dict]
-    no_valid_laps: bool
     time_diff: float
     hz: float
     track_label: str
@@ -34,31 +34,25 @@ class PromptContext:
     def from_data(cls, data: Mapping[str, Any]) -> "PromptContext":
         all_laps = tuple(data.get("laps", []))
         hz = data.get("hz", 10.0)
+        # Coaching ignores lap validity: invalid laps are still analysed.
+        # is_valid is display-only metadata.
+        coached_laps = all_laps
         valid_laps = tuple(lap for lap in all_laps if lap.get("is_valid", True))
         invalid_laps = tuple(lap for lap in all_laps if not lap.get("is_valid", True))
         requested_best_lap_num = data.get("best_lap_num")
         best_lap = next(
-            (lap for lap in valid_laps if lap.get("lap_num") == requested_best_lap_num),
+            (lap for lap in coached_laps if lap.get("lap_num") == requested_best_lap_num),
             None,
         )
-        if best_lap is None and valid_laps:
-            best_lap = min(valid_laps, key=lambda lap: lap["lap_time_s"])
-        no_valid_laps = best_lap is None
-        if best_lap is None and all_laps:
-            best_lap = min(all_laps, key=lambda lap: lap["lap_time_s"])
-        worst_lap = max(valid_laps or all_laps, key=lambda lap: lap["lap_time_s"]) if all_laps else None
+        if best_lap is None and coached_laps:
+            best_lap = min(coached_laps, key=lambda lap: lap["lap_time_s"])
+        worst_lap = max(coached_laps, key=lambda lap: lap["lap_time_s"]) if coached_laps else None
         time_diff = (
             worst_lap["lap_time_s"] - best_lap["lap_time_s"] if best_lap is not None and worst_lap is not None else 0.0
         )
         analysis_mode = data.get("analysis_mode", "diagnostic")
         ref_corners = tuple(data.get("ref_corners", []))
         analysis_notes = list(data.get("analysis_notes", []))
-        if no_valid_laps and all_laps:
-            analysis_mode = "diagnostic"
-            ref_corners = ()
-            note = "No valid completed laps were available; invalid laps are shown for diagnostics only."
-            if note not in analysis_notes:
-                analysis_notes.append(note)
         reference_lap_num = data.get("reference_lap_num")
         comparison_lap_num = data.get("comparison_lap_num")
         comparison_available = bool(
@@ -69,11 +63,11 @@ class PromptContext:
         return cls(
             data=data,
             all_laps=all_laps,
+            coached_laps=coached_laps,
             valid_laps=valid_laps,
             invalid_laps=invalid_laps,
             best_lap=best_lap,
             worst_lap=worst_lap,
-            no_valid_laps=no_valid_laps,
             time_diff=time_diff,
             hz=hz,
             track_label=data.get("track_label") or data.get("track_name") or "Unknown Track",

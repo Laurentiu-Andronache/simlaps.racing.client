@@ -22,20 +22,14 @@ def build_diagnostic_sections(ctx: PromptContext) -> List[str]:
         f"Plausible physics coverage: {ctx.plausible_frame_ratio:.0%}",
         "",
     ]
-    if ctx.no_valid_laps:
-        lines.append("Detailed corner coaching has been suppressed because no valid completed lap is available.")
-    else:
-        lines.append(
-            "Detailed corner coaching has been suppressed because the lap alignment is not trustworthy enough."
-        )
+    lines.append(
+        "Detailed corner coaching has been suppressed because the lap alignment is not trustworthy enough."
+    )
     if ctx.analysis_notes:
         lines.extend(["", "Reasons:"])
         lines.extend(f"- {note}" for note in ctx.analysis_notes)
     lines.append("")
-    if ctx.no_valid_laps:
-        lines.append("Use this session only for invalid-lap diagnostics; record at least one valid lap for coaching.")
-    else:
-        lines.append("Use this session only for diagnostics; no coaching conclusions should be drawn from it.")
+    lines.append("Use this session only for diagnostics; no coaching conclusions should be drawn from it.")
     return lines
 
 
@@ -48,11 +42,10 @@ def build_single_lap_sections(ctx: PromptContext) -> List[str]:
         f"Track: {ctx.track_label}",
         f"Car: {ctx.car_model}",
         f"Detected laps: {len(ctx.all_laps)}",
-        f"Valid laps: {len(ctx.valid_laps)}",
         f"Analysis confidence: {ctx.analysis_confidence}",
         "",
         (
-            "Only one coachable valid lap is available. Relative corner deltas, "
+            "Only one coachable lap is available. Relative corner deltas, "
             "time-loss rankings, and theoretical-best estimates are suppressed."
         ),
         "",
@@ -62,7 +55,7 @@ def build_single_lap_sections(ctx: PromptContext) -> List[str]:
     if best_lap.get("fuel_used") is not None:
         lines.append(f"- Fuel used:  {best_lap['fuel_used']:.3f}L")
     if ctx.invalid_laps:
-        lines.extend(["", "INVALID LAPS (diagnostic only; excluded from coaching):"])
+        lines.extend(["", "INVALID LAPS (coached anyway; treat deltas with care):"])
         lines.extend(f"- Lap {lap['lap_num']}: {lap['lap_time_str']} [INVALID]" for lap in ctx.invalid_laps)
     if ctx.analysis_notes:
         lines.extend(["", "ANALYSIS NOTES:"])
@@ -72,7 +65,7 @@ def build_single_lap_sections(ctx: PromptContext) -> List[str]:
 
 def build_session_context_sections(ctx: PromptContext) -> List[str]:
     data = ctx.data
-    laps = list(ctx.valid_laps)
+    laps = list(ctx.coached_laps)
     track_label = ctx.track_label
     analysis_mode = ctx.analysis_mode
     analysis_confidence = ctx.analysis_confidence
@@ -165,7 +158,7 @@ def build_session_context_sections(ctx: PromptContext) -> List[str]:
 def build_fuel_sections(ctx: PromptContext) -> List[str]:
     all_laps = list(ctx.all_laps)
     invalid_laps = list(ctx.invalid_laps)
-    laps = list(ctx.valid_laps)
+    laps = list(ctx.coached_laps)
     best_lap = ctx.best_lap
     worst_lap = ctx.worst_lap
     assert best_lap is not None and worst_lap is not None  # noqa: S101
@@ -175,7 +168,7 @@ def build_fuel_sections(ctx: PromptContext) -> List[str]:
     lines: List[str] = []
     # ── Session overview
     lines.append("SESSION OVERVIEW:")
-    lines.append(f"- Valid laps analysed: {len(laps)} of {len(all_laps)} detected")
+    lines.append(f"- Laps analysed: {len(laps)} of {len(all_laps)} detected")
     lines.append(f"- Best lap:   #{best_lap['lap_num']}  {best_lap['lap_time_str']}")
     lines.append(f"- Worst lap:  #{worst_lap['lap_num']}  {worst_lap['lap_time_str']}")
     lines.append(f"- Delta best/worst: {time_diff:.2f}s")
@@ -218,7 +211,7 @@ def build_fuel_sections(ctx: PromptContext) -> List[str]:
     lines.append("")
 
     if invalid_laps:
-        lines.append("INVALID LAPS (diagnostic only; excluded from coaching):")
+        lines.append("INVALID LAPS (coached anyway; treat deltas with care):")
         for lap in invalid_laps:
             lines.append(f"  Lap {lap['lap_num']}: {lap['lap_time_str']} [INVALID]")
         lines.append("")
@@ -249,7 +242,7 @@ def build_fuel_sections(ctx: PromptContext) -> List[str]:
 
 
 def build_lap_sections(ctx: PromptContext) -> List[str]:
-    laps = list(ctx.valid_laps)
+    laps = list(ctx.coached_laps)
     best_lap = ctx.best_lap
     worst_lap = ctx.worst_lap
     assert best_lap is not None and worst_lap is not None  # noqa: S101
@@ -299,7 +292,7 @@ def build_lap_sections(ctx: PromptContext) -> List[str]:
 
 
 def build_electronics_sections(ctx: PromptContext) -> List[str]:
-    laps = list(ctx.valid_laps)
+    laps = list(ctx.coached_laps)
     lines: List[str] = []
     # ── Electronics / aids summary
     elec_per_lap = analyze_electronics_per_lap(laps)
@@ -468,6 +461,6 @@ def build_session_sections(
     lines.extend(build_lap_sections(ctx))
     lines.extend(build_electronics_sections(ctx))
     lap_corner_map: Dict[int, Dict[int, Dict]] = {
-        lap["lap_num"]: {corner["id"]: corner for corner in lap["corners"]} for lap in ctx.valid_laps
+        lap["lap_num"]: {corner["id"]: corner for corner in lap["corners"]} for lap in ctx.coached_laps
     }
     return lines, lap_corner_map

@@ -344,13 +344,12 @@ function makeLapFilters(containerId, onChange) {
 
 function renderStats() {
   const row = document.getElementById('stats-row');
-  const validLaps = DATA.laps.filter(l => l.is_valid);
-  const bestLap = DATA.laps.find(l => l.lap_num === DATA.best_lap_num && l.is_valid) || null;
-  const maxSpd = validLaps.length ? Math.max(...validLaps.map(l => l.max_speed)) : null;
+  const bestLap = DATA.laps.find(l => l.lap_num === DATA.best_lap_num) || null;
+  const maxSpd = DATA.laps.length ? Math.max(...DATA.laps.map(l => l.max_speed)) : null;
   const stats = [
     { label: 'Laps', value: DATA.laps.length },
     { label: 'Best Lap', value: bestLap ? bestLap.lap_time_str : 'N/A' },
-    { label: 'Valid-Lap Top Speed', value: maxSpd !== null ? maxSpd.toFixed(0) + ' km/h' : 'N/A' },
+    { label: 'Top Speed', value: maxSpd !== null ? maxSpd.toFixed(0) + ' km/h' : 'N/A' },
     { label: 'Corners / Lap', value: DATA.ref_corners.length },
   ];
   row.replaceChildren();
@@ -467,7 +466,7 @@ function buildSpeedChart() {
     borderColor: lapColor(lap.lap_num), backgroundColor: 'transparent', borderWidth: 1.8, pointRadius: 0, tension: 0.3,
   }));
   const annotations = {};
-  const bestLap = DATA.laps.find(l => l.lap_num === DATA.best_lap_num && l.is_valid) || null;
+  const bestLap = DATA.laps.find(l => l.lap_num === DATA.best_lap_num) || null;
   if (bestLap) {
     bestLap.corners.forEach(c => {
       const s = (c.start_frame - bestLap.start_frame) / Math.max(bestLap.track.length - 1, 1) * 100;

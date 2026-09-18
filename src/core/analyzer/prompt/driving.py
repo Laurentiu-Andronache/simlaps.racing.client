@@ -24,7 +24,7 @@ def build_corner_sections(
     ctx: PromptContext,
     lap_corner_map: Dict[int, Dict[int, Dict]],
 ) -> List[str]:
-    laps = list(ctx.valid_laps)
+    laps = list(ctx.coached_laps)
     best_lap = ctx.best_lap
     assert best_lap is not None  # noqa: S101
     ref_corners = list(ctx.ref_corners)
@@ -68,15 +68,17 @@ def build_corner_sections(
         if is_low_conf and abs(seg_delta) > 3.0:
             continue
         _corner_seg_deltas[cid] = seg_delta
-    _TOP_CORNER_COUNT = 5
+    # Scale with corner count so long tracks (e.g. Nordschleife, 50+
+    # corners) still get detailed data for their biggest losses.
+    top_corner_count = min(10, max(5, len(ref_corners) // 5))
     top_corner_ids = {
-        cid for cid, _ in sorted(_corner_seg_deltas.items(), key=lambda item: item[1], reverse=True)[:_TOP_CORNER_COUNT]
+        cid for cid, _ in sorted(_corner_seg_deltas.items(), key=lambda item: item[1], reverse=True)[:top_corner_count]
     }
     # Only truncate when ranking produced data and there are more corners
     # than the cutoff; otherwise emit full breakdowns for everything.
-    truncate_corners = bool(top_corner_ids) and len(ref_corners) > _TOP_CORNER_COUNT
+    truncate_corners = bool(top_corner_ids) and len(ref_corners) > top_corner_count
     if truncate_corners:
-        lines.append(f"NOTE: Full breakdowns below cover only the {_TOP_CORNER_COUNT} corners with the")
+        lines.append(f"NOTE: Full breakdowns below cover only the {top_corner_count} corners with the")
         lines.append("      largest time loss (compare - ref). Remaining corners are summarized in one line each.")
         lines.append("")
 
@@ -259,7 +261,7 @@ def build_straight_sections(
     ctx: PromptContext,
     lap_corner_map: Dict[int, Dict[int, Dict]],
 ) -> List[str]:
-    laps = list(ctx.valid_laps)
+    laps = list(ctx.coached_laps)
     best_lap = ctx.best_lap
     assert best_lap is not None  # noqa: S101
     ref_corners = list(ctx.ref_corners)
@@ -379,7 +381,7 @@ def build_braking_sections(
     ctx: PromptContext,
     lap_corner_map: Dict[int, Dict[int, Dict]],
 ) -> List[str]:
-    laps = list(ctx.valid_laps)
+    laps = list(ctx.coached_laps)
     best_lap = ctx.best_lap
     assert best_lap is not None  # noqa: S101
     ref_corners = list(ctx.ref_corners)
@@ -512,7 +514,7 @@ def build_grip_sections(
     ctx: PromptContext,
     lap_corner_map: Dict[int, Dict[int, Dict]],
 ) -> List[str]:
-    laps = list(ctx.valid_laps)
+    laps = list(ctx.coached_laps)
     best_lap = ctx.best_lap
     assert best_lap is not None  # noqa: S101
     ref_corners = list(ctx.ref_corners)
@@ -635,7 +637,7 @@ def build_time_loss_sections(
     ctx: PromptContext,
     lap_corner_map: Dict[int, Dict[int, Dict]],
 ) -> List[str]:
-    laps = list(ctx.valid_laps)
+    laps = list(ctx.coached_laps)
     best_lap = ctx.best_lap
     assert best_lap is not None  # noqa: S101
     ref_corners = list(ctx.ref_corners)

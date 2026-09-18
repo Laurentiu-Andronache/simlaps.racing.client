@@ -13,7 +13,7 @@ def build_aero_sections(
     ctx: PromptContext,
     lap_corner_map: Dict[int, Dict[int, Dict]],
 ) -> List[str]:
-    laps = list(ctx.valid_laps)
+    laps = list(ctx.coached_laps)
     list(ctx.ref_corners)
     lines: List[str] = []
     # ── DRS/Aerodynamics analysis — gate on data presence
@@ -176,7 +176,7 @@ def build_gearing_sections(
     ctx: PromptContext,
     lap_corner_map: Dict[int, Dict[int, Dict]],
 ) -> List[str]:
-    laps = list(ctx.valid_laps)
+    laps = list(ctx.coached_laps)
     ref_corners = list(ctx.ref_corners)
     lines: List[str] = []
     # ── Gear optimization analysis (if data available)
@@ -246,7 +246,7 @@ def build_brake_sections(
     ctx: PromptContext,
     lap_corner_map: Dict[int, Dict[int, Dict]],
 ) -> List[str]:
-    laps = list(ctx.valid_laps)
+    laps = list(ctx.coached_laps)
     ref_corners = list(ctx.ref_corners)
     lines: List[str] = []
     # ── Brake bias analysis (if data available)
@@ -363,7 +363,7 @@ def build_suspension_sections(
     lap_corner_map: Dict[int, Dict[int, Dict]],
 ) -> List[str]:
     data = ctx.data
-    laps = list(ctx.valid_laps)
+    laps = list(ctx.coached_laps)
     list(ctx.ref_corners)
     lines: List[str] = []
     # ── Suspension / alignment analysis
