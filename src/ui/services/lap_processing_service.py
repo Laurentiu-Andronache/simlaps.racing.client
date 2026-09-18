@@ -64,10 +64,10 @@ class LapProcessingService:
                 lap.lap_time_ms,
                 lap.lap_number,
                 lap_type or "VALID",
+                session_id=session.session_id,
+                result_id=getattr(lap, "result_id", None),
+                original_lap_number=lap.lap_number,
             )
-            bind_boundary = getattr(telemetry_capture, "bind_lap_boundary", None)
-            if callable(bind_boundary):
-                bind_boundary(session.session_id, lap)
 
         elif config.telemetry_enabled and telemetry_capture:
             # A lap-complete event is too late to begin a useful capture

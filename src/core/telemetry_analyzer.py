@@ -149,7 +149,7 @@ def _clean_completed_lap_track(
 
     completed_time = _optional_float(completed_lap_time_ms)
     if completed_time is None or completed_time <= 0:
-        return finalize(active_track), 0, paused_removed, True
+        return finalize(active_track), 0, paused_removed, False
 
     timed_points: List[tuple[int, float]] = []
     for index, point in enumerate(active_track):
@@ -187,16 +187,22 @@ def _clean_completed_lap_track(
         )
 
     if reset_indices:
-        reset_index = reset_indices[-1]
-        candidate = active_track[reset_index:]
-        suffix_timers = [
-            timer for index, timer in timed_points if index >= reset_index
-        ]
-        if len(suffix_timers) < 2:
+        candidates = []
+        epoch_starts = [0] + reset_indices
+        epoch_ends = reset_indices + [len(active_track)]
+        for epoch_start, epoch_end in zip(epoch_starts, epoch_ends, strict=True):
+            candidate = active_track[epoch_start:epoch_end]
+            suffix_timers = [
+                timer for index, timer in timed_points if epoch_start <= index < epoch_end
+            ]
+            if len(suffix_timers) < 2:
+                continue
+            timer_span = suffix_timers[-1] - suffix_timers[0]
+            if duration_agrees(candidate, timer_span):
+                candidates.append((epoch_start, candidate))
+        if len(candidates) != 1:
             return finalize(active_track), 0, paused_removed, False
-        timer_span = suffix_timers[-1] - suffix_timers[0]
-        if not duration_agrees(candidate, timer_span):
-            return finalize(active_track), 0, paused_removed, False
+        reset_index, candidate = candidates[0]
         return finalize(candidate), reset_index, paused_removed, True
 
     timer_start = timed_points[0][1]
@@ -210,11 +216,29 @@ def _clean_completed_lap_track(
     if timer_span <= completed_time + trim_tolerance_ms:
         return finalize(active_track), 0, paused_removed, duration_agrees(active_track, timer_span)
 
+    # A long monotonic span is only eligible for evidenced pit-prefix
+    # trimming. Without a pit or BackToPit signal, choosing a suffix would
+    # manufacture a plausible lap from an arbitrary slice of telemetry.
     target_timer = timer_end - completed_time
     trim_index = next(
         (index for index, timer in timed_points if timer >= target_timer),
         0,
     )
+    pit_prefix_evidenced = any(
+        bool(point.get("is_in_pit"))
+        or bool(point.get("is_in_pit_lane"))
+        or (
+            "pit" in str(point.get("status_name") or "").casefold()
+            and (
+                "back" in str(point.get("status_name") or "").casefold()
+                or "lane" in str(point.get("status_name") or "").casefold()
+            )
+        )
+        for point in active_track[: trim_index + 1]
+    )
+    if not pit_prefix_evidenced:
+        return finalize(active_track), 0, paused_removed, False
+
     candidate = active_track[trim_index:]
     if trim_index <= 0 or len(candidate) < 20:
         return finalize(active_track), 0, paused_removed, False
@@ -279,7 +303,7 @@ class TelemetryAnalyzer:
             Component.ANALYZER, "Starting analysis", frames=len(frames), hz=hz, track=track_name, prefix=output_prefix
         )
 
-        if len(frames) < 20:
+        if len(frames) < 20 and not game_lap_boundaries:
             log_warning(
                 Component.ANALYZER, "Analysis skipped: insufficient frames", frames=len(frames), prefix=output_prefix
             )
@@ -300,8 +324,11 @@ class TelemetryAnalyzer:
         standing_start = (
             str(first_static.get("session_name") or "").casefold() == "race"
             and first_graphics.get("completed_laps") == 0
-            and isinstance(first_graphics.get("current_lap_time_ms"), (int, float))
-            and first_graphics.get("current_lap_time_ms", 0) <= 1_000
+            and isinstance(
+                first_graphics.get("current_lap_time_ms", first_graphics.get("current_time_ms")),
+                (int, float),
+            )
+            and first_graphics.get("current_lap_time_ms", first_graphics.get("current_time_ms", 0)) <= 1_000
         )
         if not standing_start:
             for i, f in enumerate(frames):
@@ -316,7 +343,7 @@ class TelemetryAnalyzer:
                         break
 
         track = build_track(frames, hz=hz, start_idx=drive_start)
-        if not track:
+        if not track and not game_lap_boundaries:
             log_warning(Component.ANALYZER, "No plausible telemetry frames after quality filtering")
             return await self._generate_empty_result(output_prefix)
 
@@ -386,6 +413,8 @@ class TelemetryAnalyzer:
         lap_times_ms = None
         lap_numbers = None
         lap_source_numbers = None
+        lap_session_ids = None
+        lap_result_ids = None
         lap_types = None
         timing_bounds = _detect_laps_by_timing_state(track, hz=hz) or []
 
@@ -395,7 +424,7 @@ class TelemetryAnalyzer:
             if isinstance(game_lap_boundaries[0], (tuple, list)) or hasattr(game_lap_boundaries[0], "frame_index"):
                 initial_completed_laps = 0
                 try:
-                    initial_completed_laps = int(track[0].get("completed_laps") or 0)
+                    initial_completed_laps = int(track[0].get("completed_laps") or 0) if track else 0
                 except (TypeError, ValueError):
                     initial_completed_laps = 0
 
@@ -432,11 +461,9 @@ class TelemetryAnalyzer:
                     # enrich those boundaries with matching log metadata by
                     # lap time instead of trusting callback arrival order.
                     track_by_frame = {point["frame"]: point for point in track}
-                    shared_lap_validity = self._session_manager.get_all_lap_validity()
-                    shared_lap_times = self._session_manager.get_all_lap_times()
                     unused_markers = list(sorted_markers)
-                    reconciled_markers = []
                     callback_frame_deltas = []
+                    timing_slots = []
                     for idx, frame in enumerate(timing_bounds):
                         point = track_by_frame.get(frame, {})
                         timing_lap_time = point.get("last_lap_time_ms")
@@ -444,26 +471,60 @@ class TelemetryAnalyzer:
                             unused_markers,
                             timing_lap_time,
                         )
+                        if match is not None and match[3] in {"OUTLAP", "INLAP", "ABORTED"}:
+                            timed_markers = [
+                                marker
+                                for marker in unused_markers
+                                if marker[3] not in {"OUTLAP", "INLAP", "ABORTED"}
+                            ]
+                            preferred = _nearest_lap_marker_by_time(timed_markers, timing_lap_time)
+                            if preferred is not None:
+                                match = preferred
                         if match is not None:
                             unused_markers.remove(match)
                             callback_frame_deltas.append(abs(match[0] - frame))
+                        timing_slots.append([frame, timing_lap_time, match, idx])
+
+                    # A delayed or rounded log callback can miss a matching
+                    # SHM last-lap value. Reuse an unclaimed physical timing
+                    # slot by frame proximity before creating a new boundary;
+                    # this retains the captured result without consulting a
+                    # shared map keyed only by its displayed number.
+                    for marker in list(unused_markers):
+                        available = [slot for slot in timing_slots if slot[2] is None]
+                        if not available:
+                            timing_slots.append([marker[0], None, marker, len(timing_slots)])
+                            unused_markers.remove(marker)
+                            continue
+                        slot = min(available, key=lambda candidate: abs(marker[0] - candidate[0]))
+                        slot[2] = marker
+                        callback_frame_deltas.append(abs(marker[0] - slot[0]))
+                        unused_markers.remove(marker)
+
+                    timing_slots.sort(key=lambda slot: slot[0])
+                    reconciled_markers = []
+                    for order, (frame, timing_lap_time, match, _slot_index) in enumerate(timing_slots):
                         marker_number = match[2] if match is not None else None
                         source_number = match[4] if match is not None else None
                         if source_number is None:
                             source_number = marker_number
-                        display_number = initial_completed_laps + idx + 1
-                        fallback_type = (
-                            "VALID"
-                            if shared_lap_validity.get(display_number, True) is not False
-                            else "INVALID_GAME"
+                        display_number = (
+                            marker_number
+                            if marker_number is not None
+                            else initial_completed_laps + order + 1
                         )
                         reconciled_markers.append(
                             (
                                 frame,
-                                timing_lap_time if isinstance(timing_lap_time, (int, float)) and timing_lap_time > 0
-                                else (match[1] if match else shared_lap_times.get(display_number)),
+                                match[1]
+                                if match is not None and isinstance(match[1], (int, float)) and match[1] > 0
+                                else (
+                                    timing_lap_time
+                                    if isinstance(timing_lap_time, (int, float)) and timing_lap_time > 0
+                                    else None
+                                ),
                                 display_number,
-                                match[3] if match else fallback_type,
+                                match[3] if match else "VALID",
                                 source_number,
                                 match[5] if match else None,
                                 match[6] if match else None,
@@ -475,6 +536,8 @@ class TelemetryAnalyzer:
                     lap_numbers = [marker[2] for marker in reconciled_markers]
                     lap_types = [marker[3] for marker in reconciled_markers]
                     lap_source_numbers = [marker[4] for marker in reconciled_markers]
+                    lap_session_ids = [marker[5] for marker in reconciled_markers]
+                    lap_result_ids = [marker[6] for marker in reconciled_markers]
                     materially_delayed = any(delta > max(2, int(round(hz * 2.0))) for delta in callback_frame_deltas)
                     if len(sorted_markers) != len(timing_bounds) or materially_delayed:
                         analysis_notes.append(
@@ -498,6 +561,8 @@ class TelemetryAnalyzer:
                         marker[4] if marker[4] is not None else marker[2]
                         for marker in sorted_markers
                     ]
+                    lap_session_ids = [marker[5] for marker in sorted_markers]
+                    lap_result_ids = [marker[6] for marker in sorted_markers]
                     log_info(
                         Component.ANALYZER,
                         "Lap detection successful",
@@ -524,16 +589,12 @@ class TelemetryAnalyzer:
                 # With no log boundary there is no result identity to carry;
                 # SHM's ordered completion stream is the only authoritative
                 # fallback. It is intentionally limited to this legacy path.
-                shared_lap_times = self._session_manager.get_all_lap_times()
-                shared_lap_validity = self._session_manager.get_all_lap_validity()
                 lap_times_ms = []
                 lap_types = []
-                for index, frame in enumerate(timing_bounds, start=1):
+                for _index, frame in enumerate(timing_bounds, start=1):
                     point = next((item for item in track if item["frame"] == frame), {})
-                    lap_times_ms.append(shared_lap_times.get(index) or point.get("last_lap_time_ms") or None)
+                    lap_times_ms.append(point.get("last_lap_time_ms") or None)
                     validity = point.get("is_valid_lap")
-                    if index in shared_lap_validity:
-                        validity = shared_lap_validity[index]
                     lap_types.append("VALID" if validity is not False else "INVALID_GAME")
                 log_info(
                     Component.ANALYZER,
@@ -562,6 +623,8 @@ class TelemetryAnalyzer:
                 if lap_source_numbers and i < len(lap_source_numbers)
                 else None
             )
+            session_id = lap_session_ids[i] if lap_session_ids and i < len(lap_session_ids) else None
+            result_id = lap_result_ids[i] if lap_result_ids and i < len(lap_result_ids) else None
             lap_type = lap_types[i] if lap_types and i < len(lap_types) else "VALID"
             if lap_type in {"OUTLAP", "INLAP", "ABORTED"}:
                 continue
@@ -577,10 +640,10 @@ class TelemetryAnalyzer:
                 trimmed_lap_segments += 1
                 trimmed_prefix_frames += prefix_removed
             paused_frames_removed += pause_removed
-            if len(lap_track) < 2:
-                continue
-
-            effective_start_frame = lap_track[0]["frame"]
+            # Keep the official result when telemetry is absent or too short.
+            # Derived metrics remain unavailable, but dropping the result here
+            # would make a captured callback disappear from the report.
+            effective_start_frame = lap_track[0]["frame"] if lap_track else s
 
             lap_progress_ratio = _fraction(
                 lap_track,
@@ -671,6 +734,8 @@ class TelemetryAnalyzer:
                     "fuel_used": fuel_used,
                     "is_valid": lap_type == "VALID",
                     "source_lap_num": source_lap_num,
+                    "session_id": session_id,
+                    "result_id": result_id,
                     "track": lap_track,
                     "canonical_track": canonical_lap["samples"] if canonical_lap else None,
                     "corners": corners,
@@ -736,7 +801,12 @@ class TelemetryAnalyzer:
         # its telemetry coverage is unavailable.
         best_lap = min(laps, key=lambda lap: lap["lap_time_s"]) if laps else None
         laps_with_corners = [lap for lap in coached_laps if lap.get("corners")]
-        ref_lap = min(laps_with_corners, key=lambda lap: lap["lap_time_s"]) if laps_with_corners else best_lap
+        trusted_candidates = [lap for lap in coached_laps if lap.get("derived_metrics_trustworthy", True)]
+        ref_lap = (
+            min(laps_with_corners, key=lambda lap: lap["lap_time_s"])
+            if laps_with_corners
+            else (min(trusted_candidates, key=lambda lap: lap["lap_time_s"]) if trusted_candidates else None)
+        )
         coachable_laps = [lap for lap in laps_with_corners if lap.get("confidence_label") != "low"]
         comparison_pool = coachable_laps or laps_with_corners or coached_laps
         comparison_pool = sorted(
@@ -824,10 +894,7 @@ class TelemetryAnalyzer:
         # ── Session-over-session comparison
         _track_label = data.get("track_label") or data.get("track_name") or ""
         _car = data.get("car") or ""
-        _laps_with_fuel = [
-            lap for lap in coached_laps
-            if lap.get("is_valid", True) and lap.get("fuel_used") is not None
-        ]
+        _laps_with_fuel = [lap for lap in coached_laps if lap.get("fuel_used") is not None]
         _avg_fuel = sum(lap["fuel_used"] for lap in _laps_with_fuel) / len(_laps_with_fuel) if _laps_with_fuel else None
         _prev = _load_previous_summary(self._output_dir, _track_label, _car) if best_lap else None
         if _prev and best_lap:
@@ -836,7 +903,7 @@ class TelemetryAnalyzer:
             analysis_notes.append(
                 f"Last session best: {_prev['best_lap_time_str']} (today {best_lap['lap_time_str']}, {_delta_str})."
             )
-        if best_lap:
+        if best_lap and coached_laps:
             _write_session_summary(
                 self._output_dir,
                 _track_label,

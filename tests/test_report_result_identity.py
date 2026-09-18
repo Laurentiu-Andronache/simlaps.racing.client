@@ -1,5 +1,7 @@
 """Regression coverage for capture-result identity and telemetry trust."""
 
+import json
+import re
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock
 
@@ -81,10 +83,160 @@ async def test_identity_boundary_does_not_use_stale_display_number_maps(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_identity_callback_late_frame_keeps_shm_boundary_and_result_metadata(tmp_path):
+    analyzer = TelemetryAnalyzer(str(tmp_path))
+    frames = []
+    for index in range(260):
+        current = index * 100 if index < 200 else (index - 200) * 100
+        last = 19_998 if index == 200 else 0
+        frames.append(_frame(index, current, last=last))
+
+    result = await analyzer.analyze(
+        frames,
+        hz=10.0,
+        game_lap_boundaries=[
+            # The parser callback arrived five samples after the SHM finish.
+            LapBoundary(205, 20_000, 7, "INVALID_GAME", "session-a", "result-late", 3),
+        ],
+        output_prefix="late_identity",
+    )
+
+    data = json.loads(
+        re.search(
+            r"const DATA = (.*);\nconst LAP_COLORS",
+            (tmp_path / "telemetry_late_identity.html").read_text(encoding="utf-8"),
+        ).group(1)
+    )
+    lap = data["laps"][0]
+    assert result.laps_detected == 1
+    assert lap["end_frame"] == 200
+    assert lap["lap_num"] == 7
+    assert lap["original_lap_number"] == 3
+    assert lap["result_id"] == "result-late"
+    assert lap["is_valid"] is False
+    assert lap["derived_metrics_trustworthy"] is True
+
+
+@pytest.mark.asyncio
+async def test_oversized_timer_without_pit_evidence_stays_untrusted(tmp_path):
+    analyzer = TelemetryAnalyzer(str(tmp_path))
+    frames = [_frame(index, index * 100) for index in range(301)]
+    result = await analyzer.analyze(
+        frames,
+        hz=10.0,
+        game_lap_boundaries=[LapBoundary(300, 20_000, 1, "VALID", "session-a", "result-a", 1)],
+        output_prefix="un evidenced_prefix",
+    )
+
+    assert result.laps_detected == 1
+    html = (tmp_path / "telemetry_un evidenced_prefix.html").read_text(encoding="utf-8")
+    data = json.loads(re.search(r"const DATA = (.*);\nconst LAP_COLORS", html).group(1))
+    assert data["laps"][0]["derived_metrics_trustworthy"] is False
+    assert data["laps"][0]["max_speed"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("frame_count", [0, 1, 10])
+async def test_missing_telemetry_retains_captured_official_result(tmp_path, frame_count):
+    analyzer = TelemetryAnalyzer(str(tmp_path))
+    result = await analyzer.analyze(
+        [_frame(index, index * 100) for index in range(frame_count)],
+        hz=10.0,
+        game_lap_boundaries=[LapBoundary(max(frame_count - 1, 0), 20_000, 1, "VALID", "session-a", "result-a", 1)],
+        output_prefix=f"missing_{frame_count}",
+    )
+
+    assert result.laps_detected == 1
+    assert result.best_lap_time == pytest.approx(20.0)
+
+
+@pytest.mark.asyncio
+async def test_missing_official_duration_keeps_result_but_suppresses_derived_metrics(tmp_path):
+    analyzer = TelemetryAnalyzer(str(tmp_path))
+    result = await analyzer.analyze(
+        [_frame(index, index * 100) for index in range(100)],
+        hz=10.0,
+        game_lap_boundaries=[LapBoundary(99, None, 1, "VALID", "session-a", "result-a", 1)],
+        output_prefix="missing_duration",
+    )
+
+    assert result.laps_detected == 1
+    html = (tmp_path / "telemetry_missing_duration.html").read_text(encoding="utf-8")
+    data = json.loads(re.search(r"const DATA = (.*);\nconst LAP_COLORS", html).group(1))
+    assert data["laps"][0]["derived_metrics_trustworthy"] is False
+    assert data["laps"][0]["max_speed"] is None
+
+
+@pytest.mark.asyncio
+async def test_unique_completed_timer_epoch_is_selected_between_resets(tmp_path):
+    analyzer = TelemetryAnalyzer(str(tmp_path))
+    frames = []
+    for index in range(255):
+        if index < 50:
+            timer = index * 100
+        elif index < 250:
+            timer = (index - 50) * 100
+        else:
+            timer = (index - 250) * 100
+        frames.append(_frame(index, timer))
+
+    result = await analyzer.analyze(
+        frames,
+        hz=10.0,
+        game_lap_boundaries=[LapBoundary(254, 20_000, 1, "VALID", "session-a", "result-a", 1)],
+        output_prefix="epoch_selection",
+    )
+
+    data = json.loads(
+        re.search(
+            r"const DATA = (.*);\nconst LAP_COLORS",
+            (tmp_path / "telemetry_epoch_selection.html").read_text(encoding="utf-8"),
+        ).group(1)
+    )
+    lap = data["laps"][0]
+    assert result.laps_detected == 1
+    assert lap["start_frame"] == 50
+    assert lap["derived_metrics_trustworthy"] is True
+
+
+@pytest.mark.asyncio
+async def test_equal_time_outlap_does_not_claim_timed_result(tmp_path):
+    analyzer = TelemetryAnalyzer(str(tmp_path))
+    frames = []
+    for index in range(170):
+        if index < 60:
+            timer = index * 100
+        elif index < 160:
+            timer = (index - 60) * 100
+        else:
+            timer = (index - 160) * 100
+        frames.append(_frame(index, timer, last=10_000 if index == 160 else 0))
+
+    result = await analyzer.analyze(
+        frames,
+        hz=10.0,
+        game_lap_boundaries=[
+            LapBoundary(60, 10_000, 1, "OUTLAP", "session-a", "outlap", 1),
+            LapBoundary(165, 10_000, 2, "INVALID_GAME", "session-a", "timed", 2),
+        ],
+        output_prefix="equal_time_outlap",
+    )
+
+    data = json.loads(
+        re.search(
+            r"const DATA = (.*);\nconst LAP_COLORS",
+            (tmp_path / "telemetry_equal_time_outlap.html").read_text(encoding="utf-8"),
+        ).group(1)
+    )
+    assert result.laps_detected == 1
+    assert data["laps"][0]["lap_num"] == 2
+    assert data["laps"][0]["result_id"] == "timed"
+    assert data["laps"][0]["derived_metrics_trustworthy"] is True
+
+
+@pytest.mark.asyncio
 async def test_partial_timer_coverage_keeps_official_result_without_metrics(tmp_path):
     analyzer = TelemetryAnalyzer(str(tmp_path))
-    analyzer._generate_html = AsyncMock(return_value="report.html")
-    analyzer._generate_ai_prompt = AsyncMock(return_value="prompt.txt")
     frames = [_frame(i, i * 100) for i in range(100)]
 
     result = await analyzer.analyze(
@@ -94,11 +246,54 @@ async def test_partial_timer_coverage_keeps_official_result_without_metrics(tmp_
         output_prefix="partial",
     )
 
-    data = analyzer._generate_html.await_args.args[0]
+    assert result.html_path is not None
+    assert result.ai_prompt_path is not None
+    html = (tmp_path / "telemetry_partial.html").read_text(encoding="utf-8")
+    data = json.loads(re.search(r"const DATA = (.*);\nconst LAP_COLORS", html).group(1))
     lap = data["laps"][0]
     assert result.best_lap_time == pytest.approx(20.0)
     assert lap["derived_metrics_trustworthy"] is False
     assert lap["max_speed"] is None
     assert lap["avg_speed"] is None
     assert lap["fuel_used"] is None
-    assert data["coaching_lap_nums"] == []
+    assert data["laps"][0]["derived_metrics_trustworthy"] is False
+    prompt = (tmp_path / "telemetry_partial_ai_prompt.txt").read_text(encoding="utf-8")
+    assert "filter(v => Number.isFinite(v))" in html
+    assert "Top Speed" in html
+    assert "Lap 1: 0:20.00 [VALID] top speed N/A km/h" in prompt
+
+
+@pytest.mark.asyncio
+async def test_rendered_outputs_keep_trustworthy_and_official_results_separate(tmp_path):
+    analyzer = TelemetryAnalyzer(str(tmp_path))
+    frames = []
+    for index in range(300):
+        # The first segment's official duration exceeds its sampled coverage;
+        # the second segment has matching timer and sampled durations.
+        if index < 100:
+            timer = index * 100
+        elif index < 200:
+            timer = (index - 100) * 100
+        else:
+            timer = (index - 200) * 100
+        last = 19_998 if index == 100 else (9_998 if index == 200 else 0)
+        frame = _frame(index, timer, last=last)
+        frames.append(frame)
+    result = await analyzer.analyze(
+        frames,
+        hz=10.0,
+        game_lap_boundaries=[
+            LapBoundary(105, 20_000, 1, "VALID", "session-a", "result-a", 1),
+            LapBoundary(205, 10_000, 2, "INVALID_GAME", "session-a", "result-b", 2),
+        ],
+        output_prefix="mixed",
+    )
+
+    assert result.laps_detected == 2
+    html = (tmp_path / "telemetry_mixed.html").read_text(encoding="utf-8")
+    prompt = (tmp_path / "telemetry_mixed_ai_prompt.txt").read_text(encoding="utf-8")
+    data = json.loads(re.search(r"const DATA = (.*);\nconst LAP_COLORS", html).group(1))
+    assert [lap["result_id"] for lap in data["laps"]] == ["result-a", "result-b"]
+    assert [lap["derived_metrics_trustworthy"] for lap in data["laps"]] == [False, True]
+    assert "Lap 1: 0:20.00 [VALID] top speed N/A km/h" in prompt
+    assert "Lap 2: 0:10.00 [INVALID] top speed 100.0 km/h" in prompt

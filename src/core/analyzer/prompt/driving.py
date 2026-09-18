@@ -25,7 +25,7 @@ def build_corner_sections(
     lap_corner_map: Dict[int, Dict[int, Dict]],
 ) -> List[str]:
     laps = list(ctx.coached_laps)
-    best_lap = ctx.best_lap
+    best_lap = ctx.coaching_reference_lap
     assert best_lap is not None  # noqa: S101
     ref_corners = list(ctx.ref_corners)
     corner_speeds = ctx.corner_speeds
@@ -262,7 +262,7 @@ def build_straight_sections(
     lap_corner_map: Dict[int, Dict[int, Dict]],
 ) -> List[str]:
     laps = list(ctx.coached_laps)
-    best_lap = ctx.best_lap
+    best_lap = ctx.coaching_reference_lap
     assert best_lap is not None  # noqa: S101
     ref_corners = list(ctx.ref_corners)
     reference_lap_num = ctx.reference_lap_num
@@ -382,7 +382,7 @@ def build_braking_sections(
     lap_corner_map: Dict[int, Dict[int, Dict]],
 ) -> List[str]:
     laps = list(ctx.coached_laps)
-    best_lap = ctx.best_lap
+    best_lap = ctx.coaching_reference_lap
     assert best_lap is not None  # noqa: S101
     ref_corners = list(ctx.ref_corners)
     reference_lap_num = ctx.reference_lap_num
@@ -515,7 +515,7 @@ def build_grip_sections(
     lap_corner_map: Dict[int, Dict[int, Dict]],
 ) -> List[str]:
     laps = list(ctx.coached_laps)
-    best_lap = ctx.best_lap
+    best_lap = ctx.coaching_reference_lap
     assert best_lap is not None  # noqa: S101
     ref_corners = list(ctx.ref_corners)
     hz = ctx.hz
@@ -638,7 +638,7 @@ def build_time_loss_sections(
     lap_corner_map: Dict[int, Dict[int, Dict]],
 ) -> List[str]:
     laps = list(ctx.coached_laps)
-    best_lap = ctx.best_lap
+    best_lap = ctx.coaching_reference_lap
     assert best_lap is not None  # noqa: S101
     ref_corners = list(ctx.ref_corners)
     reference_lap_num = ctx.reference_lap_num

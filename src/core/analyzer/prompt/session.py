@@ -28,6 +28,14 @@ def build_diagnostic_sections(ctx: PromptContext) -> List[str]:
         f"Plausible physics coverage: {ctx.plausible_frame_ratio:.0%}",
         "",
     ]
+    lines.append("OFFICIAL RESULTS (derived telemetry metrics may be unavailable):")
+    for lap in ctx.all_laps:
+        validity = "VALID" if lap.get("is_valid", True) else "INVALID"
+        lines.append(
+            f"- Lap {lap.get('lap_num')}: {lap.get('lap_time_str', 'N/A')} [{validity}] "
+            f"top speed {_format_metric(lap.get('max_speed'))} km/h"
+        )
+    lines.append("")
     lines.append(
         "Detailed corner coaching has been suppressed because the lap alignment is not trustworthy enough."
     )
@@ -175,7 +183,14 @@ def build_fuel_sections(ctx: PromptContext) -> List[str]:
     # ── Session overview
     lines.append("SESSION OVERVIEW:")
     lines.append(f"- Laps analysed: {len(laps)} of {len(all_laps)} detected")
-    lines.append(f"- Best lap:   #{best_lap['lap_num']}  {best_lap['lap_time_str']}")
+    if ctx.coaching_reference_lap is not None and ctx.coaching_reference_lap["lap_num"] != best_lap["lap_num"]:
+        lines.append(f"- Official best result:   #{best_lap['lap_num']}  {best_lap['lap_time_str']}")
+        lines.append(
+            f"- Coaching reference:      #{ctx.coaching_reference_lap['lap_num']}  "
+            f"{ctx.coaching_reference_lap['lap_time_str']}"
+        )
+    else:
+        lines.append(f"- Best lap:   #{best_lap['lap_num']}  {best_lap['lap_time_str']}")
     lines.append(f"- Worst lap:  #{worst_lap['lap_num']}  {worst_lap['lap_time_str']}")
     lines.append(f"- Delta best/worst: {time_diff:.2f}s")
     speeds = [lap.get("max_speed") for lap in laps if isinstance(lap.get("max_speed"), (int, float))]
@@ -231,10 +246,11 @@ def build_fuel_sections(ctx: PromptContext) -> List[str]:
         if lap1_time > lap2_time * 1.03:
             outliers.append((1, "First lap - likely cold tires or traffic"))
 
+    coaching_best_lap = ctx.coaching_reference_lap or best_lap
     for lap in laps:
-        if lap["lap_num"] == best_lap["lap_num"]:
+        if coaching_best_lap is not None and lap["lap_num"] == coaching_best_lap["lap_num"]:
             continue
-        delta_pct = (lap["lap_time_s"] - best_lap["lap_time_s"]) / best_lap["lap_time_s"]
+        delta_pct = (lap["lap_time_s"] - coaching_best_lap["lap_time_s"]) / coaching_best_lap["lap_time_s"]
         if delta_pct > 0.05:
             outliers.append((lap["lap_num"], f"{delta_pct * 100:.1f}% slower than best lap"))
 
@@ -250,7 +266,7 @@ def build_fuel_sections(ctx: PromptContext) -> List[str]:
 
 def build_lap_sections(ctx: PromptContext) -> List[str]:
     laps = list(ctx.coached_laps)
-    best_lap = ctx.best_lap
+    best_lap = ctx.coaching_reference_lap or ctx.best_lap
     worst_lap = ctx.worst_lap
     assert best_lap is not None and worst_lap is not None  # noqa: S101
     hz = ctx.hz

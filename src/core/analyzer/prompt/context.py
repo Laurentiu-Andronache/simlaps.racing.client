@@ -14,6 +14,7 @@ class PromptContext:
     valid_laps: Tuple[dict, ...]
     invalid_laps: Tuple[dict, ...]
     best_lap: Optional[dict]
+    coaching_reference_lap: Optional[dict]
     worst_lap: Optional[dict]
     time_diff: float
     hz: float
@@ -48,9 +49,12 @@ class PromptContext:
         )
         if best_lap is None and coached_laps:
             best_lap = min(coached_laps, key=lambda lap: lap["lap_time_s"])
+        coaching_reference_lap = min(coached_laps, key=lambda lap: lap["lap_time_s"]) if coached_laps else None
         worst_lap = max(coached_laps, key=lambda lap: lap["lap_time_s"]) if coached_laps else None
         time_diff = (
-            worst_lap["lap_time_s"] - best_lap["lap_time_s"] if best_lap is not None and worst_lap is not None else 0.0
+            worst_lap["lap_time_s"] - coaching_reference_lap["lap_time_s"]
+            if coaching_reference_lap is not None and worst_lap is not None
+            else 0.0
         )
         analysis_mode = data.get("analysis_mode", "diagnostic")
         ref_corners = tuple(data.get("ref_corners", []))
@@ -69,6 +73,7 @@ class PromptContext:
             valid_laps=valid_laps,
             invalid_laps=invalid_laps,
             best_lap=best_lap,
+            coaching_reference_lap=coaching_reference_lap,
             worst_lap=worst_lap,
             time_diff=time_diff,
             hz=hz,

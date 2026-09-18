@@ -84,6 +84,10 @@ async def render_html(
                 "avg_speed": round(lap["avg_speed"], 1) if lap.get("avg_speed") is not None else None,
                 "fuel_used": (round(lap["fuel_used"], 3) if lap.get("fuel_used") is not None else None),
                 "is_valid": lap.get("is_valid", True),
+                "session_id": lap.get("session_id"),
+                "result_id": lap.get("result_id"),
+                "original_lap_number": lap.get("source_lap_num"),
+                "derived_metrics_trustworthy": lap.get("derived_metrics_trustworthy", True),
                 "confidence_label": lap.get("confidence_label"),
                 "track": track_slim,
                 "corners": corners_json,
@@ -345,7 +349,11 @@ function makeLapFilters(containerId, onChange) {
 function renderStats() {
   const row = document.getElementById('stats-row');
   const bestLap = DATA.laps.find(l => l.lap_num === DATA.best_lap_num) || null;
-  const maxSpd = DATA.laps.length ? Math.max(...DATA.laps.map(l => l.max_speed)) : null;
+  const speedValues = DATA.laps
+    .filter(l => l.derived_metrics_trustworthy !== false)
+    .map(l => l.max_speed)
+    .filter(v => Number.isFinite(v));
+  const maxSpd = speedValues.length ? Math.max(...speedValues) : null;
   const stats = [
     { label: 'Laps', value: DATA.laps.length },
     { label: 'Best Lap', value: bestLap ? bestLap.lap_time_str : 'N/A' },
