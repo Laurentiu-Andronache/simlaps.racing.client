@@ -149,7 +149,11 @@ class TelemetryLifecycleService:
                         hz=10.0,
                         metadata=metadata,
                         track_name=snapshot.track_name if snapshot else current_track_name,
-                        car_name=snapshot.car_model if snapshot else None,
+                        car_name=(
+                            snapshot.car_model
+                            if snapshot and snapshot.car_model is not None
+                            else ("Unknown Car" if snapshot else None)
+                        ),
                         output_prefix=output_prefix,
                         game_lap_boundaries=lap_boundaries,
                     )
@@ -250,7 +254,11 @@ class TelemetryLifecycleService:
                     hz=10.0,
                     metadata=metadata,
                     track_name=snapshot.track_name if snapshot else current_track_name,
-                    car_name=snapshot.car_model if snapshot else None,
+                    car_name=(
+                        snapshot.car_model
+                        if snapshot and snapshot.car_model is not None
+                        else ("Unknown Car" if snapshot else None)
+                    ),
                     output_prefix=output_prefix,
                     game_lap_boundaries=lap_boundaries,
                 )
