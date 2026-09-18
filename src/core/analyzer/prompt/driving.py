@@ -34,6 +34,7 @@ def build_corner_sections(
     comparison_lap_num = ctx.comparison_lap_num
     reference_lap_key = ctx.reference_lap_key
     comparison_lap_key = ctx.comparison_lap_key
+    lap_labels = {lap_result_key(lap): lap["lap_num"] for lap in laps}
     hz = ctx.hz
     lines: List[str] = []
     lines.append("CORNER-BY-CORNER ANALYSIS:")
@@ -132,10 +133,17 @@ def build_corner_sections(
         if variation > 5.0:
             lines.append(f"  >> INCONSISTENT APEX SPEED: {variation:.1f} km/h spread across laps")
 
-        lap_speed_strs = [f"Lap {ln}: {spd:.1f}" for ln, spd in sorted(speeds.items())]
+        lap_speed_strs = [
+            f"Lap {lap_labels.get(key, key)}: {spd:.1f}"
+            for key, spd in sorted(speeds.items(), key=lambda item: str(item[0]))
+        ]
         lines.append(f"  Apex speeds:  {',  '.join(lap_speed_strs)}")
-        lines.append(f"  Highest apex: {best_apex:.1f} km/h (Lap {best_apex_lap_num})")
-        lines.append(f"  Lowest apex:  {worst_apex:.1f} km/h (Lap {worst_apex_lap_num})")
+        lines.append(
+            f"  Highest apex: {best_apex:.1f} km/h (Lap {lap_labels.get(best_apex_lap_num, best_apex_lap_num)})"
+        )
+        lines.append(
+            f"  Lowest apex:  {worst_apex:.1f} km/h (Lap {lap_labels.get(worst_apex_lap_num, worst_apex_lap_num)})"
+        )
 
         entry_delta = comparison_corner["entry_speed"] - reference_corner["entry_speed"]
         apex_delta = comparison_corner["apex_speed"] - reference_corner["apex_speed"]
@@ -204,33 +212,33 @@ def build_corner_sections(
             lines.append(f"    Balance hint @apex (Lap {comparison_lap_num}): {balance_hint(slowest_apex_st)}")
 
         # ── Steering smoothness per corner (1.4)
-        _steer_data: Dict[int, List[Dict[str, Any]]] = {}  # noqa: F821
+        _steer_data: Dict[str | int, List[Dict[str, Any]]] = {}  # noqa: F821
         for lap in laps:
             corner = lap_corner_map[lap_result_key(lap)].get(cid)
             if corner:
                 _ss = analyze_steering_smoothness(lap["track"], corner, hz)
                 if _ss:
-                    _steer_data.setdefault(lap["lap_num"], []).append(_ss)
+                    _steer_data.setdefault(lap_result_key(lap), []).append(_ss)
         if _steer_data:
             lines.append("  Steering smoothness:")
             for ln, ss_list in sorted(_steer_data.items()):
                 for _ss in ss_list:
                     _jerk_flag = "  >> JERKY STEERING" if _ss["reversals"] > 3 else ""
                     lines.append(
-                        f"    Lap {ln}: reversals={_ss['reversals']}  "
+                        f"    Lap {lap_labels.get(ln, ln)}: reversals={_ss['reversals']}  "
                         f"peak_rate={_ss['peak_steer_rate']:.2f} rad/s  "
                         f"avg_rate={_ss['avg_steer_rate']:.2f} rad/s  "
                         f"smoothness={_ss['smoothness_score']:.2f}{_jerk_flag}"
                     )
 
         # ── Throttle exit profile per corner (1.5)
-        _throttle_data: Dict[int, List[Dict[str, Any]]] = {}  # noqa: F821
+        _throttle_data: Dict[str | int, List[Dict[str, Any]]] = {}  # noqa: F821
         for lap in laps:
             corner = lap_corner_map[lap_result_key(lap)].get(cid)
             if corner:
                 _te = analyze_throttle_exit(lap["track"], corner, hz)
                 if _te:
-                    _throttle_data.setdefault(lap["lap_num"], []).append(_te)
+                    _throttle_data.setdefault(lap_result_key(lap), []).append(_te)
         if _throttle_data:
             lines.append("  Throttle exit profile:")
             for ln, te_list in sorted(_throttle_data.items()):
@@ -244,7 +252,7 @@ def build_corner_sections(
                     if _te["time_to_full_throttle"] is not None and _te["time_to_full_throttle"] > 1.5:
                         _mod_flag = "  >> SLOW TO FULL THROTTLE"
                     lines.append(
-                        f"    Lap {ln}: full_throttle={_tfull}  "
+                        f"    Lap {lap_labels.get(ln, ln)}: full_throttle={_tfull}  "
                         f"variance={_te['throttle_variance']:.4f}  "
                         f"modulation={_te['modulation_count']}  "
                         f"profile={_te['exit_profile']}{_mod_flag}"
@@ -269,6 +277,7 @@ def build_straight_sections(
     ref_corners = list(ctx.ref_corners)
     reference_lap_key = ctx.reference_lap_key
     comparison_lap_key = ctx.comparison_lap_key
+    lap_labels = {lap_result_key(lap): lap["lap_num"] for lap in laps}
     hz = ctx.hz
     lines: List[str] = []
     # ── Straight/sector analysis: time between consecutive corners
@@ -280,7 +289,7 @@ def build_straight_sections(
         cid_b = spec_b["id"]
         name_a = spec_a.get("name") or f"Corner {cid_a}"
         name_b = spec_b.get("name") or f"Corner {cid_b}"
-        _straight_times: Dict[int, float] = {}
+        _straight_times: Dict[str | int, float] = {}
         for lap in laps:
             corner_a = lap_corner_map.get(lap_result_key(lap), {}).get(cid_a)
             corner_b = lap_corner_map.get(lap_result_key(lap), {}).get(cid_b)
@@ -290,14 +299,14 @@ def build_straight_sections(
                 if _t_a is not None and _t_b is not None and _t_a > 0 and _t_b > 0:
                     _straight_time = _t_b - _t_a
                     if _straight_time > 0:
-                        _straight_times[lap["lap_num"]] = _straight_time
+                        _straight_times[lap_result_key(lap)] = _straight_time
         if len(_straight_times) >= 2:
             _best_straight = min(_straight_times.values())
             _worst_straight = max(_straight_times.values())
             _best_lap_num = min(_straight_times, key=lambda k: _straight_times[k])
             _straight_lines.append(
                 f"  {name_a} → {name_b}: "
-                f"best {_best_straight:.2f}s (Lap {_best_lap_num})  "
+                f"best {_best_straight:.2f}s (Lap {lap_labels.get(_best_lap_num, _best_lap_num)})  "
                 f"worst {_worst_straight:.2f}s  "
                 f"spread {_worst_straight - _best_straight:.2f}s"
             )
@@ -344,6 +353,7 @@ def build_straight_sections(
 
     # ── Coast time aggregation: total coasting per lap
     _coast_lines: List[str] = []
+    best_lap_key = lap_result_key(best_lap)
     for lap in laps:
         _total_coast_frames = 0
         for corner in lap.get("corners", []):
@@ -352,7 +362,7 @@ def build_straight_sections(
                 _total_coast_frames += _phases["coast_frames"]
         _total_coast_s = _total_coast_frames / hz if hz > 0 else 0.0
         if _total_coast_s > 0.1:
-            _marker = " <- BEST" if lap["lap_num"] == best_lap["lap_num"] else ""
+            _marker = " <- BEST" if lap_result_key(lap) == best_lap_key else ""
             _coast_lines.append(
                 f"  Lap {lap['lap_num']}: {_total_coast_s:.1f}s coasting "
                 f"({_total_coast_frames} frames across all corners){_marker}"
@@ -391,6 +401,7 @@ def build_braking_sections(
     comparison_lap_num = ctx.comparison_lap_num
     reference_lap_key = ctx.reference_lap_key
     comparison_lap_key = ctx.comparison_lap_key
+    lap_labels = {lap_result_key(lap): lap["lap_num"] for lap in laps}
     hz = ctx.hz
     lines: List[str] = []
     # ── Braking, turn-in, and throttle timing analysis
@@ -452,7 +463,7 @@ def build_braking_sections(
             turnin_str = f"{ph['turn_in_dt']:.2f}s" if ph["turn_in_dt"] is not None else "N/A"
             gas_str = f"{ph['gas_on_dt']:.2f}s" if ph["gas_on_dt"] is not None else "N/A"
             lines.append(
-                f"    Lap {ln}: brake_onset={brake_str}  turn_in={turnin_str}  "
+                f"    Lap {lap_labels.get(ln, ln)}: brake_onset={brake_str}  turn_in={turnin_str}  "
                 f"gas_on={gas_str}  trail_brake={ph['trail_brake_pct']:.0%}  "
                 f"coast={ph['coast_frames']}fr  peak_brake_g={ph['peak_brake_g']:.2f}"
             )
@@ -571,7 +582,8 @@ def build_grip_sections(
 
     # Compute session-wide peak G as the reference grip envelope
     session_peak_g = 0.0
-    all_grip_data: Dict[int, List[tuple]] = {}  # cid -> [(lap_num, grip_dict)]
+    all_grip_data: Dict[int, List[tuple]] = {}  # cid -> [(result_key, grip_dict)]
+    lap_labels = {lap_result_key(lap): lap["lap_num"] for lap in laps}
 
     for spec in ref_corners:
         cid = spec["id"]
@@ -584,7 +596,7 @@ def build_grip_sections(
                 continue
             grip = analyze_grip_utilization(lap["track"], corner, hz)
             if grip:
-                grip_per_lap.append((lap["lap_num"], grip))
+                grip_per_lap.append((lap_result_key(lap), grip))
                 if grip["peak_total_g"] > session_peak_g:
                     session_peak_g = grip["peak_total_g"]
 
@@ -606,7 +618,7 @@ def build_grip_sections(
             headroom = session_peak_g - g["peak_total_g"] if session_peak_g > 0.1 else 0
             headroom_str = f"  headroom={headroom:.2f}G" if headroom > 0.15 else ""
             lines.append(
-                f"    Lap {ln}: peak_g={g['peak_total_g']:.2f}  "
+                f"    Lap {lap_labels.get(ln, ln)}: peak_g={g['peak_total_g']:.2f}  "
                 f"avg_g={g['avg_total_g']:.2f}  "
                 f"grip_fill={g['grip_fill_pct']:.0f}%  "
                 f"lat={g['peak_lat_g']:.2f}  long={g['peak_long_g']:.2f}  "

@@ -1013,21 +1013,31 @@ class TelemetryAnalyzer:
                 "max_speed": max((lap.get("max_speed") or 0.0) for lap in coached_laps),
                 "stint_number": 1,
             }
-            owned_session_ids = {
-                lap.get("session_id")
+            identity_bearing_results = any(
+                lap.get("session_id") or lap.get("result_id")
                 for lap in laps
-                if lap.get("session_id")
-            }
-            current_session_id = self._session_manager.get_session_metadata_data().session_id
-            if not owned_session_ids or current_session_id in owned_session_ids:
+            )
+            if not identity_bearing_results:
                 self._session_manager.update_from_telemetry(telemetry_summary)
             else:
-                log_debug(
-                    Component.ANALYZER,
-                    "Skipped shared telemetry summary for closed session",
-                    report_sessions=sorted(owned_session_ids),
-                    current_session=current_session_id,
+                report_session_ids = [lap.get("session_id") for lap in laps]
+                owned_session_ids = {session_id for session_id in report_session_ids if session_id}
+                all_results_owned = (
+                    len(owned_session_ids) == 1
+                    and all(session_id == next(iter(owned_session_ids)) for session_id in report_session_ids)
                 )
+                if all_results_owned:
+                    owned_session_id = next(iter(owned_session_ids))
+                    self._session_manager.update_from_telemetry(
+                        telemetry_summary,
+                        expected_session_id=owned_session_id,
+                    )
+                else:
+                    log_debug(
+                        Component.ANALYZER,
+                        "Skipped shared telemetry summary for closed session",
+                        report_sessions=sorted(owned_session_ids),
+                    )
 
         log_info(Component.ANALYZER, "Generating outputs", prefix=output_prefix)
         html_path = await self._generate_html(data, output_prefix)

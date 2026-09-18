@@ -9,6 +9,11 @@ def lap_result_key(lap: Mapping[str, Any]) -> str | int:
     return lap.get("result_key") or lap.get("lap_num")
 
 
+def _unique_lap_by_number(laps: Tuple[dict, ...], lap_num: Any) -> Optional[dict]:
+    matches = tuple(lap for lap in laps if lap.get("lap_num") == lap_num)
+    return matches[0] if len(matches) == 1 else None
+
+
 @dataclass(frozen=True)
 class PromptContext:
     """Normalized lap selection, identity, confidence, and mode state."""
@@ -55,11 +60,8 @@ class PromptContext:
             (lap for lap in all_laps if requested_best_lap_key and lap_result_key(lap) == requested_best_lap_key),
             None,
         )
-        if best_lap is None:
-            best_lap = next(
-                (lap for lap in all_laps if lap.get("lap_num") == requested_best_lap_num),
-                None,
-            )
+        if best_lap is None and not requested_best_lap_key:
+            best_lap = _unique_lap_by_number(all_laps, requested_best_lap_num)
         if best_lap is None and coached_laps:
             best_lap = min(coached_laps, key=lambda lap: lap["lap_time_s"])
         requested_reference_lap_num = data.get("reference_lap_num")
@@ -72,11 +74,8 @@ class PromptContext:
             ),
             None,
         )
-        if coaching_reference_lap is None:
-            coaching_reference_lap = next(
-                (lap for lap in coached_laps if lap.get("lap_num") == requested_reference_lap_num),
-                None,
-            )
+        if coaching_reference_lap is None and not requested_reference_lap_key:
+            coaching_reference_lap = _unique_lap_by_number(coached_laps, requested_reference_lap_num)
         if coaching_reference_lap is None and coached_laps:
             coaching_reference_lap = min(coached_laps, key=lambda lap: lap["lap_time_s"])
         worst_lap = max(coached_laps, key=lambda lap: lap["lap_time_s"]) if coached_laps else None
@@ -104,11 +103,8 @@ class PromptContext:
             ),
             None,
         )
-        if comparison_lap is None:
-            comparison_lap = next(
-                (lap for lap in coached_laps if lap.get("lap_num") == comparison_lap_num),
-                None,
-            )
+        if comparison_lap is None and not requested_comparison_lap_key:
+            comparison_lap = _unique_lap_by_number(coached_laps, comparison_lap_num)
         comparison_lap_key = (
             lap_result_key(comparison_lap) if comparison_lap is not None else requested_comparison_lap_key
         )

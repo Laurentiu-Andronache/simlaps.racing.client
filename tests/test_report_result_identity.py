@@ -2,13 +2,16 @@
 
 import json
 import re
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Event, Thread
 from unittest.mock import AsyncMock
 
 import pytest
 
 from src.core.analyzer.lap_detection import _detect_laps_by_timing_state
+from src.core.analyzer.prompt.context import PromptContext
 from src.core.telemetry_analyzer import TelemetryAnalyzer
 from src.core.telemetry_capture import FrameData, LapBoundary, TelemetryCapture
 from src.models import LapData, LapState, SharedSessionManager
@@ -113,6 +116,91 @@ async def test_closed_report_cannot_update_new_session_telemetry_summary(tmp_pat
 
     assert result.laps_detected == 1
     assert manager._session_data.max_speed == pytest.approx(42.0)
+
+
+@pytest.mark.asyncio
+async def test_identified_result_without_session_id_cannot_update_summary(tmp_path):
+    manager = SharedSessionManager()
+    manager._session_data.max_speed = 42.0
+    analyzer = TelemetryAnalyzer(str(tmp_path), session_manager=manager)
+
+    await analyzer.analyze(
+        [_frame(index, index * 100) for index in range(100)],
+        hz=10.0,
+        car_name="Unknown Car",
+        game_lap_boundaries=[
+            LapBoundary(99, 10_000, 1, "VALID", result_id="identified-result"),
+        ],
+        output_prefix="identified_without_session",
+    )
+
+    assert manager._session_data.max_speed == pytest.approx(42.0)
+
+
+@pytest.mark.asyncio
+async def test_mixed_owned_and_missing_session_results_cannot_update_summary(tmp_path):
+    manager = SharedSessionManager()
+    manager._session_data.session_metadata.session_id = "owned-session"
+    manager._session_data.max_speed = 42.0
+    analyzer = TelemetryAnalyzer(str(tmp_path), session_manager=manager)
+    frames = [_frame(index, index * 100) for index in range(100)]
+    frames.extend(_frame(index, (index - 100) * 100) for index in range(100, 200))
+
+    result = await analyzer.analyze(
+        frames,
+        hz=10.0,
+        car_name="Unknown Car",
+        game_lap_boundaries=[
+            LapBoundary(99, 10_000, 1, "VALID", "owned-session", "r1", 1),
+            LapBoundary(199, 10_000, 2, "VALID", None, "r2", 2),
+        ],
+        output_prefix="mixed_session_summary",
+    )
+
+    assert result.laps_detected == 2
+    assert manager._session_data.max_speed == pytest.approx(42.0)
+
+
+def test_summary_session_check_and_write_share_manager_lock():
+    manager = SharedSessionManager()
+    manager._session_data.session_metadata.session_id = "owned-session"
+    entered = Event()
+    reset_attempted = Event()
+    release = Event()
+    original_mark_source = manager._mark_source
+
+    def blocked_mark_source(field_name, source):
+        entered.set()
+        assert release.wait(timeout=2.0)
+        original_mark_source(field_name, source)
+
+    manager._mark_source = blocked_mark_source
+    update_result = []
+    update_thread = Thread(
+        target=lambda: update_result.append(
+            manager.update_from_telemetry(
+                {"max_speed": 321.0},
+                expected_session_id="owned-session",
+            )
+        )
+    )
+    def reset_with_marker():
+        reset_attempted.set()
+        manager.reset()
+
+    reset_thread = Thread(target=reset_with_marker)
+    update_thread.start()
+    assert entered.wait(timeout=2.0)
+    reset_thread.start()
+    assert reset_attempted.wait(timeout=2.0)
+    release.set()
+    update_thread.join(timeout=2.0)
+    reset_thread.join(timeout=2.0)
+
+    assert not update_thread.is_alive()
+    assert not reset_thread.is_alive()
+    assert update_result == [True]
+    assert manager._session_data.max_speed is None
 
 
 @pytest.mark.asyncio
@@ -462,6 +550,104 @@ async def test_prompt_does_not_coach_untrusted_invalid_result(tmp_path):
     assert "INVALID LAPS (coached anyway; treat deltas with care):" in prompt
     assert "Lap 2: 0:10.00 [INVALID]" in prompt
     assert "- Lap 3: 0:03.00 [INVALID]" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_keyed_two_lap_prompt_preserves_display_labels_and_coaching_content(tmp_path):
+    fixture = json.loads(Path("tests/fixtures/ai_prompt_full_input.json").read_text(encoding="utf-8"))
+    for lap_index, lap in enumerate(fixture["laps"]):
+        lap["track"] = [
+            {
+                "frame": frame,
+                "drs_available": True,
+                "drs_enabled": lap_index == 0,
+                "brake": 0.0,
+                "steer": 0.0,
+                "gas": 0.0,
+                "gas_percent": 0.0,
+                "acc_g_z": 0.0,
+                "gear": 3 + lap_index,
+                "gear_rpm_window": 0.95,
+            }
+            for frame in range(101)
+        ]
+        lap["start_frame"] = 0
+    legacy = deepcopy(fixture)
+    legacy["corner_speeds"] = {1: {1: 80.0, 2: 85.0}, 2: {1: 70.0, 2: 75.0}}
+    legacy["comparison_available"] = True
+    legacy_path = await TelemetryAnalyzer(str(tmp_path))._generate_ai_prompt(
+        legacy,
+        output_prefix="legacy_prompt_identity",
+    )
+
+    keyed_equivalent = deepcopy(fixture)
+    for index, lap in enumerate(keyed_equivalent["laps"], start=1):
+        lap["result_key"] = f"result:{index}"
+    keyed_equivalent["best_lap_result_key"] = "result:1"
+    keyed_equivalent["reference_lap_result_key"] = "result:1"
+    keyed_equivalent["comparison_lap_result_key"] = "result:2"
+    keyed_equivalent["comparison_available"] = True
+    keyed_equivalent["corner_speeds"] = {
+        1: {"result:1": 80.0, "result:2": 85.0},
+        2: {"result:1": 70.0, "result:2": 75.0},
+    }
+    equivalent_path = await TelemetryAnalyzer(str(tmp_path))._generate_ai_prompt(
+        keyed_equivalent,
+        output_prefix="equivalent_prompt_identity",
+    )
+
+    keyed = deepcopy(keyed_equivalent)
+    for lap in keyed["laps"]:
+        lap["lap_num"] = 1
+    keyed["best_lap_num"] = 1
+    keyed["reference_lap_num"] = 1
+    keyed["comparison_lap_num"] = 1
+    keyed_path = await TelemetryAnalyzer(str(tmp_path))._generate_ai_prompt(
+        keyed,
+        output_prefix="keyed_prompt_identity",
+    )
+
+    legacy_prompt = Path(legacy_path).read_text(encoding="utf-8")
+    equivalent_prompt = Path(equivalent_path).read_text(encoding="utf-8")
+    keyed_prompt = Path(keyed_path).read_text(encoding="utf-8")
+    assert equivalent_prompt == legacy_prompt
+    assert "result:1" not in keyed_prompt
+    assert "result:2" not in keyed_prompt
+    assert keyed_prompt.count("Lap 1") >= 2
+    assert "Apex speeds" in legacy_prompt and "Apex speeds" in keyed_prompt
+    assert "T1" in legacy_prompt and "T1" in keyed_prompt
+    assert "INCONSISTENT DRS USAGE" in keyed_prompt
+    assert keyed_prompt.count("Lap 1: DRS used 100.0%") == 1
+    assert keyed_prompt.count("Lap 1: DRS used 0.0%") == 1
+    assert keyed_prompt.count("Lap 1 (entry): Gear 3") >= 1
+    assert keyed_prompt.count("Lap 1 (entry): Gear 4") >= 1
+    assert "Gear changes mid-corner" not in keyed_prompt
+    coast_section = keyed_prompt.split("COAST TIME AGGREGATION", 1)[1].split("\n\n", 1)[0]
+    assert coast_section.count("<- BEST") == 1
+    for section in ("STRAIGHT/SECTOR ANALYSIS", "BRAKING & TIMING ANALYSIS", "GRIP UTILIZATION ANALYSIS"):
+        assert section in legacy_prompt
+        assert section in keyed_prompt
+
+
+def test_prompt_context_does_not_use_ambiguous_display_number_after_key_miss():
+    data = {
+        "laps": [
+            {"result_key": "result:1", "lap_num": 1, "lap_time_s": 20.0},
+            {"result_key": "result:2", "lap_num": 1, "lap_time_s": 10.0},
+        ],
+        "best_lap_result_key": "missing-result",
+        "best_lap_num": 1,
+        "reference_lap_result_key": "missing-result",
+        "reference_lap_num": 1,
+        "comparison_lap_result_key": "missing-result",
+        "comparison_lap_num": 1,
+    }
+
+    context = PromptContext.from_data(data)
+
+    assert context.best_lap["result_key"] == "result:2"
+    assert context.coaching_reference_lap["result_key"] == "result:2"
+    assert context.comparison_lap_key == "missing-result"
 
 
 @pytest.mark.asyncio

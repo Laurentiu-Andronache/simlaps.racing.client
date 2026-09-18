@@ -347,7 +347,8 @@ function gasColor(v) { const g = Math.round(60 + v * 175); return `rgb(${Math.ro
 const lapKey = lap => lap.result_key || `legacy:${lap.lap_num}`;
 const isBestLap = lap => DATA.best_lap_key
   ? lapKey(lap) === DATA.best_lap_key
-  : lap.lap_num === DATA.best_lap_num;
+  : DATA.laps.filter(candidate => candidate.lap_num === DATA.best_lap_num).length === 1
+    && lap.lap_num === DATA.best_lap_num;
 const activeLaps = new Set(DATA.laps.map(lapKey));
 
 function syncFilterButtons() {
@@ -384,8 +385,13 @@ function makeLapFilters(containerId, onChange) {
 
 function renderStats() {
   const row = document.getElementById('stats-row');
-  const bestLap = DATA.laps.find(l => lapKey(l) === DATA.best_lap_key)
-    || DATA.laps.find(l => l.lap_num === DATA.best_lap_num) || null;
+  const keyedBestLap = DATA.best_lap_key
+    ? DATA.laps.find(l => lapKey(l) === DATA.best_lap_key)
+    : null;
+  const numberedBestLaps = DATA.laps.filter(l => l.lap_num === DATA.best_lap_num);
+  const bestLap = DATA.best_lap_key
+    ? keyedBestLap
+    : (numberedBestLaps.length === 1 ? numberedBestLaps[0] : null);
   const speedValues = DATA.laps
     .filter(l => l.derived_metrics_trustworthy !== false)
     .map(l => l.max_speed)
@@ -521,8 +527,13 @@ function buildSpeedChart() {
     borderColor: lapColor(lap.lap_num), backgroundColor: 'transparent', borderWidth: 1.8, pointRadius: 0, tension: 0.3,
   }));
   const annotations = {};
-  const bestLap = DATA.laps.find(l => lapKey(l) === DATA.best_lap_key)
-    || DATA.laps.find(l => l.lap_num === DATA.best_lap_num) || null;
+  const keyedBestLap = DATA.best_lap_key
+    ? DATA.laps.find(l => lapKey(l) === DATA.best_lap_key)
+    : null;
+  const numberedBestLaps = DATA.laps.filter(l => l.lap_num === DATA.best_lap_num);
+  const bestLap = DATA.best_lap_key
+    ? keyedBestLap
+    : (numberedBestLaps.length === 1 ? numberedBestLaps[0] : null);
   if (bestLap) {
     bestLap.corners.forEach(c => {
       const s = (c.start_frame - bestLap.start_frame) / Math.max(bestLap.track.length - 1, 1) * 100;
