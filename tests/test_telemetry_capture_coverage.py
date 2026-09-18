@@ -573,10 +573,19 @@ class TestValidityOnlyCaptureLoop:
         capture._recording_awaiting_boundary = True
         capture._running = True
         capture._readers = {"physics": MagicMock(size=4)}
-        lap_times = [78_000, 104, 210]
+        lap_times = [78_000, 79_000, 104, 210]
 
         def sample(frame_number):
             capture._last_sample_had_data = True
+            capture._session_manager.update_from_graphics_shm(
+                {
+                    "status_name": "AC_LIVE",
+                    "total_lap_count": 0,
+                    "current_lap_time_ms": lap_times[frame_number],
+                    "last_laptime_ms": 0,
+                    "is_valid_lap": True,
+                }
+            )
             if frame_number == len(lap_times) - 1:
                 capture._running = False
             return FrameData(
@@ -600,7 +609,7 @@ class TestValidityOnlyCaptureLoop:
             await capture._capture_loop()
 
         assert capture._recording_awaiting_boundary is False
-        assert [frame.frame_number for frame in capture.get_frames()] == [1, 2]
+        assert [frame.frame_number for frame in capture.get_frames()] == [2, 3]
 
     def test_armed_recording_keeps_race_from_standing_start(self):
         capture = TelemetryCapture(record_frames=True)
