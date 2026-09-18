@@ -833,32 +833,52 @@ class TelemetryAnalyzer:
                 trusted_track,
                 lambda pt: (pt.get("frame_quality") or 0.0) >= _PLAUSIBLE_FRAME_THRESHOLD,
             )
-            if (
-                trusted_authoritative_ratio > authoritative_progress_ratio
-                or trusted_plausible_ratio > plausible_frame_ratio
-            ):
-                authoritative_progress_ratio = trusted_authoritative_ratio
-                plausible_frame_ratio = trusted_plausible_ratio
-                analysis_confidence_score = round(
-                    authoritative_progress_ratio * 0.7 + plausible_frame_ratio * 0.3,
-                    3,
-                )
-                analysis_confidence = _confidence_label(analysis_confidence_score)
-                analysis_mode, _, _ = _decide_analysis_mode(
-                    authoritative_progress_ratio,
-                    plausible_frame_ratio,
-                )
-                analysis_notes = [
-                    note
-                    for note in analysis_notes
-                    if not note.startswith(
-                        (
-                            "Authoritative graphics progress coverage is",
-                            "Authoritative graphics progress coverage too low",
-                            "Physics frame plausibility coverage is only",
-                        )
+            # Recompute quality from trustworthy segments in both directions:
+            # an incomplete high-quality prefix must not make a weaker
+            # trustworthy lap eligible for full coaching.
+            authoritative_progress_ratio = trusted_authoritative_ratio
+            plausible_frame_ratio = trusted_plausible_ratio
+            analysis_confidence_score = round(
+                authoritative_progress_ratio * 0.7 + plausible_frame_ratio * 0.3,
+                3,
+            )
+            analysis_confidence = _confidence_label(analysis_confidence_score)
+            analysis_mode, _, _ = _decide_analysis_mode(
+                authoritative_progress_ratio,
+                plausible_frame_ratio,
+            )
+            _, trusted_has_authoritative, trusted_has_high_plausible = _decide_analysis_mode(
+                authoritative_progress_ratio,
+                plausible_frame_ratio,
+            )
+            analysis_notes = [
+                note
+                for note in analysis_notes
+                if not note.startswith(
+                    (
+                        "Authoritative graphics progress coverage is",
+                        "Authoritative graphics progress coverage too low",
+                        "Physics frame plausibility coverage is only",
                     )
-                ]
+                )
+            ]
+            if not trusted_has_authoritative and trusted_has_high_plausible:
+                analysis_notes.append(
+                    f"Authoritative graphics progress coverage is {authoritative_progress_ratio:.0%}, "
+                    f"but physics frame plausibility is {plausible_frame_ratio:.0%} — using "
+                    "dead-reckoning progress for coaching. Lap 1 may be missing if capture "
+                    "started mid-lap."
+                )
+            elif not trusted_has_authoritative and not trusted_has_high_plausible:
+                analysis_notes.append(
+                    f"Authoritative graphics progress coverage too low ({authoritative_progress_ratio:.0%}) "
+                    f"and plausible physics coverage is only {plausible_frame_ratio:.0%}; detailed coaching disabled."
+                )
+            if plausible_frame_ratio < 0.75:
+                analysis_notes.append(
+                    f"Physics frame plausibility coverage is only {plausible_frame_ratio:.0%}; "
+                    "derived metrics are degraded."
+                )
         valid_laps = [lap for lap in laps if lap.get("is_valid", True)]
         profile_sanity_notes = _profile_corner_sanity_notes(
             coached_laps,
