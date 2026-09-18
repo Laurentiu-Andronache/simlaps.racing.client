@@ -10,6 +10,12 @@ from src.core.car_tuning_catalog import format_tuning_block
 from .context import PromptContext
 
 
+def _format_metric(value, decimals: int = 1) -> str:
+    if not isinstance(value, (int, float)):
+        return "N/A"
+    return f"{value:.{decimals}f}"
+
+
 def build_diagnostic_sections(ctx: PromptContext) -> List[str]:
     lines: List[str] = [
         "Telemetry coaching is running in DIAGNOSTIC mode.",
@@ -50,7 +56,7 @@ def build_single_lap_sections(ctx: PromptContext) -> List[str]:
         ),
         "",
         f"- Best lap:   #{best_lap['lap_num']}  {best_lap['lap_time_str']}",
-        f"- Top speed:  {best_lap['max_speed']:.1f} km/h",
+        f"- Top speed:  {_format_metric(best_lap.get('max_speed'))} km/h",
     ]
     if best_lap.get("fuel_used") is not None:
         lines.append(f"- Fuel used:  {best_lap['fuel_used']:.3f}L")
@@ -172,7 +178,8 @@ def build_fuel_sections(ctx: PromptContext) -> List[str]:
     lines.append(f"- Best lap:   #{best_lap['lap_num']}  {best_lap['lap_time_str']}")
     lines.append(f"- Worst lap:  #{worst_lap['lap_num']}  {worst_lap['lap_time_str']}")
     lines.append(f"- Delta best/worst: {time_diff:.2f}s")
-    lines.append(f"- Top speed: {max(l['max_speed'] for l in laps):.1f} km/h")  # noqa: E741
+    speeds = [lap.get("max_speed") for lap in laps if isinstance(lap.get("max_speed"), (int, float))]
+    lines.append(f"- Top speed: {_format_metric(max(speeds) if speeds else None)} km/h")
     lines.append(f"- Authoritative progress coverage: {authoritative_progress_ratio:.0%}")
     lines.append(f"- Plausible physics coverage:      {plausible_frame_ratio:.0%}")
 
@@ -262,8 +269,8 @@ def build_lap_sections(ctx: PromptContext) -> List[str]:
         fuel_str = f"  fuel {lap['fuel_used']:.3f}L" if lap.get("fuel_used") is not None else ""
         lines.append(
             f"  Lap {lap['lap_num']}: {lap['lap_time_str']}  "
-            f"max {lap['max_speed']:.1f} km/h  "
-            f"avg {lap['avg_speed']:.1f} km/h{fuel_str}{valid_str}{marker}"
+            f"max {_format_metric(lap.get('max_speed'))} km/h  "
+            f"avg {_format_metric(lap.get('avg_speed'))} km/h{fuel_str}{valid_str}{marker}"
         )
     lines.append("")
 

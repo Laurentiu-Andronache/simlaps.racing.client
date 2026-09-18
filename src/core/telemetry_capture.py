@@ -15,7 +15,7 @@ import traceback
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, TextIO
+from typing import Any, Callable, Dict, List, Optional, TextIO
 
 from src.core.security import GameProcessStatus, is_game_running
 from src.core.telemetry_decoder import (
@@ -134,13 +134,42 @@ class CaptureMetadata:
         return asdict(self)
 
 
-class LapBoundary(NamedTuple):
-    """Authoritative log boundary aligned to a captured frame."""
+@dataclass(frozen=True)
+class LapBoundary:
+    """Captured result boundary with legacy four-item tuple behavior."""
 
     frame_index: int
     lap_time_ms: Optional[float]
     lap_number: Optional[int]
     lap_type: str = "VALID"
+    session_id: Optional[str] = None
+    result_id: Optional[str] = None
+    original_lap_number: Optional[int] = None
+
+    def _legacy_tuple(self) -> tuple:
+        return (self.frame_index, self.lap_time_ms, self.lap_number, self.lap_type)
+
+    def __iter__(self):
+        return iter(self._legacy_tuple())
+
+    def __len__(self) -> int:
+        return 4
+
+    def __getitem__(self, index):
+        return self._legacy_tuple()[index]
+
+    def __eq__(self, other):
+        if isinstance(other, LapBoundary):
+            return (
+                self.frame_index, self.lap_time_ms, self.lap_number, self.lap_type,
+                self.session_id, self.result_id, self.original_lap_number,
+            ) == (
+                other.frame_index, other.lap_time_ms, other.lap_number, other.lap_type,
+                other.session_id, other.result_id, other.original_lap_number,
+            )
+        if isinstance(other, (tuple, list)):
+            return self._legacy_tuple() == tuple(other)
+        return NotImplemented
 
 
 class RegionReader:
@@ -410,6 +439,10 @@ class TelemetryCapture:
         lap_time_ms: Optional[float] = None,
         lap_number: Optional[int] = None,
         lap_type: str = "VALID",
+        *,
+        session_id: Optional[str] = None,
+        result_id: Optional[str] = None,
+        original_lap_number: Optional[int] = None,
     ) -> None:
         """Record the current frame index as a lap boundary.
 
@@ -447,7 +480,19 @@ class TelemetryCapture:
         # buffer. Absolute sample numbers continue across the armed outlap and
         # therefore point at the wrong lap after that prefix is discarded.
         frame_idx = len(self._frames) - 1
-        self._lap_boundaries.append(LapBoundary(frame_idx, lap_time_ms, lap_number, lap_type))
+        self._lap_boundaries.append(
+            LapBoundary(
+                frame_idx,
+                lap_time_ms,
+                lap_number,
+                lap_type,
+                session_id=session_id,
+                result_id=result_id,
+                original_lap_number=(
+                    lap_number if original_lap_number is None else original_lap_number
+                ),
+            )
+        )
         log_info(
             Component.TELEMETRY,
             "Lap boundary recorded",
@@ -456,6 +501,47 @@ class TelemetryCapture:
             lap_number=lap_number,
             lap_type=lap_type,
         )
+
+    def bind_lap_boundary(self, session_id: str, lap: Any) -> bool:
+        """Attach a parser result identity to the boundary just recorded."""
+        if not self._lap_boundaries or not session_id or lap is None:
+            return False
+        boundary = self._lap_boundaries[-1]
+        if boundary.frame_index != len(self._frames) - 1:
+            return False
+        result_id = getattr(lap, "result_id", None) or str(id(lap))
+        self._lap_boundaries[-1] = LapBoundary(
+            boundary.frame_index,
+            boundary.lap_time_ms,
+            boundary.lap_number,
+            boundary.lap_type,
+            session_id=session_id,
+            result_id=result_id,
+            original_lap_number=(
+                boundary.original_lap_number
+                if boundary.original_lap_number is not None
+                else boundary.lap_number
+            ),
+        )
+        return True
+
+    def reconcile_lap_boundary(self, session_id: str, lap: Any) -> bool:
+        """Update one result's metadata while retaining its frame boundary."""
+        result_id = getattr(lap, "result_id", None) or str(id(lap))
+        for index, boundary in enumerate(self._lap_boundaries):
+            if boundary.session_id != session_id or boundary.result_id != result_id:
+                continue
+            self._lap_boundaries[index] = LapBoundary(
+                boundary.frame_index,
+                getattr(lap, "lap_time_ms", boundary.lap_time_ms),
+                getattr(lap, "lap_number", boundary.lap_number),
+                getattr(lap, "lap_type", boundary.lap_type) or boundary.lap_type,
+                session_id=boundary.session_id,
+                result_id=boundary.result_id,
+                original_lap_number=boundary.original_lap_number,
+            )
+            return True
+        return False
 
     def _start_recording_at_timing_boundary(self, frame: FrameData) -> bool:
         """Start an armed recording when ACE resets its live lap timer.

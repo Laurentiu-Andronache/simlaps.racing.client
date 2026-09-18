@@ -34,14 +34,16 @@ class PromptContext:
     def from_data(cls, data: Mapping[str, Any]) -> "PromptContext":
         all_laps = tuple(data.get("laps", []))
         hz = data.get("hz", 10.0)
-        # Coaching ignores lap validity: invalid laps are still analysed.
-        # is_valid is display-only metadata.
-        coached_laps = all_laps
+        # Coaching keeps the established invalid-lap policy, but excludes a
+        # capture segment whose timer coverage was not trustworthy.
+        coached_laps = tuple(
+            lap for lap in all_laps if lap.get("derived_metrics_trustworthy", True)
+        )
         valid_laps = tuple(lap for lap in all_laps if lap.get("is_valid", True))
         invalid_laps = tuple(lap for lap in all_laps if not lap.get("is_valid", True))
         requested_best_lap_num = data.get("best_lap_num")
         best_lap = next(
-            (lap for lap in coached_laps if lap.get("lap_num") == requested_best_lap_num),
+            (lap for lap in all_laps if lap.get("lap_num") == requested_best_lap_num),
             None,
         )
         if best_lap is None and coached_laps:

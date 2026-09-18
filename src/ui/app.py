@@ -528,6 +528,10 @@ class SimLapsApp:
 
     async def _on_lap_update(self, session: SessionData, lap: LapData):
         """Refresh a SHM-first lap after ACE eventually flushes its log data."""
+        if self._telemetry_capture:
+            reconcile_boundary = getattr(self._telemetry_capture, "reconcile_lap_boundary", None)
+            if callable(reconcile_boundary):
+                reconcile_boundary(session.session_id, lap)
         if self._home_page:
             self._home_page.refresh_lap(lap)
         history_entry = self._get_history_entry_for_lap(lap)
