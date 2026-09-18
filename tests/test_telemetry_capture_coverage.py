@@ -5,6 +5,7 @@ import json
 import os
 import tempfile
 import threading
+import time
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
@@ -651,7 +652,18 @@ class TestValidityOnlyCaptureLoop:
             assert reset_started.wait(timeout=1)
             assert not reset_finished.wait(timeout=0.05)
             real_has_ownership()
+            # Give an unguarded reset a chance to replace the session before
+            # the recorder clears its armed buffer. The lock-protected path
+            # keeps this blocked until the boundary mutation is complete.
+            time.sleep(0.05)
             return True
+
+        class BoundaryFrames(list):
+            def clear(self):
+                assert not reset_finished.is_set()
+                super().clear()
+
+        capture._frames = BoundaryFrames([FrameData("2026-01-01T00:00:00Z", 0, {})])
 
         with patch.object(manager, "has_live_timer_ownership", side_effect=has_ownership_while_reset_attempts):
             assert capture._start_recording_at_timing_boundary(frame) is True
