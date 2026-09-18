@@ -365,6 +365,53 @@ def test_graphics_pause_resume_keeps_invalid_verdict_until_next_boundary() -> No
     assert completion.is_valid is False
 
 
+def test_graphics_paused_counter_finish_resets_verdict_for_resumed_lap() -> None:
+    manager = SharedSessionManager()
+    for current_time in (90_000, 91_000):
+        manager.update_from_graphics_shm(
+            {
+                "status_name": "AC_LIVE",
+                "total_lap_count": 0,
+                "current_lap_time_ms": current_time,
+                "last_laptime_ms": 0,
+                "is_valid_lap": False,
+            }
+        )
+
+    # The timer did not reset in the paused payload, so the counter is the
+    # accepted completion boundary and must still close the invalid lap.
+    manager.update_from_graphics_shm(
+        {
+            "status_name": "AC_PAUSE",
+            "total_lap_count": 1,
+            "current_lap_time_ms": 91_000,
+            "last_laptime_ms": 91_147,
+            "is_valid_lap": True,
+        }
+    )
+    completion = manager.get_latest_lap_completion()
+    assert completion is not None
+    assert completion.is_valid is False
+    next_lap_validity = manager.get_lap_validity_data(2)
+    assert next_lap_validity is not None
+    assert next_lap_validity.is_valid is True
+
+    # Resuming the next lap must establish a fresh valid verdict.
+    for current_time in (1_000, 2_000, 3_000):
+        manager.update_from_graphics_shm(
+            {
+                "status_name": "AC_LIVE",
+                "total_lap_count": 1,
+                "current_lap_time_ms": current_time,
+                "last_laptime_ms": 0,
+                "is_valid_lap": True,
+            }
+        )
+    validity = manager.get_lap_validity_data(2)
+    assert validity is not None
+    assert validity.is_valid is True
+
+
 def test_graphics_terminal_state_requires_fresh_timer_evidence() -> None:
     manager = SharedSessionManager()
     manager.update_from_graphics_shm(

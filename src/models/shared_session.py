@@ -354,6 +354,11 @@ class SharedSessionManager:
         with self._lock:
             return self._session_data.current_lap_time_ms
 
+    def has_live_timer_ownership(self) -> bool:
+        """Return whether live timing evidence can own a SHM boundary."""
+        with self._lock:
+            return self._session_data.completion_eligible
+
     def get_sector_times(self, lap_num: int) -> Optional[Dict[int, int]]:
         with self._lock:
             return self._session_data.sector_times.get(lap_num)
@@ -823,7 +828,7 @@ class SharedSessionManager:
                 self._session_data.completion_eligible = False
                 self._session_data.positive_timer_samples = 0
             elif new_physical_boundary and not (
-                (paused_state and not completed_timer_reset)
+                (paused_state and not completed_timer_reset and not counter_advanced)
                 or (was_paused and not completed_timer_reset and not counter_advanced)
             ):
                 self._session_data.active_lap_is_valid = None

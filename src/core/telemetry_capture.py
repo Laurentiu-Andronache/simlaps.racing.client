@@ -506,6 +506,16 @@ class TelemetryCapture:
         if previous is None or previous < 5_000 or current > 1_000:
             return False
 
+        # The shared session manager sees the same graphics callback before
+        # this recorder boundary check. When it has observed live timer data,
+        # stale counter/timer values must not release an armed recording.
+        if (
+            self._session_manager.get_current_lap_time() is not None
+            and not self._session_manager.has_live_timer_ownership()
+        ):
+            self._awaiting_lap_time_ms = None
+            return False
+
         self._frames.clear()
         self._lap_boundaries.clear()
         self._recording_awaiting_boundary = False
