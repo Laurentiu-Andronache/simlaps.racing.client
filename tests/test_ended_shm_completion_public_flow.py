@@ -68,6 +68,12 @@ async def test_capture_to_log_callback_ignores_terminal_shm_completion(
             last_laptime_ms=0,
         ),
         _graphics_frame(
+            phase="Session",
+            current_lap_time_ms=76_000,
+            total_lap_count=0,
+            last_laptime_ms=0,
+        ),
+        _graphics_frame(
             phase=phase,
             current_lap_time_ms=50,
             total_lap_count=1,
@@ -82,6 +88,7 @@ async def test_capture_to_log_callback_ignores_terminal_shm_completion(
         await asyncio.sleep(0.03)
         capture._capture_frame(0)
         capture._capture_frame(1)
+        capture._capture_frame(2)
         await asyncio.sleep(0.05)
     finally:
         parser.stop()
