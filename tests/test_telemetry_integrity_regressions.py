@@ -2,8 +2,11 @@
 
 import json
 import re
+import subprocess
 from datetime import datetime, timezone
 from html.parser import HTMLParser
+from pathlib import Path
+from typing import Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -448,6 +451,14 @@ def _rendered_payload(html: str) -> dict:
     return json.loads(data_match.group(1))
 
 
+def _chrome_executable() -> Optional[Path]:
+    candidates = (
+        Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
+        Path(r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"),
+    )
+    return next((candidate for candidate in candidates if candidate.is_file()), None)
+
+
 @pytest.mark.asyncio
 async def test_html_corner_markers_preserve_coordinates_and_omit_unlocatable(tmp_path):
     finite = _corner(10)
@@ -477,6 +488,68 @@ async def test_html_corner_markers_preserve_coordinates_and_omit_unlocatable(tmp
     assert corners[2]["apex_z"] is None
     assert "pts.find(pt => pt.frame === c.apex_frame)" in html
     assert "|| pts[0]" not in html
+
+
+@pytest.mark.asyncio
+async def test_html_corner_marker_javascript_rejects_null_coordinates(tmp_path):
+    """Execute the generated marker code so JSON null cannot become (0, 0)."""
+    chrome = _chrome_executable()
+    if chrome is None:
+        pytest.skip("Chrome is unavailable for generated JavaScript smoke coverage")
+
+    finite = _corner(10)
+    finite.update(apex_x=42.5, apex_z=-8.25)
+    exact_frame = _corner(20)
+    exact_frame.update(apex_x=None, apex_z=None, apex_frame=21)
+    nonfinite = _corner(25)
+    nonfinite.update(apex_x=float("nan"), apex_z=float("inf"), apex_frame=21)
+    missing = _corner(30)
+    missing.update(apex_x=None, apex_z=None, apex_frame=999)
+    lap = _trace_lap(
+        1,
+        [_trace_point(20, norm_pos=0.0, authoritative=True), _trace_point(21, norm_pos=1.0, authoritative=True)],
+        corners=[finite, exact_frame, nonfinite, missing],
+    )
+    await render_html(_trace_report([lap]), str(tmp_path), "corner_marker_js")
+    html = (tmp_path / "telemetry_corner_marker_js.html").read_text(encoding="utf-8")
+    payload = _rendered_payload(html)
+    rendered_lap = payload["laps"][0]
+    rendered_lap["track"].append({"frame": 22, "x": None, "z": None})
+    rendered_lap["corners"].append(
+        {"id": 99, "name": "Bad point", "apex_frame": 22, "apex_x": None, "apex_z": None}
+    )
+
+    marker_start = html.index("  window._cornerHits = [];")
+    marker_end = html.index("  const start = pts[0];", marker_start)
+    marker_code = html[marker_start:marker_end]
+    harness = f"""<!doctype html><body><script>
+const lap = {json.dumps(rendered_lap)};
+const pts = lap.track;
+const ctx = {{ beginPath(){{}}, arc(){{}}, fill(){{}}, fillText(){{}} }};
+const cx = x => x, cz = z => z;
+{marker_code}
+document.body.textContent = JSON.stringify(window._cornerHits);
+</script></body>"""
+    harness_path = tmp_path / "corner_marker_harness.html"
+    harness_path.write_text(harness, encoding="utf-8")
+    user_data_dir = tmp_path / "chrome-profile"
+    result = subprocess.run(
+        [
+            str(chrome),
+            "--headless=new",
+            "--disable-gpu",
+            "--no-sandbox",
+            f"--user-data-dir={user_data_dir}",
+            "--dump-dom",
+            harness_path.as_uri(),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    hits = json.loads(re.search(r"<body>(.*?)</body>", result.stdout, re.DOTALL).group(1))
+    assert [(hit["px"], hit["pz"]) for hit in hits] == [(42.5, -8.2), (21, 10.5), (21, 10.5)]
 
 
 @pytest.mark.asyncio

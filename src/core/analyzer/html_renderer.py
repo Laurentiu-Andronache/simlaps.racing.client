@@ -540,12 +540,13 @@ function drawTrackMap() {
     ctx.moveTo(cx(p0.x), cz(p0.z)); ctx.lineTo(cx(p1.x), cz(p1.z)); ctx.stroke();
   }
   window._cornerHits = [];
+  const finiteCoordinate = value => typeof value === 'number' && Number.isFinite(value);
   lap.corners.forEach((c, idx) => {
-    const apexX = Number(c.apex_x), apexZ = Number(c.apex_z);
-    const p = Number.isFinite(apexX) && Number.isFinite(apexZ)
+    const apexX = c.apex_x, apexZ = c.apex_z;
+    const p = finiteCoordinate(apexX) && finiteCoordinate(apexZ)
       ? { x: apexX, z: apexZ }
       : pts.find(pt => pt.frame === c.apex_frame);
-    if (!p || !Number.isFinite(Number(p.x)) || !Number.isFinite(Number(p.z))) return;
+    if (!p || !finiteCoordinate(p.x) || !finiteCoordinate(p.z)) return;
     const px = cx(p.x), pz = cz(p.z);
     ctx.beginPath(); ctx.arc(px, pz, 6, 0, Math.PI * 2); ctx.fillStyle = '#fff'; ctx.fill();
     ctx.fillStyle = '#000'; ctx.font = 'bold 9px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
