@@ -311,7 +311,7 @@ def test_graphics_pause_preserves_timer_ownership_and_invalidity() -> None:
     assert completion.is_valid is False
 
 
-def test_graphics_pause_resume_keeps_invalid_verdict_until_next_boundary() -> None:
+def test_graphics_ordinary_pause_resume_keeps_invalid_verdict_until_next_boundary() -> None:
     manager = SharedSessionManager()
     for current_time in (90_000, 91_000):
         manager.update_from_graphics_shm(
@@ -336,7 +336,7 @@ def test_graphics_pause_resume_keeps_invalid_verdict_until_next_boundary() -> No
         {
             "status_name": "AC_LIVE",
             "total_lap_count": 0,
-            "current_lap_time_ms": 1_000,
+            "current_lap_time_ms": 91_100,
             "last_laptime_ms": 0,
             "is_valid_lap": True,
         }
@@ -345,7 +345,7 @@ def test_graphics_pause_resume_keeps_invalid_verdict_until_next_boundary() -> No
         {
             "status_name": "AC_LIVE",
             "total_lap_count": 0,
-            "current_lap_time_ms": 2_000,
+            "current_lap_time_ms": 92_000,
             "last_laptime_ms": 0,
             "is_valid_lap": True,
         }
@@ -363,6 +363,53 @@ def test_graphics_pause_resume_keeps_invalid_verdict_until_next_boundary() -> No
     completion = manager.get_latest_lap_completion()
     assert completion is not None
     assert completion.is_valid is False
+
+
+def test_graphics_pause_resume_low_timer_starts_fresh_epoch() -> None:
+    manager = SharedSessionManager()
+    for current_time in (90_000, 91_000):
+        manager.update_from_graphics_shm(
+            {
+                "status_name": "AC_LIVE",
+                "total_lap_count": 0,
+                "current_lap_time_ms": current_time,
+                "last_laptime_ms": 0,
+                "is_valid_lap": False,
+            }
+        )
+
+    manager.update_from_graphics_shm(
+        {
+            "status_name": "AC_PAUSE",
+            "total_lap_count": 0,
+            "current_lap_time_ms": 0,
+            "last_laptime_ms": 0,
+            "is_valid_lap": True,
+        }
+    )
+    for current_time in (100, 200):
+        manager.update_from_graphics_shm(
+            {
+                "status_name": "AC_LIVE",
+                "total_lap_count": 0,
+                "current_lap_time_ms": current_time,
+                "last_laptime_ms": 0,
+                "is_valid_lap": True,
+            }
+        )
+    manager.update_from_graphics_shm(
+        {
+            "status_name": "AC_LIVE",
+            "total_lap_count": 1,
+            "current_lap_time_ms": 300,
+            "last_laptime_ms": 91_147,
+            "is_valid_lap": True,
+        }
+    )
+
+    completion = manager.get_latest_lap_completion()
+    assert completion is not None
+    assert completion.is_valid is True
 
 
 def test_graphics_paused_counter_finish_resets_verdict_for_resumed_lap() -> None:

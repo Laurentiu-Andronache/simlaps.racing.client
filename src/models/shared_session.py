@@ -828,8 +828,7 @@ class SharedSessionManager:
                 self._session_data.completion_eligible = False
                 self._session_data.positive_timer_samples = 0
             elif new_physical_boundary and not (
-                (paused_state and not completed_timer_reset and not counter_advanced)
-                or (was_paused and not completed_timer_reset and not counter_advanced)
+                paused_state and not completed_timer_reset and not counter_advanced
             ):
                 self._session_data.active_lap_is_valid = None
 
