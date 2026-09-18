@@ -215,6 +215,10 @@
       "spa-francorchamps",
       "circuit_de_spa_",
       "spa francorchamps",
+      "spa gp",
+      "spa francorchamps gp",
+      "circuit de spa francorchamps gp",
+      "circuit_de_spa_francorchamps gp",
       "circuit de spa-francorchamps"
     ],
     "default_config": "current",
