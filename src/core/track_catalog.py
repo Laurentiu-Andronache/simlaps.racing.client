@@ -111,6 +111,11 @@ def select_track_profile(
     Returns:
         tuple: (track_key, track_profile) or (None, None) if not found
     """
+    if config_name:
+        config_slug_value = track_slug(config_name)
+        if not config_slug_value:
+            return None, None
+
     if track_name:
         # Collect every catalog entry whose normalized key, display name, or
         # aliases match the name. A single track name can map to several
@@ -130,8 +135,6 @@ def select_track_profile(
                 matching_keys.append(track_key)
 
         if config_name:
-            config_slug_value = track_slug(config_name)
-
             # Prefer a config whose normalized key/name/aliases match across
             # all exact track-name matches.
             for track_key in matching_keys:
@@ -159,10 +162,32 @@ def select_track_profile(
             # layouts must not silently select a default profile.
             return None, None
 
-        # Without an explicit layout, retain the established default choice.
+        # Without an explicit layout, prefer a non-default config named by an
+        # exact layout-specific track label before using the entry default.
         if matching_keys:
             track_key = matching_keys[0]
+            track = TRACK_CATALOG[track_key]
+            for config_key, config in track["configs"].items():
+                if config_key == track["default_config"]:
+                    continue
+                config_labels = [config_key, config.get("name", ""), *config.get("aliases", [])]
+                if any(
+                    config_slug
+                    and track_slug_value.endswith(f"_{config_slug}")
+                    for label in config_labels
+                    for config_slug in [track_slug(label)]
+                ):
+                    return track_key, build_track_profile(track_key, config_key)
             return track_key, build_track_profile(track_key, TRACK_CATALOG[track_key]["default_config"])
+
+        # Session labels often append a layout token to an otherwise exact
+        # track label (for example ``monza_gp``). Retry that final token as a
+        # config only when no exact track label matched and no explicit config
+        # was supplied.
+        if not config_name and "_" in track_slug_value:
+            parent_slug, config_slug = track_slug_value.rsplit("_", 1)
+            if parent_slug and config_slug:
+                return select_track_profile(track_name=parent_slug, config_name=config_slug)
 
         return None, None
 

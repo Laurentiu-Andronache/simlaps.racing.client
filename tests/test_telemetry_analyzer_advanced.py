@@ -6,8 +6,13 @@ and CaptureMetadata. Helper-function tests (_safe_4, _sanitize_slip)
 are consolidated in ``test_telemetry_analyzer_comprehensive.py``.
 """
 
+from unittest.mock import AsyncMock
+
+import pytest
+
 from src.core.telemetry_analyzer import (
     AnalysisResult,
+    TelemetryAnalyzer,
     _read_static_track_config,
     _select_track_profile_for_analysis,
     get_physics,
@@ -74,6 +79,47 @@ class TestSelectTrackProfile:
             track_key, profile = _select_track_profile_for_analysis(label)
             assert track_key == "circuit_de_spa_francorchamps"
             assert profile["config_key"] == "current"
+
+    def test_select_layout_suffix_without_static_config(self):
+        """A log-derived GP label remains profile-aware when static SHM is absent."""
+        track_key, profile = _select_track_profile_for_analysis("Red Bull Ring GP")
+
+        assert track_key == "red_bull_ring"
+        assert profile["config_key"] == "full"
+
+    @pytest.mark.asyncio
+    async def test_analyze_uses_track_label_when_static_shm_is_absent(self, tmp_path):
+        """The analyzer uses the log track label when no static SHM frames exist."""
+        frames = [
+            FrameData(
+                timestamp="",
+                frame_number=i,
+                physics={"speed_kmh": 100.0, "gear": 3, "rpm": 5000},
+                graphics={
+                    "normalized_car_position": i / 40,
+                    "has_authoritative_progress": True,
+                    "completed_laps": 0,
+                    "current_time_ms": i * 100,
+                    "last_time_ms": 0,
+                    "best_time_ms": 0,
+                    "is_valid_lap": None,
+                },
+                static=None,
+            )
+            for i in range(40)
+        ]
+        analyzer = TelemetryAnalyzer(output_dir=str(tmp_path))
+        analyzer._generate_html = AsyncMock(return_value="report.html")
+        analyzer._generate_ai_prompt = AsyncMock(return_value="prompt.txt")
+
+        result = await analyzer.analyze(
+            frames,
+            hz=10.0,
+            track_name="Red Bull Ring GP",
+            game_lap_boundaries=[(20, 10_000), (40, 10_000)],
+        )
+
+        assert result.track_name == "Red Bull Ring (Full)"
 
     def test_read_static_track_config_extracts_names(self):
         """Static frames yield authoritative track/config names."""
