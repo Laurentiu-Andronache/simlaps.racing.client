@@ -15,7 +15,7 @@ import traceback
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, NamedTuple, Optional, TextIO
+from typing import Any, Callable, Dict, List, Optional, TextIO
 
 from src.core.security import GameProcessStatus, is_game_running
 from src.core.telemetry_decoder import (
@@ -134,13 +134,55 @@ class CaptureMetadata:
         return asdict(self)
 
 
-class LapBoundary(NamedTuple):
-    """Authoritative log boundary aligned to a captured frame."""
+@dataclass(frozen=True)
+class CaptureSnapshot:
+    """Immutable capture data handed to an asynchronous finalizer."""
+
+    frames: tuple[FrameData, ...]
+    metadata: Optional[CaptureMetadata]
+    lap_boundaries: tuple["LapBoundary", ...]
+    output_prefix: Optional[str]
+    stop_reason: str
+    track_name: Optional[str]
+    car_model: Optional[str]
+
+
+@dataclass(frozen=True)
+class LapBoundary:
+    """Captured result boundary with legacy four-item tuple behavior."""
 
     frame_index: int
     lap_time_ms: Optional[float]
     lap_number: Optional[int]
     lap_type: str = "VALID"
+    session_id: Optional[str] = None
+    result_id: Optional[str] = None
+    original_lap_number: Optional[int] = None
+
+    def _legacy_tuple(self) -> tuple:
+        return (self.frame_index, self.lap_time_ms, self.lap_number, self.lap_type)
+
+    def __iter__(self):
+        return iter(self._legacy_tuple())
+
+    def __len__(self) -> int:
+        return 4
+
+    def __getitem__(self, index):
+        return self._legacy_tuple()[index]
+
+    def __eq__(self, other):
+        if isinstance(other, LapBoundary):
+            return (
+                self.frame_index, self.lap_time_ms, self.lap_number, self.lap_type,
+                self.session_id, self.result_id, self.original_lap_number,
+            ) == (
+                other.frame_index, other.lap_time_ms, other.lap_number, other.lap_type,
+                other.session_id, other.result_id, other.original_lap_number,
+            )
+        if isinstance(other, (tuple, list)):
+            return self._legacy_tuple() == tuple(other)
+        return NotImplemented
 
 
 class RegionReader:
@@ -255,12 +297,6 @@ class TelemetryCapture:
     HEARTBEAT_TIMEOUT_SECONDS = 5.0
     # Timeout after 3 seconds with all regions disconnected
     DISCONNECT_TIMEOUT_SECONDS = 3.0
-    # Timeout after 120 seconds of zero speed (race exit to menu detection).
-    # 120s covers pit stops and formation laps without triggering prematurely.
-    # Once lap boundaries are recorded we skip idle timeout entirely and rely
-    # on the "remove car" log signal as the authoritative session-end trigger.
-    IDLE_TIMEOUT_SECONDS = 120.0
-
     def __init__(
         self,
         hz: float = 20.0,
@@ -298,17 +334,23 @@ class TelemetryCapture:
         self._region_paths: Dict[str, str] = {}
         self._last_valid_frame_time: Optional[float] = None
         self._stop_reason: Optional[str] = None
+        # An explicit caller owns finalization.  Internal lifecycle failures
+        # notify the callback so the UI can finalize the capture exactly once.
+        self._explicit_stop_requested = False
         self._on_stop_callback: Optional[Callable[[str], None]] = None
+        self._on_stop_snapshot_callback: Optional[Callable[[str, CaptureSnapshot], None]] = None
         self._output_dir = output_dir or get_default_output_dir()
         self._all_disconnected_since: Optional[float] = None
         self._output_prefix: Optional[str] = None
-        self._idle_since: Optional[float] = None
         self._lap_boundaries: List[LapBoundary] = []
         self._diag_file: Optional[TextIO] = None
         self._session_manager = session_manager or SharedSessionManager()
         self._last_sample_had_data = False
         self._recording_awaiting_boundary = False
         self._awaiting_lap_time_ms: Optional[int] = None
+        self._last_stop_snapshot: Optional[CaptureSnapshot] = None
+        self._source_track_name: Optional[str] = None
+        self._source_car_model: Optional[str] = None
 
     def is_capturing(self) -> bool:
         """Check if currently capturing."""
@@ -401,6 +443,31 @@ class TelemetryCapture:
         """
         self._on_stop_callback = callback
 
+    def set_on_stop_snapshot_callback(self, callback: Optional[Callable[[str, CaptureSnapshot], None]]) -> None:
+        """Set the callback that receives an immutable stopped-capture snapshot."""
+        self._on_stop_snapshot_callback = callback
+
+    def get_last_stop_snapshot(self) -> Optional[CaptureSnapshot]:
+        """Return the completed capture snapshot, if one was created."""
+        return self._last_stop_snapshot
+
+    def set_source_context(self, *, track_name: Optional[str], car_model: Optional[str]) -> None:
+        """Freeze session labels used when the current capture is finalized."""
+        self._source_track_name = track_name
+        self._source_car_model = car_model
+
+    def _freeze_stop_snapshot(self) -> CaptureSnapshot:
+        """Copy outgoing capture data before another start can reset state."""
+        return CaptureSnapshot(
+            frames=tuple(self._frames),
+            metadata=self._metadata,
+            lap_boundaries=tuple(self._lap_boundaries),
+            output_prefix=self._output_prefix,
+            stop_reason=self._stop_reason or "manual_stop",
+            track_name=self._source_track_name,
+            car_model=self._source_car_model,
+        )
+
     def get_frame_count(self) -> int:
         """Get number of captured frames."""
         return len(self._frames)
@@ -410,6 +477,10 @@ class TelemetryCapture:
         lap_time_ms: Optional[float] = None,
         lap_number: Optional[int] = None,
         lap_type: str = "VALID",
+        *,
+        session_id: Optional[str] = None,
+        result_id: Optional[str] = None,
+        original_lap_number: Optional[int] = None,
     ) -> None:
         """Record the current frame index as a lap boundary.
 
@@ -447,7 +518,19 @@ class TelemetryCapture:
         # buffer. Absolute sample numbers continue across the armed outlap and
         # therefore point at the wrong lap after that prefix is discarded.
         frame_idx = len(self._frames) - 1
-        self._lap_boundaries.append(LapBoundary(frame_idx, lap_time_ms, lap_number, lap_type))
+        self._lap_boundaries.append(
+            LapBoundary(
+                frame_idx,
+                lap_time_ms,
+                lap_number,
+                lap_type,
+                session_id=session_id,
+                result_id=result_id,
+                original_lap_number=(
+                    lap_number if original_lap_number is None else original_lap_number
+                ),
+            )
+        )
         log_info(
             Component.TELEMETRY,
             "Lap boundary recorded",
@@ -456,6 +539,47 @@ class TelemetryCapture:
             lap_number=lap_number,
             lap_type=lap_type,
         )
+
+    def bind_lap_boundary(self, session_id: str, lap: Any) -> bool:
+        """Attach a parser result identity to the boundary just recorded."""
+        if not self._lap_boundaries or not session_id or lap is None:
+            return False
+        boundary = self._lap_boundaries[-1]
+        if boundary.frame_index != len(self._frames) - 1:
+            return False
+        result_id = getattr(lap, "result_id", None) or str(id(lap))
+        self._lap_boundaries[-1] = LapBoundary(
+            boundary.frame_index,
+            boundary.lap_time_ms,
+            boundary.lap_number,
+            boundary.lap_type,
+            session_id=session_id,
+            result_id=result_id,
+            original_lap_number=(
+                boundary.original_lap_number
+                if boundary.original_lap_number is not None
+                else boundary.lap_number
+            ),
+        )
+        return True
+
+    def reconcile_lap_boundary(self, session_id: str, lap: Any) -> bool:
+        """Update one result's metadata while retaining its frame boundary."""
+        result_id = getattr(lap, "result_id", None) or str(id(lap))
+        for index, boundary in enumerate(self._lap_boundaries):
+            if boundary.session_id != session_id or boundary.result_id != result_id:
+                continue
+            self._lap_boundaries[index] = LapBoundary(
+                boundary.frame_index,
+                getattr(lap, "lap_time_ms", boundary.lap_time_ms),
+                getattr(lap, "lap_number", boundary.lap_number),
+                getattr(lap, "lap_type", boundary.lap_type) or boundary.lap_type,
+                session_id=boundary.session_id,
+                result_id=boundary.result_id,
+                original_lap_number=boundary.original_lap_number,
+            )
+            return True
+        return False
 
     def _start_recording_at_timing_boundary(self, frame: FrameData) -> bool:
         """Start an armed recording when ACE resets its live lap timer.
@@ -506,10 +630,21 @@ class TelemetryCapture:
         if previous is None or previous < 5_000 or current > 1_000:
             return False
 
-        self._frames.clear()
-        self._lap_boundaries.clear()
-        self._recording_awaiting_boundary = False
-        self._awaiting_lap_time_ms = None
+        # The shared session manager sees the same graphics callback before
+        # this recorder boundary check. When it has observed live timer data,
+        # stale counter/timer values must not release an armed recording.
+        # Keep the ownership decision and release of the armed boundary in a
+        # single manager lock section. A session reset must not replace the
+        # owned state between the check and the recorder mutation.
+        with self._session_manager._lock:
+            if not self._session_manager.has_live_timer_ownership():
+                self._awaiting_lap_time_ms = None
+                return False
+
+            self._frames.clear()
+            self._lap_boundaries.clear()
+            self._recording_awaiting_boundary = False
+            self._awaiting_lap_time_ms = None
         log_info(
             Component.TELEMETRY,
             "Telemetry recording started at shared-memory timing boundary",
@@ -640,15 +775,8 @@ class TelemetryCapture:
         self._readers = {}
 
     def _should_notify_stop_callback(self) -> bool:
-        """Only auto-notify for unexpected/internal stops."""
-        return self._stop_reason not in {
-            None,
-            "manual",
-            "session_end",
-            "session_restart",
-            "disabled",
-            "app_close",
-        }
+        """Notify only when an internal stop owns finalization."""
+        return self._stop_reason is not None and not self._explicit_stop_requested
 
     def _connect_regions(self) -> Dict[str, RegionReader]:
         """Connect to all shared memory regions with single attempt."""
@@ -814,6 +942,7 @@ class TelemetryCapture:
         self._running = True
         self._frames = []
         self._lap_boundaries = []
+        self._last_stop_snapshot = None
         self._recording_awaiting_boundary = self._record_frames
         self._awaiting_lap_time_ms = None
         self._metadata = None
@@ -821,8 +950,8 @@ class TelemetryCapture:
         self._output_prefix = self._make_output_prefix()
         self._last_valid_frame_time = None
         self._stop_reason = None
+        self._explicit_stop_requested = False
         self._all_disconnected_since = None
-        self._idle_since = None
 
         # Start the capture loop task
         self._task = asyncio.create_task(self._capture_loop_wrapper())
@@ -952,33 +1081,6 @@ class TelemetryCapture:
                     frame_num += 1
                     self._all_disconnected_since = None
 
-                    # Idle timeout is only meaningful once full recording has
-                    # started. Validity-only capture must remain available for
-                    # the lifetime of ACE, and an armed recorder may sit in the
-                    # pits for several minutes before its clean start boundary.
-                    if self._record_frames and not self._recording_awaiting_boundary:
-                        physics = frame.physics if frame.physics else {}
-                        speed_kmh = physics.get("speed_kmh", 0) if isinstance(physics, dict) else 0
-                        if speed_kmh < 1.0:
-                            if not self._lap_boundaries:
-                                if self._idle_since is None:
-                                    self._idle_since = now_mono
-                                elif now_mono - self._idle_since > self.IDLE_TIMEOUT_SECONDS:
-                                    log_warning(
-                                        Component.TELEMETRY,
-                                        "Idle timeout",
-                                        timeout=f"{self.IDLE_TIMEOUT_SECONDS:.1f}s",
-                                    )
-                                    self._stop_reason = f"idle_timeout ({self.IDLE_TIMEOUT_SECONDS:.1f}s)"
-                                    self._running = False
-                                    break
-                            else:
-                                self._idle_since = None
-                        else:
-                            self._idle_since = None
-                    else:
-                        self._idle_since = None
-
                     # Debug: log first frame
                     if frame_num == 1:
                         mode_label = "validity-only" if not self._record_frames else "telemetry active"
@@ -1005,6 +1107,9 @@ class TelemetryCapture:
 
         self._close_readers()
 
+        if self._last_stop_snapshot is None:
+            self._last_stop_snapshot = self._freeze_stop_snapshot()
+
         # Close diagnostic log
         if self._diag_file:
             try:
@@ -1012,6 +1117,11 @@ class TelemetryCapture:
             except OSError:
                 pass
             self._diag_file = None
+
+        # Freeze all outgoing data before the asynchronous callback can race
+        # with a new start_capture() resetting this object's live buffers.
+        snapshot = self._freeze_stop_snapshot()
+        self._last_stop_snapshot = snapshot
 
         # Save raw dump for reverse-engineering if we captured frames.
         # Gated behind the telemetry-debug-logs setting because in normal
@@ -1024,9 +1134,13 @@ class TelemetryCapture:
             self.save_raw_dump(raw_dump_path)
 
         # Notify callback if set
-        if self._on_stop_callback and self._should_notify_stop_callback():
+        if (self._on_stop_callback or self._on_stop_snapshot_callback) and self._should_notify_stop_callback():
             try:
-                result = self._on_stop_callback(self._stop_reason or "manual_stop")
+                reason = self._stop_reason or "manual_stop"
+                if self._on_stop_snapshot_callback:
+                    result = self._on_stop_snapshot_callback(reason, snapshot)
+                else:
+                    result = self._on_stop_callback(reason)
                 if asyncio.iscoroutine(result):
                     asyncio.create_task(result)
             except Exception as e:
@@ -1045,6 +1159,7 @@ class TelemetryCapture:
             return self._frames.copy()
 
         log_info(Component.TELEMETRY, "Capture stopped", reason=reason, frames=len(self._frames))
+        self._explicit_stop_requested = True
         self._stop_reason = reason
         self._running = False
 

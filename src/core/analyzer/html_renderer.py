@@ -115,10 +115,10 @@ async def render_html(
 
     trace_axis = _trace_axis(data["laps"], data["hz"])
     laps_json: List[Dict] = []
-    for lap in data["laps"]:
+    for index, lap in enumerate(data["laps"], start=1):
+        result_key = lap.get("result_key") or f"capture:{index}"
         raw_track = lap["track"]
         render_track = lap.get("canonical_track") or raw_track
-
         track_slim = [
             {
                 "frame": point["frame"],
@@ -130,24 +130,26 @@ async def render_html(
             }
             for point in render_track
         ]
-        trace_slim = [
-            {
-                "trace_x": round(_trace_x(point, lap, trace_axis, data["hz"]), 6),
-                "speed": round(_optional_float(point.get("speed")) or 0.0, 1),
-                "brake": round(_optional_float(point.get("brake")) or 0.0, 3),
-                "gas": round(_optional_float(point.get("gas")) or 0.0, 3),
-                "gear": point["gear"],
-                "steer": round(_optional_float(point.get("steer")) or 0.0, 6),
-                "yaw_rate": round(_optional_float(point.get("yaw_rate")) or 0.0, 6),
-                "acc_g_x": round(_optional_float(point.get("acc_g_x")) or 0.0, 6),
-                "acc_g_z": round(_optional_float(point.get("acc_g_z")) or 0.0, 6),
-                "brake_temp_fl": round(_optional_float(point.get("brake_temp_fl")) or 0.0, 2),
-                "brake_temp_fr": round(_optional_float(point.get("brake_temp_fr")) or 0.0, 2),
-                "brake_temp_rl": round(_optional_float(point.get("brake_temp_rl")) or 0.0, 2),
-                "brake_temp_rr": round(_optional_float(point.get("brake_temp_rr")) or 0.0, 2),
-            }
-            for point in raw_track
-        ]
+        trace_slim = []
+        for point in raw_track:
+            trace_x = _trace_x(point, lap, trace_axis, data["hz"])
+            trace_slim.append(
+                {
+                    "trace_x": round(trace_x, 6) if trace_x is not None else None,
+                    "speed": round(_optional_float(point.get("speed")) or 0.0, 1),
+                    "brake": round(_optional_float(point.get("brake")) or 0.0, 3),
+                    "gas": round(_optional_float(point.get("gas")) or 0.0, 3),
+                    "gear": point["gear"],
+                    "steer": round(_optional_float(point.get("steer")) or 0.0, 6),
+                    "yaw_rate": round(_optional_float(point.get("yaw_rate")) or 0.0, 6),
+                    "acc_g_x": round(_optional_float(point.get("acc_g_x")) or 0.0, 6),
+                    "acc_g_z": round(_optional_float(point.get("acc_g_z")) or 0.0, 6),
+                    "brake_temp_fl": round(_optional_float(point.get("brake_temp_fl")) or 0.0, 2),
+                    "brake_temp_fr": round(_optional_float(point.get("brake_temp_fr")) or 0.0, 2),
+                    "brake_temp_rl": round(_optional_float(point.get("brake_temp_rl")) or 0.0, 2),
+                    "brake_temp_rr": round(_optional_float(point.get("brake_temp_rr")) or 0.0, 2),
+                }
+            )
         corners_json = []
         for corner in lap["corners"]:
             apex_x = _optional_float(corner.get("apex_x"))
@@ -172,12 +174,19 @@ async def render_html(
         laps_json.append(
             {
                 "lap_num": lap["lap_num"],
+                "start_frame": lap["start_frame"],
+                "end_frame": lap["end_frame"],
                 "lap_time_s": round(lap["lap_time_s"], 3),
                 "lap_time_str": lap["lap_time_str"],
-                "max_speed": round(lap["max_speed"], 1),
-                "avg_speed": round(lap["avg_speed"], 1),
+                "max_speed": round(lap["max_speed"], 1) if lap.get("max_speed") is not None else None,
+                "avg_speed": round(lap["avg_speed"], 1) if lap.get("avg_speed") is not None else None,
                 "fuel_used": (round(lap["fuel_used"], 3) if lap.get("fuel_used") is not None else None),
                 "is_valid": lap.get("is_valid", True),
+                "session_id": lap.get("session_id"),
+                "result_id": lap.get("result_id"),
+                "result_key": result_key,
+                "original_lap_number": lap.get("source_lap_num"),
+                "derived_metrics_trustworthy": lap.get("derived_metrics_trustworthy", True),
                 "confidence_label": lap.get("confidence_label"),
                 "track": track_slim,
                 "trace": trace_slim,
@@ -194,13 +203,38 @@ async def render_html(
         for c in data["ref_corners"]
     ]
 
-    corner_data_json = {}
-    for cid, speeds in data["corner_data"].items():
-        corner_data_json[str(cid)] = {str(k): v for k, v in speeds.items()}
+    report_keys = {
+        str(lap.get("result_key") or f"capture:{index}"): lap
+        for index, lap in enumerate(data["laps"], start=1)
+    }
 
-    corner_speeds_json = {}
-    for cid, speeds in data["corner_speeds"].items():
-        corner_speeds_json[str(cid)] = {str(k): v for k, v in speeds.items()}
+    def normalize_corner_keys(values: Dict) -> Dict[str, Any]:
+        normalized = {}
+        for key, value in values.items():
+            key_text = str(key)
+            if key_text in report_keys:
+                normalized[key_text] = value
+                continue
+            matches = [
+                report_key
+                for report_key, lap in report_keys.items()
+                if str(lap.get("lap_num")) == key_text
+            ]
+            # Legacy identity-free data can only be unambiguous when one
+            # displayed number exists. Ambiguous numbers stay unavailable.
+            if len(matches) == 1:
+                normalized[matches[0]] = value
+        return normalized
+
+    corner_data_json = {
+        str(cid): normalize_corner_keys(speeds)
+        for cid, speeds in data["corner_data"].items()
+    }
+
+    corner_speeds_json = {
+        str(cid): normalize_corner_keys(speeds)
+        for cid, speeds in data["corner_speeds"].items()
+    }
 
     data_json = json.dumps(
         {
@@ -213,12 +247,17 @@ async def render_html(
             "track_label": data["track_label"],
             "laps": laps_json,
             "best_lap_num": data["best_lap_num"],
+            "best_lap_key": data.get("best_lap_result_key"),
             "reference_lap_num": data.get("reference_lap_num"),
+            "reference_lap_key": data.get("reference_lap_result_key"),
             "comparison_lap_num": data.get("comparison_lap_num"),
+            "comparison_lap_key": data.get("comparison_lap_result_key"),
             "comparison_available": data.get("comparison_available", False),
             "valid_lap_nums": data.get("valid_lap_nums", []),
             "analysis_mode": data.get("analysis_mode"),
             "analysis_confidence": data.get("analysis_confidence"),
+            "authoritative_progress_ratio": data.get("authoritative_progress_ratio", 0.0),
+            "plausible_frame_ratio": data.get("plausible_frame_ratio", 0.0),
             "analysis_notes": data.get("analysis_notes", []),
             "trace_axis": trace_axis,
             "ref_corners": ref_corners_json,
@@ -404,7 +443,12 @@ function speedColor(frac) {
 function brakeColor(v) { const r = Math.round(60 + v * 195); return `rgb(${r},${Math.round(30*(1-v))},${Math.round(30*(1-v))})`; }
 function gasColor(v) { const g = Math.round(60 + v * 175); return `rgb(${Math.round(30*(1-v))},${g},${Math.round(30*(1-v))})`; }
 
-const activeLaps = new Set(DATA.laps.map(l => l.lap_num));
+const lapKey = lap => lap.result_key || `legacy:${lap.lap_num}`;
+const isBestLap = lap => DATA.best_lap_key
+  ? lapKey(lap) === DATA.best_lap_key
+  : DATA.laps.filter(candidate => candidate.lap_num === DATA.best_lap_num).length === 1
+    && lap.lap_num === DATA.best_lap_num;
+const activeLaps = new Set(DATA.laps.map(lapKey));
 function traceData(lap, value) {
   return lap.trace.map(pt => ({ x: pt.trace_x, y: value(pt) }));
 }
@@ -422,8 +466,7 @@ function traceScale() {
 
 function syncFilterButtons() {
   document.querySelectorAll('.lap-btn').forEach(btn => {
-    const n = parseInt(btn.dataset.lap);
-    btn.classList.toggle('active', activeLaps.has(n));
+    btn.classList.toggle('active', activeLaps.has(btn.dataset.lap));
   });
 }
 
@@ -441,11 +484,12 @@ function makeLapFilters(containerId, onChange) {
     btn.className = 'lap-btn active';
     btn.style.color = lapColor(lap.lap_num);
     const validity = lap.is_valid ? '' : ' [INVALID]';
-    btn.textContent = `L${lap.lap_num}${lap.lap_num===DATA.best_lap_num?'*':''} - ${lap.lap_time_str}${validity}`;
-    btn.dataset.lap = lap.lap_num;
+    btn.textContent = `L${lap.lap_num}${isBestLap(lap)?'*':''} - ${lap.lap_time_str}${validity}`;
+    btn.dataset.lap = lapKey(lap);
     btn.addEventListener('click', () => {
-      if (activeLaps.has(lap.lap_num)) activeLaps.delete(lap.lap_num);
-      else activeLaps.add(lap.lap_num);
+      const key = lapKey(lap);
+      if (activeLaps.has(key)) activeLaps.delete(key);
+      else activeLaps.add(key);
       onChange();
     });
     el.appendChild(btn);
@@ -454,13 +498,22 @@ function makeLapFilters(containerId, onChange) {
 
 function renderStats() {
   const row = document.getElementById('stats-row');
-  const validLaps = DATA.laps.filter(l => l.is_valid);
-  const bestLap = DATA.laps.find(l => l.lap_num === DATA.best_lap_num && l.is_valid) || null;
-  const maxSpd = validLaps.length ? Math.max(...validLaps.map(l => l.max_speed)) : null;
+  const keyedBestLap = DATA.best_lap_key
+    ? DATA.laps.find(l => lapKey(l) === DATA.best_lap_key)
+    : null;
+  const numberedBestLaps = DATA.laps.filter(l => l.lap_num === DATA.best_lap_num);
+  const bestLap = DATA.best_lap_key
+    ? keyedBestLap
+    : (numberedBestLaps.length === 1 ? numberedBestLaps[0] : null);
+  const speedValues = DATA.laps
+    .filter(l => l.derived_metrics_trustworthy !== false)
+    .map(l => l.max_speed)
+    .filter(v => Number.isFinite(v));
+  const maxSpd = speedValues.length ? Math.max(...speedValues) : null;
   const stats = [
     { label: 'Laps', value: DATA.laps.length },
     { label: 'Best Lap', value: bestLap ? bestLap.lap_time_str : 'N/A' },
-    { label: 'Valid-Lap Top Speed', value: maxSpd !== null ? maxSpd.toFixed(0) + ' km/h' : 'N/A' },
+    { label: 'Top Speed', value: maxSpd !== null ? maxSpd.toFixed(0) + ' km/h' : 'N/A' },
     { label: 'Corners / Lap', value: DATA.ref_corners.length },
   ];
   row.replaceChildren();
@@ -513,10 +566,20 @@ function drawTrackMap() {
   const canvas = document.getElementById('track-canvas');
   const mode = document.getElementById('map-color-mode').value;
   const sel = document.getElementById('map-lap-select');
-  const lapNum = parseInt(sel.value);
-  const lap = DATA.laps.find(l => l.lap_num === lapNum);
+  const lap = DATA.laps.find(l => lapKey(l) === sel.value);
   if (!lap) return;
-  const pts = lap.track;
+  const pts = lap.track || [];
+  if (!pts.length) {
+    const ctx = canvas.getContext('2d');
+    const size = Math.min(canvas.parentElement.clientWidth, 420);
+    canvas.width = size; canvas.height = size;
+    ctx.clearRect(0, 0, size, size);
+    ctx.fillStyle = '#0d0f14'; ctx.fillRect(0, 0, size, size);
+    ctx.fillStyle = '#9ca3af'; ctx.font = '13px sans-serif';
+    ctx.textAlign = 'center'; ctx.fillText('Telemetry map unavailable', size / 2, size / 2);
+    window._cornerHits = [];
+    return;
+  }
   const xs = pts.map(p => p.x), zs = pts.map(p => p.z);
   const minX = Math.min(...xs), maxX = Math.max(...xs), minZ = Math.min(...zs), maxZ = Math.max(...zs);
   const wrap = canvas.parentElement;
@@ -576,13 +639,19 @@ let speedChart = null;
 function buildSpeedChart() {
   const ctx = document.getElementById('speed-chart').getContext('2d');
   if (speedChart) speedChart.destroy();
-  const datasets = DATA.laps.filter(l => activeLaps.has(l.lap_num)).map(lap => ({
-    label: `Lap ${lap.lap_num}${lap.lap_num===DATA.best_lap_num?'*':''} (${lap.lap_time_str})`,
+  const datasets = DATA.laps.filter(l => activeLaps.has(lapKey(l))).map(lap => ({
+    label: `Lap ${lap.lap_num}${isBestLap(lap)?'*':''} (${lap.lap_time_str})`,
     data: traceData(lap, pt => pt.speed),
     borderColor: lapColor(lap.lap_num), backgroundColor: 'transparent', borderWidth: 1.8, pointRadius: 0, tension: 0.3,
   }));
   const annotations = {};
-  const bestLap = DATA.laps.find(l => l.lap_num === DATA.best_lap_num && l.is_valid) || null;
+  const keyedBestLap = DATA.best_lap_key
+    ? DATA.laps.find(l => lapKey(l) === DATA.best_lap_key)
+    : null;
+  const numberedBestLaps = DATA.laps.filter(l => l.lap_num === DATA.best_lap_num);
+  const bestLap = DATA.best_lap_key
+    ? keyedBestLap
+    : (numberedBestLaps.length === 1 ? numberedBestLaps[0] : null);
   if (bestLap) {
     bestLap.corners.forEach(c => {
       if (c.trace_start_x == null || c.trace_end_x == null || c.trace_end_x < c.trace_start_x) return;
@@ -611,7 +680,7 @@ function buildCornerChart() {
   const labels = DATA.ref_corners.map(c => c.name || ('C' + c.id));
   const datasets = DATA.laps.map(lap => ({
     label: `Lap ${lap.lap_num}`,
-    data: DATA.ref_corners.map(c => { const s = DATA.corner_speeds[c.id]; return s ? (s[lap.lap_num] || null) : null; }),
+    data: DATA.ref_corners.map(c => { const s = DATA.corner_speeds[c.id]; return s ? (s[lapKey(lap)] ?? null) : null; }),
     backgroundColor: lapColor(lap.lap_num) + 'cc', borderColor: lapColor(lap.lap_num), borderWidth: 1, borderRadius: 4,
   }));
   cornerChart = new Chart(ctx, { type: 'bar', data: { labels, datasets }, options: {
@@ -626,16 +695,17 @@ function buildCornerChart() {
 
 function buildCornerTable() {
   const table = document.getElementById('corner-table');
-  const lapNums = DATA.laps.map(l => l.lap_num);
+  const lapKeys = DATA.laps.map(lapKey);
   table.replaceChildren();
   const thead = document.createElement('thead');
   const headerRow = document.createElement('tr');
   const cornerHeader = document.createElement('th');
   cornerHeader.textContent = 'Corner';
   headerRow.appendChild(cornerHeader);
-  lapNums.forEach(n => {
+  lapKeys.forEach(key => {
+    const lap = DATA.laps.find(item => lapKey(item) === key);
     const header = document.createElement('th');
-    header.textContent = `Lap ${n}`;
+    header.textContent = `Lap ${lap.lap_num}`;
     headerRow.appendChild(header);
   });
   const deltaHeader = document.createElement('th');
@@ -646,7 +716,7 @@ function buildCornerTable() {
   const tbody = document.createElement('tbody');
   DATA.ref_corners.forEach(c => {
     const speeds = DATA.corner_data?.[c.id] || {};
-    const vals = lapNums.map(n => speeds[n]?.apex).filter(v => v !== undefined);
+    const vals = lapKeys.map(key => speeds[key]?.apex).filter(v => v !== undefined);
     const best = vals.length ? Math.max(...vals) : null;
     const worst = vals.length ? Math.min(...vals) : null;
     const delta = best !== null ? (best - worst).toFixed(1) : '\u2014';
@@ -658,8 +728,9 @@ function buildCornerTable() {
     badge.textContent = c.name || ('C' + c.id);
     cornerCell.appendChild(badge);
     row.appendChild(cornerCell);
-    lapNums.forEach(n => {
-      const v = speeds[n]?.apex;
+    lapKeys.forEach(key => {
+      const lap = DATA.laps.find(item => lapKey(item) === key);
+      const v = speeds[key]?.apex;
       const cell = document.createElement('td');
       if (v === undefined) {
         cell.style.color = 'var(--muted)';
@@ -688,7 +759,7 @@ let inputsChart = null;
 function buildInputsChart() {
   const ctx = document.getElementById('inputs-chart').getContext('2d');
   if (inputsChart) inputsChart.destroy();
-  const active = DATA.laps.filter(l => activeLaps.has(l.lap_num));
+  const active = DATA.laps.filter(l => activeLaps.has(lapKey(l)));
   if (!active.length) return;
   const datasets = [];
   active.forEach(lap => {
@@ -739,11 +810,11 @@ function dynLabel(mode) {
 function buildDynamicsChart() {
   const ctx = document.getElementById('dynamics-chart').getContext('2d');
   if (dynamicsChart) dynamicsChart.destroy();
-  const active = DATA.laps.filter(l => activeLaps.has(l.lap_num));
+  const active = DATA.laps.filter(l => activeLaps.has(lapKey(l)));
   if (!active.length) return;
   const mode = document.getElementById('dynamics-mode').value;
   const datasets = active.map(lap => ({
-    label: `Lap ${lap.lap_num}${lap.lap_num===DATA.best_lap_num?'*':''} (${lap.lap_time_str})`,
+    label: `Lap ${lap.lap_num}${isBestLap(lap)?'*':''} (${lap.lap_time_str})`,
     data: traceData(lap, pt => dynValue(pt, mode)),
     borderColor: lapColor(lap.lap_num), backgroundColor: 'transparent', borderWidth: 1.8, pointRadius: 0, tension: 0.2,
   }));
@@ -774,13 +845,16 @@ window.addEventListener('DOMContentLoaded', () => {
     const sel = document.getElementById('map-lap-select');
     DATA.laps.forEach(l => {
       const opt = document.createElement('option');
-      opt.value = l.lap_num;
-      opt.textContent = `Lap ${l.lap_num}${l.lap_num===DATA.best_lap_num?'*':''} (${l.lap_time_str})${l.is_valid?'':' [INVALID]'}`;
+      opt.value = lapKey(l);
+      opt.textContent = `Lap ${l.lap_num}${isBestLap(l)?'*':''} (${l.lap_time_str})${l.is_valid?'':' [INVALID]'}`;
       sel.appendChild(opt);
     });
     makeLapFilters('speed-lap-filters', rebuildAll);
     makeLapFilters('inputs-lap-filters', rebuildAll);
     makeLapFilters('dynamics-lap-filters', rebuildAll);
+    if (DATA.laps.length) {
+      sel.value = lapKey(DATA.laps[0]);
+    }
     drawTrackMap(); buildSpeedChart(); buildCornerChart(); buildCornerTable(); buildInputsChart(); buildDynamicsChart();
     const mapCanvas = document.getElementById('track-canvas');
     const mapTip = document.getElementById('map-tooltip');

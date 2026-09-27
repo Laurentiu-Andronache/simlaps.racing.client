@@ -49,6 +49,12 @@ def _normalise_car_key(car_model: str) -> str:
     return car_model.strip().lower().replace(" ", "_").replace("-", "_")
 
 
+# SHM display names that differ from the catalog's internal car keys.
+_ALIASES = {
+    "porsche_718_cayman_gt4_clubsport": "ks_porsche_718_cayman_gt4_cs_mr",
+}
+
+
 def get_tuning_params(car_model: str) -> Optional[List[dict]]:
     """Return a list of tunable parameter dicts for the given car, or None if unknown.
 
@@ -61,7 +67,7 @@ def get_tuning_params(car_model: str) -> Optional[List[dict]]:
         return None
 
     catalog = _load_catalog()
-    key = _normalise_car_key(car_model)
+    key = _ALIASES.get(_normalise_car_key(car_model), _normalise_car_key(car_model))
 
     # Direct match
     if key in catalog:

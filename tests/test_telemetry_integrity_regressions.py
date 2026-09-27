@@ -120,7 +120,7 @@ def _lap(
 
 def _prompt_data(laps: list[dict], *, comparison_lap_num: int | None) -> dict:
     valid_laps = [lap for lap in laps if lap["is_valid"]]
-    best = min(valid_laps, key=lambda lap: lap["lap_time_s"])
+    best = min(laps, key=lambda lap: lap["lap_time_s"])
     ref_corner = best["corners"][0]
     return {
         "hz": 10.0,
@@ -130,7 +130,7 @@ def _prompt_data(laps: list[dict], *, comparison_lap_num: int | None) -> dict:
         "comparison_lap_num": comparison_lap_num,
         "comparison_available": comparison_lap_num is not None,
         "valid_lap_nums": [lap["lap_num"] for lap in valid_laps],
-        "coaching_lap_nums": [lap["lap_num"] for lap in valid_laps],
+        "coaching_lap_nums": [lap["lap_num"] for lap in laps],
         "ref_corners": [ref_corner],
         "profile_corners": [{"id": 1, "name": "T1", "start": 0.1, "end": 0.2}],
         "corner_data": {},
@@ -202,7 +202,7 @@ def test_opposite_sign_equal_magnitude_camber_is_not_a_mismatch():
 
 
 @pytest.mark.asyncio
-async def test_ai_prompt_excludes_invalid_lap_from_coaching_aggregates(tmp_path):
+async def test_ai_prompt_coaches_invalid_laps_and_marks_them(tmp_path):
     invalid = _lap(1, valid=False, lap_time=61.0, max_speed=333.0)
     valid_best = _lap(2, valid=True, lap_time=65.0, max_speed=178.0)
     valid_compare = _lap(3, valid=True, lap_time=70.0, max_speed=170.0)
@@ -218,8 +218,8 @@ async def test_ai_prompt_excludes_invalid_lap_from_coaching_aggregates(tmp_path)
     prompt = (tmp_path / "telemetry_invalid_exclusion_ai_prompt.txt").read_text(encoding="utf-8")
 
     assert path == str(tmp_path / "telemetry_invalid_exclusion_ai_prompt.txt")
-    assert "Top speed: 178.0 km/h" in prompt
-    assert "333.0 km/h" not in prompt
+    # The invalid lap is coached like any other lap but keeps its flag.
+    assert "Top speed: 333.0 km/h" in prompt
     assert "Lap 1: 1:01.00 [INVALID]" in prompt
 
 
@@ -242,7 +242,7 @@ async def test_one_valid_lap_has_no_self_comparison_coaching(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_all_invalid_prompt_does_not_blame_good_progress_coverage(tmp_path):
+async def test_diagnostic_prompt_does_not_blame_good_progress_coverage(tmp_path):
     invalid = _lap(2, valid=False, lap_time=65.0, max_speed=178.0)
     data = _prompt_data(
         [_lap(1, valid=True, lap_time=64.0, max_speed=177.0)],
@@ -268,8 +268,8 @@ async def test_all_invalid_prompt_does_not_blame_good_progress_coverage(tmp_path
     )
     prompt = (tmp_path / "telemetry_all_invalid_ai_prompt.txt").read_text(encoding="utf-8")
 
-    assert "no valid completed lap is available" in prompt
-    assert "record at least one valid lap for coaching" in prompt
+    assert "lap alignment is not trustworthy enough" in prompt
+    assert "no coaching conclusions should be drawn" in prompt
     assert "until graphics-based progress coverage is reliable" not in prompt
 
 
@@ -519,7 +519,9 @@ async def test_html_corner_marker_javascript_rejects_null_coordinates(tmp_path):
         {"id": 99, "name": "Bad point", "apex_frame": 22, "apex_x": None, "apex_z": None}
     )
 
-    marker_start = html.index("  window._cornerHits = [];")
+    # The empty-map branch also clears marker hits before returning. Select the
+    # later occurrence that belongs to the executable marker loop below it.
+    marker_start = html.rindex("  window._cornerHits = [];")
     marker_end = html.index("  const start = pts[0];", marker_start)
     marker_code = html[marker_start:marker_end]
     harness = f"""<!doctype html><body><script>
@@ -623,6 +625,39 @@ async def test_html_trace_falls_back_to_elapsed_for_invalid_progress(tmp_path, b
     assert [point["trace_x"] for point in payload["laps"][0]["trace"]] == [0.0, 0.3]
     assert [point["trace_x"] for point in payload["laps"][1]["trace"]] == [0.0, 0.5]
     assert len(payload["laps"][1]["trace"]) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missing_frame", ["none", "key"], ids=["none", "missing"])
+async def test_html_trace_keeps_valid_points_when_frame_is_unavailable(tmp_path, missing_frame):
+    points = [
+        _trace_point(100, speed=80.0),
+        _trace_point(105, speed=120.0),
+    ]
+    canonical = [
+        _trace_point(100, speed=80.0),
+        _trace_point(105, speed=120.0),
+    ]
+    if missing_frame == "none":
+        points[0]["frame"] = None
+    else:
+        points[0].pop("frame")
+    lap = _trace_lap(1, points, start_frame=100)
+    lap["canonical_track"] = canonical
+
+    await render_html(_trace_report([lap]), str(tmp_path), f"missing_frame_{missing_frame}")
+    payload = _rendered_payload(
+        (tmp_path / f"telemetry_missing_frame_{missing_frame}.html").read_text(encoding="utf-8")
+    )
+
+    assert payload["trace_axis"]["mode"] == "elapsed"
+    assert len(payload["laps"][0]["track"]) == 2
+    assert [point["x"] for point in payload["laps"][0]["track"]] == [100.0, 105.0]
+    trace = payload["laps"][0]["trace"]
+    assert len(trace) == 2
+    assert trace[0]["trace_x"] is None
+    assert trace[1]["trace_x"] == pytest.approx(0.5)
+    assert trace[1]["speed"] == pytest.approx(120.0)
 
 
 @pytest.mark.asyncio
